@@ -282,16 +282,32 @@ ARMOUR_EFFICIENCY_PLUS7 = 0.1182
 # enhancingSPEED +7 = 0.1182 (item-stats.md §5), NOT efficiency.
 GLOVES_ENHANCING_SPEED_PLUS7 = 0.1182
 
-# --- Per-tier work model (research/trial-messages.md WORKING ASSUMPTION) -----
-# WORKING ASSUMPTION (2026-07-17): trial tiers mirror the labyrinth model until
-# the empirical curve is harvested from captures (see that file's TODO).
-TIER_BASE_LEVEL = 100          # tierLevel(1)
+# --- Per-tier work model (CONFIRMED formulas, per Orvel 2026-07-17) ----------
+# TotalWork(t, N) = DifficultyLevel(t) * 400 * (1 + N/100), where the difficulty
+# level IS the tier level (100, 110, ... — see GUILD-TRIALS.md: the engine's
+# tier fields hold the level). SuccessRate uses the effective level
+# (SkillLevel + BuildingSkillLevels) vs the difficulty level, floored at 0.05:
+#   delta = SkillLevel + BuildingSkillLevels - DifficultyLevel
+#   rate  = MAX(0.05, 0.8 * (1 + delta*0.005 + successBonus))  if delta >= 0
+#   rate  = MAX(0.05, 0.8 * (1 + delta*0.01  + successBonus))  if delta <  0
+# For Enhancing, successBonus carries the EnhancingSuccessRate = enhancer tool
+# success (EnhancerBonus) + Observatory enhancing-success (0 in live data) +
+# achievement bonus (unmodelled → 0); see trials.member_bonuses.
+TIER_BASE_LEVEL = 100          # tierLevel(1) == DifficultyLevel(1)
 TIER_LEVEL_STEP = 10           # +10 per tier
-TIER_TARGET_PER_LEVEL = 10     # baseTarget(t) = tierLevel(t) * 10
-SUCCESS_BASE = 0.8             # success(m,t) = clamp(0.8 * (1 + levelBonus + successBonus))
-LEVEL_BONUS_POS = 0.005        # per-level bonus when member level >= tier level
-LEVEL_BONUS_NEG = 0.01         # per-level penalty when member level < tier level
-# Headcount penalty: each member raises the required workpower by 1% (linear).
+TIER_TARGET_PER_LEVEL = 400    # TotalWork(t) = DifficultyLevel(t) * 400
+SUCCESS_BASE = 0.8             # base success rate
+SUCCESS_FLOOR = 0.05           # MAX(0.05, ...): success never drops below 5%
+LEVEL_BONUS_POS = 0.005        # per-level bonus when effective level >= difficulty
+LEVEL_BONUS_NEG = 0.01         # per-level penalty when effective level <  difficulty
+# BuildingSkillLevels: skill levels contributed by buildings, added to the
+# member's own level in the success calc. Houses grant EFFICIENCY / action-speed
+# (fed to work-power / action-seconds), NOT skill levels, per the live
+# houseRoomDetailMap — so no building currently grants trial skill levels. Kept
+# as a tunable placeholder (0) for a future guild-building that does.
+BUILDING_SKILL_LEVELS = 0
+# Headcount penalty: each participant raises the work target by 1% (the (1+N/100)
+# term in TotalWork).
 HEADCOUNT_PENALTY_PER_MEMBER = 0.01
 ACTION_SECONDS_ENHANCING = 8   # baseActionSeconds for enhancing
 ACTION_SECONDS_DEFAULT = 10    # baseActionSeconds for every other skill
@@ -338,23 +354,16 @@ _HOUSE_ENHANCING_SPEED_PER_LEVEL = 0.010   # Observatory (enhancing house)
 HOUSE_EFFICIENCY = _HOUSE_EFFICIENCY_PER_LEVEL * HOUSE_LEVEL           # 0.06 at L4
 HOUSE_ENHANCING_SPEED = _HOUSE_ENHANCING_SPEED_PER_LEVEL * HOUSE_LEVEL  # 0.04 at L4
 
-# --- TARGET_SCALE (calibrated) ----------------------------------------------
-# The lab-sim tier targets are single-player-scaled, so at TARGET_SCALE=1.0 a
-# 20-member party blows through absurdly many tiers. TARGET_SCALE re-scales the
-# per-tier target so simulated results land in the guild's observed
-# neighbourhood (SC recorded tiers 9-11 for 20-member skilling parties;
-# research/trial-tabs.md §1).
-#
-# CALIBRATION (against live SC Member Data, 86 members, seed 42): swept
-# TARGET_SCALE over {10,20,30,40,50,60,80,100} and simulated all four 20-member
-# parties for this week's draw. TARGET_SCALE=30 places every party inside the
-# observed tier 9-11 band (Foraging 11, Woodcutting 10, Alchemy 10, Enhancing
-# 9) — matching SC's recorded results (strong skills at 11, weakest at 9). At 40
-# the special Enhancing party falls to tier 8, below the band; at 20 the strong
-# gathering parties overshoot to 12. 30 is the cleanest round value that keeps
-# the whole draw in-band, so it is adopted.
-# TODO: replace with the empirical capture-harvest curve (trial-messages.md).
-TARGET_SCALE = 30.0
+# --- TARGET_SCALE (neutral: the confirmed TotalWork formula carries no scale) -
+# Superseded 2026-07-17. The old lab-mirror targets were single-player-scaled
+# and needed an empirical fudge factor (TARGET_SCALE=30) to land 20-member
+# parties in SC's observed tier 9-11 band. Orvel's confirmed formula
+# `TotalWork = DifficultyLevel * 400 * (1 + N/100)` bakes the true scaling into
+# the 400 coefficient (TIER_TARGET_PER_LEVEL) and the (1 + N/100) headcount
+# term, so no separate scale is applied: TARGET_SCALE is pinned to 1.0. The
+# constant and its plumbing are retained (simulate_race / the optimizer accept
+# an override) so a future recalibration can still sweep it if needed.
+TARGET_SCALE = 1.0
 
 # Which family/back cape group covers each trial skill is implicit in the model
 # (efficiency for gathering/alchemy, speed for enhancing); see trials.py.

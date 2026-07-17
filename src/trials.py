@@ -185,12 +185,17 @@ def tier_level(tier: int) -> int:
 
 
 def base_target(tier: int) -> float:
-    """baseTarget(t) = tierLevel(t) * 10."""
+    """baseTarget(t) = DifficultyLevel(t) * 400 (Orvel's TotalWork coefficient)."""
     return tier_level(tier) * config.TIER_TARGET_PER_LEVEL
 
 
 def effective_target(tier: int, party_size: int, target_scale: float) -> float:
-    """effectiveTarget(t, N) = baseTarget(t) * (1 + 0.01*N) * TARGET_SCALE."""
+    """TotalWork(t, N) = DifficultyLevel(t) * 400 * (1 + N/100).
+
+    Expressed as ``baseTarget(t) * (1 + 0.01*N) * TARGET_SCALE`` with
+    TARGET_SCALE pinned to 1.0 (the 400 coefficient carries the scaling); the
+    scale override is retained only for a possible future recalibration.
+    """
     penalty = 1.0 + config.HEADCOUNT_PENALTY_PER_MEMBER * party_size
     return base_target(tier) * penalty * target_scale
 
@@ -200,14 +205,25 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def success(level: int, tier: int, success_bonus: float) -> float:
-    """Per-action success, clamped to [0, 1]."""
-    delta = level - tier_level(tier)
+    """Per-action success rate, per Orvel's confirmed formula.
+
+    ``delta = SkillLevel + BuildingSkillLevels - DifficultyLevel`` (the tier
+    level); the per-level slope is +0.005 when the effective level meets or
+    exceeds the difficulty and -0.01 (a steeper penalty) when it falls short.
+    For Enhancing, ``success_bonus`` carries the EnhancingSuccessRate (enhancer
+    tool success + Observatory enhancing-success (0 in live data) + achievement
+    bonus). Floored at 0.05 (MAX(0.05, ...)) and capped at 1.0.
+    """
+    effective_level = level + config.BUILDING_SKILL_LEVELS
+    delta = effective_level - tier_level(tier)
     if delta >= 0:
         level_bonus = delta * config.LEVEL_BONUS_POS
     else:
         level_bonus = delta * config.LEVEL_BONUS_NEG
     return _clamp(
-        config.SUCCESS_BASE * (1 + level_bonus + success_bonus), 0.0, 1.0
+        config.SUCCESS_BASE * (1 + level_bonus + success_bonus),
+        config.SUCCESS_FLOOR,
+        1.0,
     )
 
 
@@ -296,9 +312,11 @@ class TrialResult:
         return asdict(self)
 
 
-# Safety bound: success -> 0 once (tierLevel - level) >= 100 for every member,
-# so the race always terminates; this cap only guards against a pathological
-# all-superhuman party.
+# Safety bound: success is now floored at 0.05 (it never reaches 0), but the
+# per-tier target grows without bound (DifficultyLevel * 400 * ...) while party
+# rate is bounded, so cumulative time exceeds the 1-hour budget and the race
+# always terminates. This cap only guards against a pathological all-superhuman
+# party that never exhausts the budget.
 _MAX_TIER = 100
 
 

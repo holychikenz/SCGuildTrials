@@ -160,10 +160,11 @@ def test_alchemy_rate_uses_bell_farming_column():
 # ---------------------------------------------------------------------------
 # success clamping
 # ---------------------------------------------------------------------------
-def test_success_clamped_to_zero_at_large_negative_delta():
-    # level 100 vs a very high tier -> success would go negative -> clamp 0.
+def test_success_floored_at_five_percent_at_large_negative_delta():
+    # level 100 vs a very high tier -> raw success goes negative -> MAX(0.05,..).
     s = trials.success(level=100, tier=50, success_bonus=0.0)
-    assert s == 0.0
+    assert s == pytest.approx(config.SUCCESS_FLOOR)
+    assert config.SUCCESS_FLOOR == 0.05
 
 
 def test_success_clamped_to_one_at_large_positive_bonus():
@@ -176,6 +177,33 @@ def test_success_matches_formula_midrange():
     # level 120, tier 1 (tierLevel 100): delta +20 -> 0.8*(1+0.1) = 0.88.
     s = trials.success(level=120, tier=1, success_bonus=0.0)
     assert s == pytest.approx(0.8 * (1 + 20 * 0.005))
+
+
+def test_building_skill_levels_added_to_effective_level(monkeypatch):
+    # BuildingSkillLevels is added to the member's own level before comparing
+    # to the difficulty level: level 90 + 10 building levels behaves like a bare
+    # level 100 (both give effective level 100 -> delta 0 -> 0.8).
+    baseline_100 = trials.success(100, 1, 0.0)  # default BUILDING_SKILL_LEVELS = 0
+    monkeypatch.setattr(config, "BUILDING_SKILL_LEVELS", 10)
+    assert trials.success(90, 1, 0.0) == pytest.approx(baseline_100)
+
+
+# ---------------------------------------------------------------------------
+# work target (TotalWork = DifficultyLevel * 400 * (1 + N/100))
+# ---------------------------------------------------------------------------
+def test_base_target_uses_400_coefficient():
+    assert config.TIER_TARGET_PER_LEVEL == 400
+    # DifficultyLevel(3) = 120 -> baseTarget = 120 * 400 = 48000.
+    assert trials.base_target(3) == pytest.approx(trials.tier_level(3) * 400)
+
+
+def test_total_work_headcount_term_and_neutral_scale():
+    # TARGET_SCALE is pinned to 1.0; the 400 coefficient carries the scaling.
+    assert config.TARGET_SCALE == 1.0
+    # effectiveTarget(t=3, N=22) = 120 * 400 * (1 + 22/100).
+    expected = trials.tier_level(3) * 400 * (1 + 22 / 100)
+    got = trials.effective_target(3, party_size=22, target_scale=config.TARGET_SCALE)
+    assert got == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------

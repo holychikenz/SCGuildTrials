@@ -641,14 +641,22 @@ def _render_trials_html(week: dict) -> str:
      below rests on assumptions flagged for replacement once an empirical trial
      capture is harvested.</p>
   <ol>
-    <li><strong>Tier curve (WORKING ASSUMPTION).</strong> Tiers mirror the
-        labyrinth model: <code>tierLevel(t) = 100 + 10*(t-1)</code>,
-        <code>baseTarget(t) = tierLevel(t) * 10</code>. Not yet confirmed
-        against a real trial capture.</li>
-    <li><strong>TARGET_SCALE = {week['target_scale']:g} (calibrated).</strong>
-        Lab-sim targets are single-player-scaled; TARGET_SCALE re-scales the
-        per-tier target so 20-member parties land in SC's observed tier 9&ndash;11
-        band. A placeholder until the empirical capture-harvest replaces it.</li>
+    <li><strong>Tier curve &amp; work target (CONFIRMED).</strong> The
+        difficulty level starts at 100 and rises +10 per tier
+        (<code>DifficultyLevel(t) = 100 + 10*(t-1)</code>). The work a party must
+        out-produce is
+        <code>TotalWork = DifficultyLevel &times; 400 &times; (1 + Players/100)</code>
+        &mdash; the confirmed formula, so no separate calibration scale is
+        applied (TARGET_SCALE = {week['target_scale']:g}).</li>
+    <li><strong>Success rate (CONFIRMED).</strong> Per action,
+        <code>MAX(0.05, 0.8 &times; (1 + &Delta; &times; s + bonus))</code> where
+        <code>&Delta; = SkillLevel + BuildingSkillLevels &minus; DifficultyLevel</code>,
+        the slope <code>s</code> is <code>+0.005</code> at or above the difficulty
+        and <code>&minus;0.01</code> below it, and success is floored at
+        <code>0.05</code>. <em>BuildingSkillLevels = 0</em>: houses grant
+        efficiency/speed, not skill levels. For Enhancing the <code>bonus</code>
+        is the EnhancingSuccessRate (enhancer tool success; the Observatory's
+        enhancing-success buff is 0 in the live data).</li>
     <li><strong>Points formula (ASSUMPTION).</strong>
         <code>points(T) = 100 + 100*T</code> for the highest tier T (0 if tier 1
         is not cleared). Fits the only observed data (milking tier1&rarr;200,
