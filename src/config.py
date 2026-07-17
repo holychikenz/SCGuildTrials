@@ -156,7 +156,9 @@ TRIAL_SKILLS_CURRENT = ["Foraging", "Woodcutting", "Alchemy", "Enhancing"]
 # Fixed seed for reproducibility. NEVER use unseeded randomness.
 TRIAL_RNG_SEED = 42
 # Skilling trial party cap (research/trial-tabs.md §1: max 20 observed).
-TRIAL_PARTY_CAP = 20
+# Tunable — parties may run larger than the 20 originally observed. For now this
+# is a magic number; a later change will read it from the guild spreadsheet.
+TRIAL_PARTY_CAP = 22
 
 # ===========================================================================
 # Guild Trials (Phase 2) — optimizer strategy + knobs (src/optimizer.py)
