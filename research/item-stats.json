@@ -1,0 +1,3620 @@
+{
+  "source": "wslog-20260717.jsonl init_client_data",
+  "gameVersion": "v1.20260715.0",
+  "versionTimestamp": "2026-07-16T03:24:51.335088932Z",
+  "enhancement": {
+    "enhancementLevelTotalBonusMultiplierTable": [
+      0,
+      1,
+      2.1,
+      3.3,
+      4.6,
+      6,
+      7.5,
+      9.1,
+      10.8,
+      12.600000000000001,
+      14.500000000000002,
+      16.7,
+      19.2,
+      22,
+      25.1,
+      28.5,
+      32.2,
+      36.2,
+      40.50000000000001,
+      45.1,
+      50
+    ],
+    "enhancementLevelSuccessRateTable": [
+      0.5,
+      0.45,
+      0.45,
+      0.4,
+      0.4,
+      0.4,
+      0.35,
+      0.35,
+      0.35,
+      0.35,
+      0.3,
+      0.3,
+      0.3,
+      0.3,
+      0.3,
+      0.3,
+      0.3,
+      0.3,
+      0.3,
+      0.3
+    ],
+    "noncombatScalingFormula": "effectiveStat = noncombatStats[field] + enhancementLevelTotalBonusMultiplierTable[level] * noncombatEnhancementBonuses[field]",
+    "note": "Multiplier table is indexed by enhancement level (0-20). Level 0 -> 0x, +1 -> 1x, +7 -> 9.1x, +10 -> 14.5x, +20 -> 50x. Same table governs combat and noncombat enhancement bonuses."
+  },
+  "statSemantics": {
+    "milkingSpeed/foragingSpeed/woodcuttingSpeed/cheesesmithingSpeed/craftingSpeed/tailoringSpeed/cookingSpeed/brewingSpeed/alchemySpeed": "action_speed - % faster action time for that skill",
+    "skillingSpeed": "action_speed - generic, applies to all skilling actions",
+    "taskSpeed": "task_action_speed - % faster task-board actions",
+    "<skill>Efficiency": "efficiency - % chance to instantly repeat the action for free (more output per time)",
+    "skillingEfficiency": "efficiency - generic across all skills",
+    "<skill>Experience": "skilling_experience (wisdom) - % bonus XP for that skill",
+    "skillingExperience": "skilling_experience - generic",
+    "<skill>RareFind": "rare_find - % increased chance of rare drops for that skill",
+    "skillingRareFind": "rare_find - generic",
+    "gatheringQuantity": "gathering - % more resources gathered per action (gathering skills)",
+    "skillingEssenceFind": "essence_find - % increased skilling essence drop chance",
+    "enhancingSuccess": "enhancing_success - additive to enhancement success rate",
+    "drinkConcentration": "drink_concentration - consumable/drink duration/effect"
+  },
+  "items": {
+    "/items/advanced_alchemy_charm": {
+      "name": "Advanced Alchemy Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "alchemyExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_brewing_charm": {
+      "name": "Advanced Brewing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "brewingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_cheesesmithing_charm": {
+      "name": "Advanced Cheesesmithing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_cooking_charm": {
+      "name": "Advanced Cooking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "cookingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_crafting_charm": {
+      "name": "Advanced Crafting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "craftingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_enhancing_charm": {
+      "name": "Advanced Enhancing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "enhancingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_foraging_charm": {
+      "name": "Advanced Foraging Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "foragingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_milking_charm": {
+      "name": "Advanced Milking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "milkingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_tailoring_charm": {
+      "name": "Advanced Tailoring Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "tailoringExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringExperience": 0.0035000000000000005
+      }
+    },
+    "/items/advanced_task_badge": {
+      "name": "Advanced Task Badge",
+      "equipmentType": "/equipment_types/trinket",
+      "slot": "trinket",
+      "itemLevel": 30,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "taskSpeed": 0.1
+      },
+      "noncombatEnhancementBonuses": {
+        "taskSpeed": 0.010000000000000002
+      }
+    },
+    "/items/advanced_woodcutting_charm": {
+      "name": "Advanced Woodcutting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 40,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingExperience": 0.035
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingExperience": 0.0035000000000000005
+      }
+    },
+    "/items/alchemists_bottoms": {
+      "name": "Alchemist's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "alchemyEfficiency": 0.1,
+        "alchemyExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyEfficiency": 0.002,
+        "alchemyExperience": 0.0008
+      }
+    },
+    "/items/alchemists_top": {
+      "name": "Alchemist's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "alchemyEfficiency": 0.1,
+        "alchemyRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyEfficiency": 0.002,
+        "alchemyRareFind": 0.003
+      }
+    },
+    "/items/artificer_cape": {
+      "name": "Artificer Cape",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 80
+        },
+        {
+          "skill": "crafting",
+          "level": 80
+        },
+        {
+          "skill": "tailoring",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.05,
+        "craftingSpeed": 0.05,
+        "tailoringSpeed": 0.05,
+        "cheesesmithingExperience": 0.03,
+        "craftingExperience": 0.03,
+        "tailoringExperience": 0.03
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.005000000000000001,
+        "craftingSpeed": 0.005000000000000001,
+        "tailoringSpeed": 0.005000000000000001,
+        "cheesesmithingExperience": 0.003,
+        "craftingExperience": 0.003,
+        "tailoringExperience": 0.003
+      }
+    },
+    "/items/artificer_cape_refined": {
+      "name": "Artificer Cape \u2605",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 100
+        },
+        {
+          "skill": "crafting",
+          "level": 100
+        },
+        {
+          "skill": "tailoring",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.058,
+        "craftingSpeed": 0.058,
+        "tailoringSpeed": 0.058,
+        "cheesesmithingExperience": 0.0348,
+        "craftingExperience": 0.0348,
+        "tailoringExperience": 0.0348
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.0058000000000000005,
+        "craftingSpeed": 0.0058000000000000005,
+        "tailoringSpeed": 0.0058000000000000005,
+        "cheesesmithingExperience": 0.00348,
+        "craftingExperience": 0.00348,
+        "tailoringExperience": 0.00348
+      }
+    },
+    "/items/azure_alembic": {
+      "name": "Azure Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.006
+      }
+    },
+    "/items/azure_brush": {
+      "name": "Azure Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.006
+      }
+    },
+    "/items/azure_chisel": {
+      "name": "Azure Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.006
+      }
+    },
+    "/items/azure_enhancer": {
+      "name": "Azure Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.012
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.00024
+      }
+    },
+    "/items/azure_hammer": {
+      "name": "Azure Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.006
+      }
+    },
+    "/items/azure_hatchet": {
+      "name": "Azure Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.006
+      }
+    },
+    "/items/azure_needle": {
+      "name": "Azure Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.006
+      }
+    },
+    "/items/azure_pot": {
+      "name": "Azure Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.006
+      }
+    },
+    "/items/azure_shears": {
+      "name": "Azure Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.006
+      }
+    },
+    "/items/azure_spatula": {
+      "name": "Azure Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 20
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.3
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.006
+      }
+    },
+    "/items/basic_alchemy_charm": {
+      "name": "Basic Alchemy Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "alchemyExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyExperience": 0.002
+      }
+    },
+    "/items/basic_brewing_charm": {
+      "name": "Basic Brewing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "brewingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingExperience": 0.002
+      }
+    },
+    "/items/basic_cheesesmithing_charm": {
+      "name": "Basic Cheesesmithing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingExperience": 0.002
+      }
+    },
+    "/items/basic_cooking_charm": {
+      "name": "Basic Cooking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "cookingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingExperience": 0.002
+      }
+    },
+    "/items/basic_crafting_charm": {
+      "name": "Basic Crafting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "craftingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingExperience": 0.002
+      }
+    },
+    "/items/basic_enhancing_charm": {
+      "name": "Basic Enhancing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "enhancingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingExperience": 0.002
+      }
+    },
+    "/items/basic_foraging_charm": {
+      "name": "Basic Foraging Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "foragingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingExperience": 0.002
+      }
+    },
+    "/items/basic_milking_charm": {
+      "name": "Basic Milking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "milkingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingExperience": 0.002
+      }
+    },
+    "/items/basic_tailoring_charm": {
+      "name": "Basic Tailoring Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "tailoringExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringExperience": 0.002
+      }
+    },
+    "/items/basic_task_badge": {
+      "name": "Basic Task Badge",
+      "equipmentType": "/equipment_types/trinket",
+      "slot": "trinket",
+      "itemLevel": 1,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "taskSpeed": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "taskSpeed": 0.005000000000000001
+      }
+    },
+    "/items/basic_woodcutting_charm": {
+      "name": "Basic Woodcutting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 20,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 25
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingExperience": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingExperience": 0.002
+      }
+    },
+    "/items/brewers_bottoms": {
+      "name": "Brewer's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "brewingEfficiency": 0.1,
+        "brewingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingEfficiency": 0.002,
+        "brewingExperience": 0.0008
+      }
+    },
+    "/items/brewers_top": {
+      "name": "Brewer's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "brewingEfficiency": 0.1,
+        "brewingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingEfficiency": 0.002,
+        "brewingRareFind": 0.003
+      }
+    },
+    "/items/burble_alembic": {
+      "name": "Burble Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_brush": {
+      "name": "Burble Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_chisel": {
+      "name": "Burble Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_enhancer": {
+      "name": "Burble Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.018
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.00035999999999999997
+      }
+    },
+    "/items/burble_hammer": {
+      "name": "Burble Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_hatchet": {
+      "name": "Burble Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_needle": {
+      "name": "Burble Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_pot": {
+      "name": "Burble Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_shears": {
+      "name": "Burble Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.009000000000000001
+      }
+    },
+    "/items/burble_spatula": {
+      "name": "Burble Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 35,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 35
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.45
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.009000000000000001
+      }
+    },
+    "/items/celestial_alembic": {
+      "name": "Celestial Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 1.05,
+        "alchemyRareFind": 0.15,
+        "alchemyExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.021,
+        "alchemyRareFind": 0.003,
+        "alchemyExperience": 0.0008
+      }
+    },
+    "/items/celestial_brush": {
+      "name": "Celestial Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 1.05,
+        "milkingRareFind": 0.15,
+        "milkingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.021,
+        "milkingRareFind": 0.003,
+        "milkingExperience": 0.0008
+      }
+    },
+    "/items/celestial_chisel": {
+      "name": "Celestial Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 1.05,
+        "craftingRareFind": 0.15,
+        "craftingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.021,
+        "craftingRareFind": 0.003,
+        "craftingExperience": 0.0008
+      }
+    },
+    "/items/celestial_enhancer": {
+      "name": "Celestial Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.042,
+        "enhancingRareFind": 0.15,
+        "enhancingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.00084,
+        "enhancingRareFind": 0.003,
+        "enhancingExperience": 0.0008
+      }
+    },
+    "/items/celestial_hammer": {
+      "name": "Celestial Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 1.05,
+        "cheesesmithingRareFind": 0.15,
+        "cheesesmithingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.021,
+        "cheesesmithingRareFind": 0.003,
+        "cheesesmithingExperience": 0.0008
+      }
+    },
+    "/items/celestial_hatchet": {
+      "name": "Celestial Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 1.05,
+        "woodcuttingRareFind": 0.15,
+        "woodcuttingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.021,
+        "woodcuttingRareFind": 0.003,
+        "woodcuttingExperience": 0.0008
+      }
+    },
+    "/items/celestial_needle": {
+      "name": "Celestial Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 1.05,
+        "tailoringRareFind": 0.15,
+        "tailoringExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.021,
+        "tailoringRareFind": 0.003,
+        "tailoringExperience": 0.0008
+      }
+    },
+    "/items/celestial_pot": {
+      "name": "Celestial Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 1.05,
+        "brewingRareFind": 0.15,
+        "brewingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.021,
+        "brewingRareFind": 0.003,
+        "brewingExperience": 0.0008
+      }
+    },
+    "/items/celestial_shears": {
+      "name": "Celestial Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 1.05,
+        "foragingRareFind": 0.15,
+        "foragingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.021,
+        "foragingRareFind": 0.003,
+        "foragingExperience": 0.0008
+      }
+    },
+    "/items/celestial_spatula": {
+      "name": "Celestial Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 1.05,
+        "cookingRareFind": 0.15,
+        "cookingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.021,
+        "cookingRareFind": 0.003,
+        "cookingExperience": 0.0008
+      }
+    },
+    "/items/chance_cape": {
+      "name": "Chance Cape",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 80
+        },
+        {
+          "skill": "enhancing",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.05,
+        "enhancingSpeed": 0.05,
+        "alchemyExperience": 0.03,
+        "enhancingExperience": 0.03
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.005000000000000001,
+        "enhancingSpeed": 0.005000000000000001,
+        "alchemyExperience": 0.003,
+        "enhancingExperience": 0.003
+      }
+    },
+    "/items/chance_cape_refined": {
+      "name": "Chance Cape \u2605",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 100
+        },
+        {
+          "skill": "enhancing",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.058,
+        "enhancingSpeed": 0.058,
+        "alchemyExperience": 0.0348,
+        "enhancingExperience": 0.0348
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.0058000000000000005,
+        "enhancingSpeed": 0.0058000000000000005,
+        "alchemyExperience": 0.00348,
+        "enhancingExperience": 0.00348
+      }
+    },
+    "/items/cheese_alembic": {
+      "name": "Cheese Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.003
+      }
+    },
+    "/items/cheese_brush": {
+      "name": "Cheese Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.003
+      }
+    },
+    "/items/cheese_chisel": {
+      "name": "Cheese Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.003
+      }
+    },
+    "/items/cheese_enhancer": {
+      "name": "Cheese Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.006
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.00012
+      }
+    },
+    "/items/cheese_hammer": {
+      "name": "Cheese Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.003
+      }
+    },
+    "/items/cheese_hatchet": {
+      "name": "Cheese Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.003
+      }
+    },
+    "/items/cheese_needle": {
+      "name": "Cheese Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.003
+      }
+    },
+    "/items/cheese_pot": {
+      "name": "Cheese Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.003
+      }
+    },
+    "/items/cheese_shears": {
+      "name": "Cheese Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.003
+      }
+    },
+    "/items/cheese_spatula": {
+      "name": "Cheese Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.003
+      }
+    },
+    "/items/cheesemakers_bottoms": {
+      "name": "Cheesemaker's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingEfficiency": 0.1,
+        "cheesesmithingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingEfficiency": 0.002,
+        "cheesesmithingExperience": 0.0008
+      }
+    },
+    "/items/cheesemakers_top": {
+      "name": "Cheesemaker's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingEfficiency": 0.1,
+        "cheesesmithingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingEfficiency": 0.002,
+        "cheesesmithingRareFind": 0.003
+      }
+    },
+    "/items/chefs_bottoms": {
+      "name": "Chef's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "cookingEfficiency": 0.1,
+        "cookingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingEfficiency": 0.002,
+        "cookingExperience": 0.0008
+      }
+    },
+    "/items/chefs_top": {
+      "name": "Chef's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "cookingEfficiency": 0.1,
+        "cookingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingEfficiency": 0.002,
+        "cookingRareFind": 0.003
+      }
+    },
+    "/items/collectors_boots": {
+      "name": "Collector's Boots",
+      "equipmentType": "/equipment_types/feet",
+      "slot": "feet",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 60
+        },
+        {
+          "skill": "foraging",
+          "level": 60
+        },
+        {
+          "skill": "woodcutting",
+          "level": 60
+        }
+      ],
+      "noncombatStats": {
+        "milkingEfficiency": 0.1,
+        "foragingEfficiency": 0.1,
+        "woodcuttingEfficiency": 0.1
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingEfficiency": 0.002,
+        "foragingEfficiency": 0.002,
+        "woodcuttingEfficiency": 0.002
+      }
+    },
+    "/items/crafters_bottoms": {
+      "name": "Crafter's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "craftingEfficiency": 0.1,
+        "craftingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingEfficiency": 0.002,
+        "craftingExperience": 0.0008
+      }
+    },
+    "/items/crafters_top": {
+      "name": "Crafter's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "craftingEfficiency": 0.1,
+        "craftingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingEfficiency": 0.002,
+        "craftingRareFind": 0.003
+      }
+    },
+    "/items/crimson_alembic": {
+      "name": "Crimson Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.012
+      }
+    },
+    "/items/crimson_brush": {
+      "name": "Crimson Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.012
+      }
+    },
+    "/items/crimson_chisel": {
+      "name": "Crimson Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.012
+      }
+    },
+    "/items/crimson_enhancer": {
+      "name": "Crimson Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.024
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.00048
+      }
+    },
+    "/items/crimson_hammer": {
+      "name": "Crimson Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.012
+      }
+    },
+    "/items/crimson_hatchet": {
+      "name": "Crimson Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.012
+      }
+    },
+    "/items/crimson_needle": {
+      "name": "Crimson Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.012
+      }
+    },
+    "/items/crimson_pot": {
+      "name": "Crimson Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.012
+      }
+    },
+    "/items/crimson_shears": {
+      "name": "Crimson Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.012
+      }
+    },
+    "/items/crimson_spatula": {
+      "name": "Crimson Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 50,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 50
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.6
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.012
+      }
+    },
+    "/items/culinary_cape": {
+      "name": "Culinary Cape",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 80
+        },
+        {
+          "skill": "brewing",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.05,
+        "brewingSpeed": 0.05,
+        "cookingExperience": 0.03,
+        "brewingExperience": 0.03
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.005000000000000001,
+        "brewingSpeed": 0.005000000000000001,
+        "cookingExperience": 0.003,
+        "brewingExperience": 0.003
+      }
+    },
+    "/items/culinary_cape_refined": {
+      "name": "Culinary Cape \u2605",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 100
+        },
+        {
+          "skill": "brewing",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.058,
+        "brewingSpeed": 0.058,
+        "cookingExperience": 0.0348,
+        "brewingExperience": 0.0348
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.0058000000000000005,
+        "brewingSpeed": 0.0058000000000000005,
+        "cookingExperience": 0.00348,
+        "brewingExperience": 0.00348
+      }
+    },
+    "/items/dairyhands_bottoms": {
+      "name": "Dairyhand's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "milkingEfficiency": 0.1,
+        "milkingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingEfficiency": 0.002,
+        "milkingExperience": 0.0008
+      }
+    },
+    "/items/dairyhands_top": {
+      "name": "Dairyhand's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "milkingEfficiency": 0.1,
+        "milkingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingEfficiency": 0.002,
+        "milkingRareFind": 0.003
+      }
+    },
+    "/items/earrings_of_essence_find": {
+      "name": "Earrings Of Essence Find",
+      "equipmentType": "/equipment_types/earrings",
+      "slot": "earrings",
+      "itemLevel": 30,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingEssenceFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingEssenceFind": 0.015
+      }
+    },
+    "/items/earrings_of_gathering": {
+      "name": "Earrings Of Gathering",
+      "equipmentType": "/equipment_types/earrings",
+      "slot": "earrings",
+      "itemLevel": 15,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "gatheringQuantity": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "gatheringQuantity": 0.002
+      }
+    },
+    "/items/earrings_of_rare_find": {
+      "name": "Earrings Of Rare Find",
+      "equipmentType": "/equipment_types/earrings",
+      "slot": "earrings",
+      "itemLevel": 60,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingRareFind": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingRareFind": 0.008
+      }
+    },
+    "/items/enchanted_gloves": {
+      "name": "Enchanted Gloves",
+      "equipmentType": "/equipment_types/hands",
+      "slot": "hands",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 60
+        },
+        {
+          "skill": "enhancing",
+          "level": 60
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSpeed": 0.1,
+        "alchemyEfficiency": 0.1
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSpeed": 0.002,
+        "alchemyEfficiency": 0.002
+      }
+    },
+    "/items/enhancers_bottoms": {
+      "name": "Enhancer's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSpeed": 0.1,
+        "enhancingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSpeed": 0.002,
+        "enhancingExperience": 0.0008
+      }
+    },
+    "/items/enhancers_top": {
+      "name": "Enhancer's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSpeed": 0.1,
+        "enhancingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSpeed": 0.002,
+        "enhancingRareFind": 0.003
+      }
+    },
+    "/items/expert_alchemy_charm": {
+      "name": "Expert Alchemy Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "alchemyExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_brewing_charm": {
+      "name": "Expert Brewing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "brewingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_cheesesmithing_charm": {
+      "name": "Expert Cheesesmithing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_cooking_charm": {
+      "name": "Expert Cooking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "cookingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_crafting_charm": {
+      "name": "Expert Crafting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "craftingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_enhancing_charm": {
+      "name": "Expert Enhancing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "enhancingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_foraging_charm": {
+      "name": "Expert Foraging Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "foragingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_milking_charm": {
+      "name": "Expert Milking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "milkingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_tailoring_charm": {
+      "name": "Expert Tailoring Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "tailoringExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringExperience": 0.005000000000000001
+      }
+    },
+    "/items/expert_task_badge": {
+      "name": "Expert Task Badge",
+      "equipmentType": "/equipment_types/trinket",
+      "slot": "trinket",
+      "itemLevel": 60,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "taskSpeed": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "taskSpeed": 0.015
+      }
+    },
+    "/items/expert_woodcutting_charm": {
+      "name": "Expert Woodcutting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 75
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingExperience": 0.05
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingExperience": 0.005000000000000001
+      }
+    },
+    "/items/eye_watch": {
+      "name": "Eye Watch",
+      "equipmentType": "/equipment_types/off_hand",
+      "slot": "off_hand",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 60
+        },
+        {
+          "skill": "crafting",
+          "level": 60
+        },
+        {
+          "skill": "tailoring",
+          "level": 60
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingEfficiency": 0.1,
+        "craftingEfficiency": 0.1,
+        "tailoringEfficiency": 0.1
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingEfficiency": 0.002,
+        "craftingEfficiency": 0.002,
+        "tailoringEfficiency": 0.002
+      }
+    },
+    "/items/foragers_bottoms": {
+      "name": "Forager's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "foragingEfficiency": 0.1,
+        "foragingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingEfficiency": 0.002,
+        "foragingExperience": 0.0008
+      }
+    },
+    "/items/foragers_top": {
+      "name": "Forager's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "foragingEfficiency": 0.1,
+        "foragingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingEfficiency": 0.002,
+        "foragingRareFind": 0.003
+      }
+    },
+    "/items/gatherer_cape": {
+      "name": "Gatherer Cape",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 80
+        },
+        {
+          "skill": "foraging",
+          "level": 80
+        },
+        {
+          "skill": "woodcutting",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.05,
+        "foragingSpeed": 0.05,
+        "woodcuttingSpeed": 0.05,
+        "milkingExperience": 0.03,
+        "foragingExperience": 0.03,
+        "woodcuttingExperience": 0.03
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.005000000000000001,
+        "foragingSpeed": 0.005000000000000001,
+        "woodcuttingSpeed": 0.005000000000000001,
+        "milkingExperience": 0.003,
+        "foragingExperience": 0.003,
+        "woodcuttingExperience": 0.003
+      }
+    },
+    "/items/gatherer_cape_refined": {
+      "name": "Gatherer Cape \u2605",
+      "equipmentType": "/equipment_types/back",
+      "slot": "back",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 100
+        },
+        {
+          "skill": "foraging",
+          "level": 100
+        },
+        {
+          "skill": "woodcutting",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.058,
+        "foragingSpeed": 0.058,
+        "woodcuttingSpeed": 0.058,
+        "milkingExperience": 0.0348,
+        "foragingExperience": 0.0348,
+        "woodcuttingExperience": 0.0348
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.0058000000000000005,
+        "foragingSpeed": 0.0058000000000000005,
+        "woodcuttingSpeed": 0.0058000000000000005,
+        "milkingExperience": 0.00348,
+        "foragingExperience": 0.00348,
+        "woodcuttingExperience": 0.00348
+      }
+    },
+    "/items/grandmaster_alchemy_charm": {
+      "name": "Grandmaster Alchemy Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "alchemyExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyExperience": 0.008
+      }
+    },
+    "/items/grandmaster_brewing_charm": {
+      "name": "Grandmaster Brewing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "brewingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingExperience": 0.008
+      }
+    },
+    "/items/grandmaster_cheesesmithing_charm": {
+      "name": "Grandmaster Cheesesmithing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingExperience": 0.008
+      }
+    },
+    "/items/grandmaster_cooking_charm": {
+      "name": "Grandmaster Cooking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "cookingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingExperience": 0.008
+      }
+    },
+    "/items/grandmaster_crafting_charm": {
+      "name": "Grandmaster Crafting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "craftingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingExperience": 0.008
+      }
+    },
+    "/items/grandmaster_enhancing_charm": {
+      "name": "Grandmaster Enhancing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "enhancingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingExperience": 0.008
+      }
+    },
+    "/items/grandmaster_foraging_charm": {
+      "name": "Grandmaster Foraging Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "foragingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingExperience": 0.008
+      }
+    },
+    "/items/grandmaster_milking_charm": {
+      "name": "Grandmaster Milking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "milkingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingExperience": 0.008
+      }
+    },
+    "/items/grandmaster_tailoring_charm": {
+      "name": "Grandmaster Tailoring Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "tailoringExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringExperience": 0.008
+      }
+    },
+    "/items/grandmaster_woodcutting_charm": {
+      "name": "Grandmaster Woodcutting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 100,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 125
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingExperience": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingExperience": 0.008
+      }
+    },
+    "/items/guzzling_pouch": {
+      "name": "Guzzling Pouch",
+      "equipmentType": "/equipment_types/pouch",
+      "slot": "pouch",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "total_level",
+          "level": 1250
+        }
+      ],
+      "noncombatStats": {
+        "drinkConcentration": 0.1
+      },
+      "noncombatEnhancementBonuses": {
+        "drinkConcentration": 0.002
+      }
+    },
+    "/items/holy_alembic": {
+      "name": "Holy Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_brush": {
+      "name": "Holy Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_chisel": {
+      "name": "Holy Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_enhancer": {
+      "name": "Holy Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.036
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.0007199999999999999
+      }
+    },
+    "/items/holy_hammer": {
+      "name": "Holy Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_hatchet": {
+      "name": "Holy Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_needle": {
+      "name": "Holy Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_pot": {
+      "name": "Holy Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_shears": {
+      "name": "Holy Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.018000000000000002
+      }
+    },
+    "/items/holy_spatula": {
+      "name": "Holy Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 80
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.9
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.018000000000000002
+      }
+    },
+    "/items/lumberjacks_bottoms": {
+      "name": "Lumberjack's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingEfficiency": 0.1,
+        "woodcuttingExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingEfficiency": 0.002,
+        "woodcuttingExperience": 0.0008
+      }
+    },
+    "/items/lumberjacks_top": {
+      "name": "Lumberjack's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingEfficiency": 0.1,
+        "woodcuttingRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingEfficiency": 0.002,
+        "woodcuttingRareFind": 0.003
+      }
+    },
+    "/items/master_alchemy_charm": {
+      "name": "Master Alchemy Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "alchemyExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_brewing_charm": {
+      "name": "Master Brewing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "brewingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_cheesesmithing_charm": {
+      "name": "Master Cheesesmithing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_cooking_charm": {
+      "name": "Master Cooking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "cookingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_crafting_charm": {
+      "name": "Master Crafting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "craftingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_enhancing_charm": {
+      "name": "Master Enhancing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "enhancingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_foraging_charm": {
+      "name": "Master Foraging Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "foragingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_milking_charm": {
+      "name": "Master Milking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "milkingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_tailoring_charm": {
+      "name": "Master Tailoring Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "tailoringExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringExperience": 0.006500000000000001
+      }
+    },
+    "/items/master_woodcutting_charm": {
+      "name": "Master Woodcutting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 80,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 100
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingExperience": 0.065
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingExperience": 0.006500000000000001
+      }
+    },
+    "/items/necklace_of_efficiency": {
+      "name": "Necklace Of Efficiency",
+      "equipmentType": "/equipment_types/neck",
+      "slot": "neck",
+      "itemLevel": 30,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingEfficiency": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingEfficiency": 0.002
+      }
+    },
+    "/items/necklace_of_speed": {
+      "name": "Necklace Of Speed",
+      "equipmentType": "/equipment_types/neck",
+      "slot": "neck",
+      "itemLevel": 75,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingSpeed": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingSpeed": 0.004
+      }
+    },
+    "/items/necklace_of_wisdom": {
+      "name": "Necklace Of Wisdom",
+      "equipmentType": "/equipment_types/neck",
+      "slot": "neck",
+      "itemLevel": 60,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingExperience": 0.03
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingExperience": 0.003
+      }
+    },
+    "/items/philosophers_earrings": {
+      "name": "Philosopher's Earrings",
+      "equipmentType": "/equipment_types/earrings",
+      "slot": "earrings",
+      "itemLevel": 90,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "gatheringQuantity": 0.02,
+        "skillingEssenceFind": 0.15,
+        "skillingRareFind": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "gatheringQuantity": 0.002,
+        "skillingEssenceFind": 0.015,
+        "skillingRareFind": 0.008
+      }
+    },
+    "/items/philosophers_necklace": {
+      "name": "Philosopher's Necklace",
+      "equipmentType": "/equipment_types/neck",
+      "slot": "neck",
+      "itemLevel": 90,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingSpeed": 0.04,
+        "skillingEfficiency": 0.02,
+        "skillingExperience": 0.03
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingSpeed": 0.004,
+        "skillingEfficiency": 0.002,
+        "skillingExperience": 0.003
+      }
+    },
+    "/items/philosophers_ring": {
+      "name": "Philosopher's Ring",
+      "equipmentType": "/equipment_types/ring",
+      "slot": "ring",
+      "itemLevel": 90,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "gatheringQuantity": 0.02,
+        "skillingEssenceFind": 0.15,
+        "skillingRareFind": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "gatheringQuantity": 0.002,
+        "skillingEssenceFind": 0.015,
+        "skillingRareFind": 0.008
+      }
+    },
+    "/items/rainbow_alembic": {
+      "name": "Rainbow Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.015
+      }
+    },
+    "/items/rainbow_brush": {
+      "name": "Rainbow Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.015
+      }
+    },
+    "/items/rainbow_chisel": {
+      "name": "Rainbow Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.015
+      }
+    },
+    "/items/rainbow_enhancer": {
+      "name": "Rainbow Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.03
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.0006
+      }
+    },
+    "/items/rainbow_hammer": {
+      "name": "Rainbow Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.015
+      }
+    },
+    "/items/rainbow_hatchet": {
+      "name": "Rainbow Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.015
+      }
+    },
+    "/items/rainbow_needle": {
+      "name": "Rainbow Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.015
+      }
+    },
+    "/items/rainbow_pot": {
+      "name": "Rainbow Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.015
+      }
+    },
+    "/items/rainbow_shears": {
+      "name": "Rainbow Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.015
+      }
+    },
+    "/items/rainbow_spatula": {
+      "name": "Rainbow Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 65,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 65
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.75
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.015
+      }
+    },
+    "/items/red_culinary_hat": {
+      "name": "Red Culinary Hat",
+      "equipmentType": "/equipment_types/head",
+      "slot": "head",
+      "itemLevel": 60,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 60
+        },
+        {
+          "skill": "brewing",
+          "level": 60
+        }
+      ],
+      "noncombatStats": {
+        "cookingEfficiency": 0.1,
+        "brewingEfficiency": 0.1
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingEfficiency": 0.002,
+        "brewingEfficiency": 0.002
+      }
+    },
+    "/items/ring_of_essence_find": {
+      "name": "Ring Of Essence Find",
+      "equipmentType": "/equipment_types/ring",
+      "slot": "ring",
+      "itemLevel": 30,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingEssenceFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingEssenceFind": 0.015
+      }
+    },
+    "/items/ring_of_gathering": {
+      "name": "Ring Of Gathering",
+      "equipmentType": "/equipment_types/ring",
+      "slot": "ring",
+      "itemLevel": 15,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "gatheringQuantity": 0.02
+      },
+      "noncombatEnhancementBonuses": {
+        "gatheringQuantity": 0.002
+      }
+    },
+    "/items/ring_of_rare_find": {
+      "name": "Ring Of Rare Find",
+      "equipmentType": "/equipment_types/ring",
+      "slot": "ring",
+      "itemLevel": 60,
+      "levelRequirements": [],
+      "noncombatStats": {
+        "skillingRareFind": 0.08
+      },
+      "noncombatEnhancementBonuses": {
+        "skillingRareFind": 0.008
+      }
+    },
+    "/items/tailors_bottoms": {
+      "name": "Tailor's Bottoms",
+      "equipmentType": "/equipment_types/legs",
+      "slot": "legs",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "tailoringEfficiency": 0.1,
+        "tailoringExperience": 0.04
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringEfficiency": 0.002,
+        "tailoringExperience": 0.0008
+      }
+    },
+    "/items/tailors_top": {
+      "name": "Tailor's Top",
+      "equipmentType": "/equipment_types/body",
+      "slot": "body",
+      "itemLevel": 90,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 90
+        }
+      ],
+      "noncombatStats": {
+        "tailoringEfficiency": 0.1,
+        "tailoringRareFind": 0.15
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringEfficiency": 0.002,
+        "tailoringRareFind": 0.003
+      }
+    },
+    "/items/trainee_alchemy_charm": {
+      "name": "Trainee Alchemy Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "alchemyExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemyExperience": 0.001
+      }
+    },
+    "/items/trainee_brewing_charm": {
+      "name": "Trainee Brewing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "brewingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingExperience": 0.001
+      }
+    },
+    "/items/trainee_cheesesmithing_charm": {
+      "name": "Trainee Cheesesmithing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingExperience": 0.001
+      }
+    },
+    "/items/trainee_cooking_charm": {
+      "name": "Trainee Cooking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "cookingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingExperience": 0.001
+      }
+    },
+    "/items/trainee_crafting_charm": {
+      "name": "Trainee Crafting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "craftingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingExperience": 0.001
+      }
+    },
+    "/items/trainee_enhancing_charm": {
+      "name": "Trainee Enhancing Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "enhancingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingExperience": 0.001
+      }
+    },
+    "/items/trainee_foraging_charm": {
+      "name": "Trainee Foraging Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "foragingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingExperience": 0.001
+      }
+    },
+    "/items/trainee_milking_charm": {
+      "name": "Trainee Milking Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "milkingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingExperience": 0.001
+      }
+    },
+    "/items/trainee_tailoring_charm": {
+      "name": "Trainee Tailoring Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "tailoringExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringExperience": 0.001
+      }
+    },
+    "/items/trainee_woodcutting_charm": {
+      "name": "Trainee Woodcutting Charm",
+      "equipmentType": "/equipment_types/charm",
+      "slot": "charm",
+      "itemLevel": 1,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 1
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingExperience": 0.01
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingExperience": 0.001
+      }
+    },
+    "/items/verdant_alembic": {
+      "name": "Verdant Alembic",
+      "equipmentType": "/equipment_types/alchemy_tool",
+      "slot": "alchemy_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "alchemy",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "alchemySpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "alchemySpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_brush": {
+      "name": "Verdant Brush",
+      "equipmentType": "/equipment_types/milking_tool",
+      "slot": "milking_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "milking",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "milkingSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "milkingSpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_chisel": {
+      "name": "Verdant Chisel",
+      "equipmentType": "/equipment_types/crafting_tool",
+      "slot": "crafting_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "crafting",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "craftingSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "craftingSpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_enhancer": {
+      "name": "Verdant Enhancer",
+      "equipmentType": "/equipment_types/enhancing_tool",
+      "slot": "enhancing_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "enhancing",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "enhancingSuccess": 0.009
+      },
+      "noncombatEnhancementBonuses": {
+        "enhancingSuccess": 0.00017999999999999998
+      }
+    },
+    "/items/verdant_hammer": {
+      "name": "Verdant Hammer",
+      "equipmentType": "/equipment_types/cheesesmithing_tool",
+      "slot": "cheesesmithing_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "cheesesmithing",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "cheesesmithingSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "cheesesmithingSpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_hatchet": {
+      "name": "Verdant Hatchet",
+      "equipmentType": "/equipment_types/woodcutting_tool",
+      "slot": "woodcutting_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "woodcutting",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "woodcuttingSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "woodcuttingSpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_needle": {
+      "name": "Verdant Needle",
+      "equipmentType": "/equipment_types/tailoring_tool",
+      "slot": "tailoring_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "tailoring",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "tailoringSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "tailoringSpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_pot": {
+      "name": "Verdant Pot",
+      "equipmentType": "/equipment_types/brewing_tool",
+      "slot": "brewing_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "brewing",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "brewingSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "brewingSpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_shears": {
+      "name": "Verdant Shears",
+      "equipmentType": "/equipment_types/foraging_tool",
+      "slot": "foraging_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "foraging",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "foragingSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "foragingSpeed": 0.0045000000000000005
+      }
+    },
+    "/items/verdant_spatula": {
+      "name": "Verdant Spatula",
+      "equipmentType": "/equipment_types/cooking_tool",
+      "slot": "cooking_tool",
+      "itemLevel": 10,
+      "levelRequirements": [
+        {
+          "skill": "cooking",
+          "level": 10
+        }
+      ],
+      "noncombatStats": {
+        "cookingSpeed": 0.225
+      },
+      "noncombatEnhancementBonuses": {
+        "cookingSpeed": 0.0045000000000000005
+      }
+    }
+  }
+}

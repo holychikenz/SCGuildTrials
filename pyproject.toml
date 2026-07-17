@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "guild-skill-register"
+version = "0.1.0"
+description = "Fetch the SURVEY CORPS guild sheet and build a static skill-register site for GitHub Pages."
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools]
+packages = ["src"]
