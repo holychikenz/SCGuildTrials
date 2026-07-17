@@ -1,6 +1,8 @@
 name: Build and deploy guild site
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 * * * *"   # hourly
   workflow_dispatch: {}
