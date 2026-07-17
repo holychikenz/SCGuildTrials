@@ -665,8 +665,22 @@ def _render_trials_html(week: dict) -> str:
         special: its tool grants success (not speed) and its gloves grant speed
         (not efficiency). Skilling top/bottom are modelled as efficiency for all
         skills (in-game the Enhancer's set grants speed instead).</li>
-    <li><strong>doubleChance = 0.</strong> The double-progress chance is assumed
-        zero for every member.</li>
+    <li><strong>Community buffs (event, WORKING ASSUMPTION).</strong> Three live
+        community buffs are modelled, one per skill family. <em>Gathering</em>
+        (Milking / Foraging / Woodcutting): a lab-style double-progress chance of
+        <code>0.25</code> — the +20% community gathering buff plus ~5% carried on
+        gear — scaling each member's rate by <code>(1 + doubleChance)</code>.
+        <em>Production</em> (incl. Alchemy): +0.15 efficiency from the community
+        production buff. <em>Enhancing</em>: +0.20 speed from the community
+        enhancing buff. Placeholders that apply only while each buff is active;
+        the ~5% gear term awaits the per-member gear harvest.</li>
+    <li><strong>Level-4 houses (ASSUMPTION).</strong> Everyone is assumed to run
+        a <code>level&nbsp;4</code> house room for their trial skill. Per the
+        game data, gathering and production house rooms grant
+        <code>+0.015</code> efficiency per level (<code>+0.06</code> at level 4),
+        while the enhancing house (Observatory) grants <code>+0.010</code>
+        action-speed per level (<code>+0.04</code> at level 4) rather than
+        efficiency.</li>
     <li><strong>{html.escape(_assignment_footnote(week))}</strong></li>
   </ol>
   <p>Machine-readable copy of this page's data: <code>trials.json</code>.

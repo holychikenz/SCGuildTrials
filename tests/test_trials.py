@@ -52,8 +52,10 @@ def test_bonuses_baseline_no_checkboxes():
     assert b.speed == pytest.approx(
         config.TOOL_SPEED_HOLY_PLUS7 + config.CAPE_SPEED_PLUS3
     )
-    # Family piece efficiency only (top/bot unchecked).
-    assert b.efficiency == pytest.approx(config.ARMOUR_EFFICIENCY_PLUS7)
+    # Family piece efficiency + level-4 house (gathering: no production buff).
+    assert b.efficiency == pytest.approx(
+        config.ARMOUR_EFFICIENCY_PLUS7 + config.HOUSE_EFFICIENCY
+    )
     assert b.success_bonus == 0.0
 
 
@@ -67,8 +69,11 @@ def test_bonuses_all_checkboxes_use_celestial_and_stack_armour():
     assert b.speed == pytest.approx(
         config.TOOL_SPEED_CELESTIAL_PLUS7 + config.CAPE_SPEED_PLUS3
     )
-    # Family + top + bot efficiency all stack.
-    assert b.efficiency == pytest.approx(3 * config.ARMOUR_EFFICIENCY_PLUS7)
+    # Family + top + bot efficiency all stack, plus the level-4 house
+    # (Foraging is gathering, so no production efficiency buff).
+    assert b.efficiency == pytest.approx(
+        3 * config.ARMOUR_EFFICIENCY_PLUS7 + config.HOUSE_EFFICIENCY
+    )
     assert b.success_bonus == 0.0
 
 
@@ -78,11 +83,16 @@ def test_enhancing_special_case_tool_is_success_gloves_are_speed():
     b = trials.member_bonuses(m, "Enhancing")
 
     assert b.success_bonus == pytest.approx(config.TOOL_SUCCESS_HOLY_PLUS7)
-    # Speed = cape + enhancing gloves speed (NOT a tool speed term).
+    # Speed = cape + enhancing gloves speed + community enhancing-speed buff +
+    # the level-4 enhancing house (Observatory); NOT a tool speed term.
     assert b.speed == pytest.approx(
-        config.CAPE_SPEED_PLUS3 + config.GLOVES_ENHANCING_SPEED_PLUS7
+        config.CAPE_SPEED_PLUS3
+        + config.GLOVES_ENHANCING_SPEED_PLUS7
+        + config.COMMUNITY_ENHANCING_SPEED_BUFF
+        + config.HOUSE_ENHANCING_SPEED
     )
-    # No family-efficiency for enhancing (gloves went to speed); no top/bot.
+    # No family-efficiency for enhancing (gloves went to speed); no top/bot;
+    # the enhancing house grants speed, not efficiency.
     assert b.efficiency == pytest.approx(0.0)
 
 
@@ -114,8 +124,13 @@ def test_alchemy_reads_bell_farming_column_level_and_checks():
     assert b.speed == pytest.approx(
         config.TOOL_SPEED_CELESTIAL_PLUS7 + config.CAPE_SPEED_PLUS3
     )
-    # Family piece + skilling top efficiency (bot unchecked).
-    assert b.efficiency == pytest.approx(2 * config.ARMOUR_EFFICIENCY_PLUS7)
+    # Family piece + skilling top efficiency (bot unchecked), plus the level-4
+    # house and the community production-efficiency buff (Alchemy = production).
+    assert b.efficiency == pytest.approx(
+        2 * config.ARMOUR_EFFICIENCY_PLUS7
+        + config.HOUSE_EFFICIENCY
+        + config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF
+    )
 
 
 def test_alchemy_is_not_a_mean_proxy():
@@ -167,14 +182,69 @@ def test_success_matches_formula_midrange():
 # rate
 # ---------------------------------------------------------------------------
 def test_rate_matches_manual_computation():
+    # Foraging is a gathering skill, so the lab-style doubling chance applies.
     m = _member("R", {"Foraging": 120})
     b = trials.member_bonuses(m, "Foraging")
     expected = (
         trials.success(120, 1, 0.0)
+        * (1 + config.DOUBLE_CHANCE)
         * math.floor(120 * (1 + b.efficiency))
         / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed))
     )
     assert trials.rate(m, "Foraging", 1) == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# community buffs
+# ---------------------------------------------------------------------------
+def test_double_chance_gathering_only():
+    # Gathering skills carry the +20% buff + ~5% gear; other families carry 0.
+    for sk in ("Milking", "Foraging", "Woodcutting"):
+        assert trials.double_chance(sk) == pytest.approx(config.DOUBLE_CHANCE)
+    for sk in ("Alchemy", "Enhancing"):
+        assert trials.double_chance(sk) == 0.0
+
+
+def test_gathering_rate_scales_by_double_chance():
+    # A gathering member's rate is exactly (1 + DOUBLE_CHANCE) of the same
+    # computation without the doubling factor.
+    m = _member("G", {"Woodcutting": 120})
+    b = trials.member_bonuses(m, "Woodcutting")
+    base = (
+        trials.success(120, 1, 0.0)
+        * math.floor(120 * (1 + b.efficiency))
+        / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed))
+    )
+    assert trials.rate(m, "Woodcutting", 1) == pytest.approx(
+        base * (1 + config.DOUBLE_CHANCE)
+    )
+
+
+def test_production_efficiency_buff_applied():
+    # Alchemy (production): efficiency includes the +0.15 community buff on top
+    # of the +7 family piece, and no doubling chance.
+    m = _member("P", {"Bell Farming": 120})
+    b = trials.member_bonuses(m, "Alchemy")
+    assert b.efficiency == pytest.approx(
+        config.ARMOUR_EFFICIENCY_PLUS7
+        + config.HOUSE_EFFICIENCY
+        + config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF
+    )
+    assert trials.double_chance("Alchemy") == 0.0
+
+
+def test_enhancing_speed_buff_applied():
+    # Enhancing gains the +0.20 community speed buff (cape + gloves + buff),
+    # and never the production efficiency buff.
+    m = _member("E", {"Enhancing": 120})
+    b = trials.member_bonuses(m, "Enhancing")
+    assert b.speed == pytest.approx(
+        config.CAPE_SPEED_PLUS3
+        + config.GLOVES_ENHANCING_SPEED_PLUS7
+        + config.COMMUNITY_ENHANCING_SPEED_BUFF
+        + config.HOUSE_ENHANCING_SPEED
+    )
+    assert b.efficiency == pytest.approx(0.0)
 
 
 def test_missing_level_yields_zero_rate():

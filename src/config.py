@@ -296,6 +296,48 @@ HEADCOUNT_PENALTY_PER_MEMBER = 0.01
 ACTION_SECONDS_ENHANCING = 8   # baseActionSeconds for enhancing
 ACTION_SECONDS_DEFAULT = 10    # baseActionSeconds for every other skill
 
+# --- Skill families (for the per-category community buffs; MWI categories) ---
+# The three live community buffs each target one skill family:
+#   gathering  -> gathering-quantity / doubling chance (Milking/Foraging/Woodcutting)
+#   production -> production efficiency (C.Smithing/Crafting/Tailoring/Cooking/
+#                 Brewing/Alchemy — i.e. everything that is neither gathering nor
+#                 enhancing; note the trial skill "Alchemy" is production)
+#   enhancing  -> enhancing speed (Enhancing)
+GATHERING_SKILLS = frozenset({"Milking", "Foraging", "Woodcutting"})
+
+# --- Community buffs (event) + gear ------------------------------------------
+# The gathering buff is modelled as the labyrinth-style `doubleProgressChance`:
+# the chance an action counts double, so it scales work rate by (1 + doubleChance)
+# exactly as the lab-sim formula does (research/trial-messages.md §"lab-sim model":
+# `rate(m,t) = success(m,t) * (1 + doubleChance) * floor(workPower_m) / actionSeconds_m`).
+# WORKING ASSUMPTION (2026-07-17): while the community buffs are live, every
+# member on a GATHERING skill carries a doubling chance of the +20% community
+# gathering buff plus ~+5% naturally on gear (0.25 total); every member on a
+# PRODUCTION skill gains +0.15 efficiency from the community production buff;
+# every member ENHANCING gains +0.20 speed from the community enhancing buff.
+# Placeholders until per-member gear is harvested; the buff terms apply only
+# while the respective community buff is active.
+COMMUNITY_GATHERING_BUFF_DOUBLE = 0.20   # +20% community gathering buff (event)
+GEAR_DOUBLE_CHANCE = 0.05                # ~+5% carried naturally on gear
+DOUBLE_CHANCE = COMMUNITY_GATHERING_BUFF_DOUBLE + GEAR_DOUBLE_CHANCE  # 0.25 (gathering only)
+COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = 0.15  # +15% efficiency for production skills
+COMMUNITY_ENHANCING_SPEED_BUFF = 0.20        # +20% speed for enhancing
+
+# --- Houses (player housing rooms) -------------------------------------------
+# Authoritative game data (cowstuff csim houseRoomDetailMap): every skilling
+# house room grants an efficiency buff of +0.015/level (Dairy Barn, Garden,
+# Log Shed → gathering; Forge, Workshop, Sewing Parlor, Kitchen, Brewery,
+# Laboratory → production), EXCEPT the enhancing house (Observatory) which
+# grants +0.010 action-SPEED per level (its enhancing-success buff is 0). The
+# in-game value is `flatBoost + (level-1)*flatBoostLevelBonus`; for these rooms
+# flatBoost == flatBoostLevelBonus, so the value is simply per_level * level.
+# ASSUMPTION (2026-07-17): everyone runs a LEVEL-4 house for their trial skill.
+HOUSE_LEVEL = 4
+_HOUSE_EFFICIENCY_PER_LEVEL = 0.015        # gathering + production house rooms
+_HOUSE_ENHANCING_SPEED_PER_LEVEL = 0.010   # Observatory (enhancing house)
+HOUSE_EFFICIENCY = _HOUSE_EFFICIENCY_PER_LEVEL * HOUSE_LEVEL           # 0.06 at L4
+HOUSE_ENHANCING_SPEED = _HOUSE_ENHANCING_SPEED_PER_LEVEL * HOUSE_LEVEL  # 0.04 at L4
+
 # --- TARGET_SCALE (calibrated) ----------------------------------------------
 # The lab-sim tier targets are single-player-scaled, so at TARGET_SCALE=1.0 a
 # 20-member party blows through absurdly many tiers. TARGET_SCALE re-scales the

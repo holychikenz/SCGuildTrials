@@ -59,6 +59,26 @@ def _is_enhancing(skill: str) -> bool:
     return skill == "Enhancing"
 
 
+def _is_gathering(skill: str) -> bool:
+    """Gathering-family skill (Milking/Foraging/Woodcutting).
+
+    The community gathering buff — modelled as the doubling chance — applies to
+    this family only (config.GATHERING_SKILLS).
+    """
+    return skill in config.GATHERING_SKILLS
+
+
+def double_chance(skill: str) -> float:
+    """Labyrinth-style doubleProgressChance for a member on ``skill``.
+
+    While the community gathering buff is live, gathering skills carry the +20%
+    buff plus ~+5% gear (config.DOUBLE_CHANCE); every other family carries 0.
+    Scales work rate by ``(1 + double_chance)`` in :func:`rate`, per the lab-sim
+    formula (research/trial-messages.md).
+    """
+    return config.DOUBLE_CHANCE if _is_gathering(skill) else 0.0
+
+
 def _sheet_column(skill: str) -> str:
     """Map a trial skill name to its member-sheet column name.
 
@@ -114,6 +134,10 @@ def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
         )
         # Family "gloves" grant enhancing SPEED, not efficiency.
         speed += config.GLOVES_ENHANCING_SPEED_PLUS7
+        # Community enhancing-speed buff (event): +0.20 speed while live.
+        speed += config.COMMUNITY_ENHANCING_SPEED_BUFF
+        # Enhancing house (Observatory) grants action-SPEED, not efficiency.
+        speed += config.HOUSE_ENHANCING_SPEED
     else:
         # Tool grants SPEED.
         speed += (
@@ -123,6 +147,14 @@ def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
         )
         # Family piece grants efficiency.
         efficiency += config.ARMOUR_EFFICIENCY_PLUS7
+        # Gathering + production house rooms grant efficiency (+0.06 at L4).
+        efficiency += config.HOUSE_EFFICIENCY
+        # Community production-efficiency buff (event): +0.15 efficiency for
+        # production skills while live. Gathering skills instead receive the
+        # gathering buff as a doubling chance (see double_chance()), so exclude
+        # them here.
+        if not _is_gathering(skill):
+            efficiency += config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF
 
     # Skilling top / bottom grant efficiency for every skill (per the Phase 1
     # model spec). NB: in-game the Enhancer's Top/Bottoms grant enhancingSpeed
@@ -197,15 +229,18 @@ def action_seconds(skill: str, speed: float) -> float:
 def rate(member: MemberRow, skill: str, tier: int) -> float:
     """Work per second contributed by ``member`` to ``skill`` at ``tier``.
 
-    doubleChance is assumed 0. A member with no usable level in the skill
-    contributes 0.
+    Follows the lab-sim formula
+    ``rate = success * (1 + doubleChance) * floor(workPower) / actionSeconds``.
+    The doubling chance is non-zero only for gathering skills while the
+    community gathering buff is live (see :func:`double_chance`). A member with
+    no usable level in the skill contributes 0.
     """
     b = member_bonuses(member, skill)
     if not b.level or b.level <= 0:
         return 0.0
     s = success(b.level, tier, b.success_bonus)
     wp = math.floor(work_power(b.level, b.efficiency))
-    return s * wp / action_seconds(skill, b.speed)
+    return s * (1 + double_chance(skill)) * wp / action_seconds(skill, b.speed)
 
 
 def points_for_tier(tier_reached: int) -> int:
