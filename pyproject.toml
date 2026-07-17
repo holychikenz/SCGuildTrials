@@ -14,6 +14,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    # Optional: enables the `scipy_lap` (linear-assignment) contestant in
+    # src/optimize_bakeoff.py only. Soft-imported and skipped if absent; NEVER
+    # on the CI build path (the shipped optimizer is pure-Python).
+    "scipy>=1.11",
+    "numpy>=1.24",
 ]
 
 [tool.setuptools]

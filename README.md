@@ -25,21 +25,43 @@ shared as "anyone with the link".
 
 ## Run locally
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+This project uses [uv](https://docs.astral.sh/uv/) (matching CI):
 
-python -m pytest tests/ -v      # offline unit tests
-python -m src.build             # live fetch -> writes _site/
+```bash
+uv run python -m pytest tests/ -v          # offline unit tests
+uv run --extra dev python -m src.optimize_bakeoff   # optimizer bake-off (needs scipy extra)
+uv run --no-dev python -m src.build        # live fetch -> writes _site/
 open _site/index.html
 ```
 
+`--no-dev` keeps the optional `[dev]` extras (`scipy`/`numpy`/`pytest`) off the
+build path — the shipped optimizer is pure-Python. Plain `pip install -e ".[dev]"`
+still works if you prefer a classic venv.
+
+## Guild Trials optimizer (Phase 2)
+
+`src/trials.py` models each weekly skilling trial as a cumulative tier race and
+scores it in guild points; `src/optimizer.py` assigns members across the week's
+**4 trials to maximise total points**. The objective is non-linear and
+non-separable — points are a step function of the tier reached, and the 1%
+per-member headcount penalty means a weak member can *lower* a party's tier, so
+party size is itself a decision. Every strategy is therefore judged against the
+real `simulate_race` oracle (memoised in `AssignmentScorer`).
+
+The shipped default is the ensemble strategy `"best"`
+(`config.TRIAL_OPTIMIZER_STRATEGY`): it runs several strong pipelines — including
+a **beam-search-seeded genetic algorithm** — and returns the single best result.
+`src/optimize_bakeoff.py` is the harness that compared the field (see the
+`# BAKE-OFF RESULTS` block in `config.py`). To restore the Phase-1 random split,
+set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
+
 ## Deploy (GitHub Actions)
 
-`.github/workflows/deploy.yml` builds and deploys on an hourly schedule and on
-manual dispatch, using the artifact-based Pages flow
-(`actions/upload-pages-artifact` + `actions/deploy-pages`).
+`.github/workflows/deploy.yml` builds and deploys on a **daily** schedule and on
+manual dispatch, using `uv` (via `astral-sh/setup-uv`, cached) and the
+artifact-based Pages flow (`actions/upload-pages-artifact` + `actions/deploy-pages`).
+The schedule is daily rather than hourly because the Phase 2 optimizer takes a
+couple of minutes per run; hourly would burn ~2000+ Actions minutes/month.
 
 ### One-time manual step
 
@@ -47,7 +69,7 @@ After pushing to GitHub, enable Pages:
 
 > **Settings → Pages → Build and deployment → Source: GitHub Actions**
 
-Then trigger the workflow once from the **Actions** tab (or wait for the hourly
+Then trigger the workflow once from the **Actions** tab (or wait for the daily
 schedule). Subsequent runs update the site automatically.
 
 ## Configuration

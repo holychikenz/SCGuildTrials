@@ -412,6 +412,64 @@ _TRIALS_JS = r"""
 """
 
 
+# A human-friendly name for each optimizer strategy token (see src/optimizer.py).
+_STRATEGY_NAMES = {
+    "random": "random split",
+    "proxy_greedy": "greedy (rate proxy)",
+    "marginal_greedy": "greedy (marginal points)",
+    "beam": "beam search",
+    "genetic": "genetic algorithm",
+    "hill_climb": "hill-climbing",
+    "sa": "simulated annealing",
+}
+
+
+def _strategy_phrase(strategy: str) -> str:
+    """Turn a strategy string like ``"marginal_greedy+hill_climb"`` into prose."""
+    if strategy in ("best", "ensemble"):
+        return "ensemble (best of several strategies)"
+    parts = [_STRATEGY_NAMES.get(tok, tok) for tok in strategy.split("+") if tok]
+    if not parts:
+        return "assignment"
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]} refined by {' then '.join(parts[1:])}"
+
+
+def _assignment_label(week: dict) -> str:
+    """Short header chip: e.g. ``"optimised: greedy … , Phase 2"``."""
+    strategy = week.get("strategy", "random")
+    if strategy == "random":
+        return "random assignment, Phase 1"
+    return f"optimised: {_strategy_phrase(strategy)}, Phase 2"
+
+
+def _assignment_detail(week: dict) -> str:
+    """Sub-header line describing how parties were formed."""
+    strategy = week.get("strategy", "random")
+    if strategy == "random":
+        return f"random split (seed {week['seed']}, cap {week['cap']})"
+    return (
+        f"optimised assignment via {_strategy_phrase(strategy)} "
+        f"(cap {week['cap']}) &middot; {week['total_points']} guild points"
+    )
+
+
+def _assignment_footnote(week: dict) -> str:
+    """Footer caveat describing the assignment method."""
+    strategy = week.get("strategy", "random")
+    if strategy == "random":
+        return (
+            "Random assignment, no optimizer. Parties are a plain seeded random "
+            f"split (seed {week['seed']}) with no eligibility filtering."
+        )
+    return (
+        f"Optimised assignment (Phase 2). Parties are chosen by {_strategy_phrase(strategy)} "
+        "to maximise total guild points against the simulate_race model, honouring "
+        f"the {week['cap']}-per-party cap; members who would only lower a party's tier are benched."
+    )
+
+
 def _render_trials_html(week: dict) -> str:
     """Render the full trials page from a ``WeekResult`` dict."""
     strip = "".join(
@@ -546,9 +604,9 @@ def _render_trials_html(week: dict) -> str:
 <body>
 <header>
   <h1>Guild Trials &mdash; Week of {html.escape(week['week_date'])}
-      <span class="meta">(random assignment, Phase 1)</span></h1>
+      <span class="meta">({html.escape(_assignment_label(week))})</span></h1>
   <p class="meta">SURVEY CORPS &middot; {week['member_count']} members &middot;
-     random split (seed {week['seed']}, cap {week['cap']}) &middot;
+     {html.escape(_assignment_detail(week))} &middot;
      generated {html.escape(week['generated_at'])} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a></p>
 </header>
@@ -609,9 +667,7 @@ def _render_trials_html(week: dict) -> str:
         skills (in-game the Enhancer's set grants speed instead).</li>
     <li><strong>doubleChance = 0.</strong> The double-progress chance is assumed
         zero for every member.</li>
-    <li><strong>Random assignment, no optimizer.</strong> Parties are a plain
-        seeded random split (seed {week['seed']}) with no eligibility filtering.
-        Optimised assignment is Phase 2.</li>
+    <li><strong>{html.escape(_assignment_footnote(week))}</strong></li>
   </ol>
   <p>Machine-readable copy of this page's data: <code>trials.json</code>.
      Static build from the public guild sheet; no credentials, read-only.</p>

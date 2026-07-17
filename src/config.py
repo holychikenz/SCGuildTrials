@@ -158,6 +158,91 @@ TRIAL_RNG_SEED = 42
 # Skilling trial party cap (research/trial-tabs.md §1: max 20 observed).
 TRIAL_PARTY_CAP = 20
 
+# ===========================================================================
+# Guild Trials (Phase 2) — optimizer strategy + knobs (src/optimizer.py)
+# ===========================================================================
+# The optimizer assigns members across the week's 4 skilling trials to maximise
+# total guild points, measured against the real simulate_race oracle (the
+# objective is non-linear and non-separable — see src/optimizer.py and
+# research/trial-messages.md). A "strategy" is constructor[+refiner...]:
+#   constructors: random | proxy_greedy | marginal_greedy | beam | genetic
+#   refiners:     hill_climb | sa
+#
+# BAKE-OFF WINNER: chosen by `python -m src.optimize_bakeoff` across multiple
+# seeds on live SC data and synthetic rosters (points PRIMARY; the build runs
+# once daily in GitHub Actions, so a few minutes of runtime is fine but hours
+# are not — budgets below are sized to keep the whole optimize step comfortably
+# under ~10 min on the runner). See the "# BAKE-OFF RESULTS" block for the data.
+# "best" runs an ensemble of strong pipelines and keeps the max (correctness
+# first). Set to "random" to restore Phase-1 behaviour (one-line rollback).
+TRIAL_OPTIMIZER_STRATEGY = "best"
+# Fixed seed for the optimizer's internal randomness. NEVER use unseeded RNG.
+TRIAL_OPTIMIZER_SEED = 1234
+
+# The ensemble run by strategy "best"/"ensemble": diverse strong pipelines whose
+# maximum is returned. Beam seeds the genetic algorithm (a strong founder
+# converges better); every pipeline ends in hill_climb to lock in a local
+# optimum (never worsens the result).
+OPT_ENSEMBLE_PIPELINES = [
+    "beam+genetic+hill_climb",
+    "proxy_greedy+sa+hill_climb",
+    "marginal_greedy+sa+hill_climb",
+]
+
+# --- BAKE-OFF RESULTS -------------------------------------------------------
+# `python -m src.optimize_bakeoff` — synthetic roster n=86, seeds 1-3, at the
+# budgets set below (SA 50k iters x2 restarts, GA pop 100 x 200 gens, beam 16).
+# Points PRIMARY (higher = better); time is per-run wall-clock on the dev box.
+#
+#   strategy                        mean_pts  min_pts   time
+#   ---------------------------------------------------------
+#   genetic (beam-seeded)             5400     5400      20s
+#   beam+genetic+hill_climb           5400     5400      21s
+#   best (ensemble)                   5400     5400     101s   <-- SHIPPED
+#   proxy_greedy                      5300     5300      ~0s
+#   scipy_lap (dev-only, Hungarian)   5300     5300      ~0s
+#   proxy_greedy+sa+hill_climb        5300     5300      40s
+#   marginal_greedy+sa+hill_climb     5133     5100      40s
+#   beam                              5000     5000      <1s
+#   marginal_greedy                   5000     5000      <1s
+#   random                            4667     4600      ~0s
+#
+# Takeaways:
+#  * The beam-seeded GA (your suggestion) reaches the optimum robustly (min ==
+#    mean == 5400) — the strongest single method, and cheap (~20s).
+#  * scipy_lap (classic linear assignment) only ties the trivial proxy_greedy
+#    (5300): it optimises a linear proxy and is blind to the step objective and
+#    the headcount penalty — exactly the gap this bake-off set out to measure.
+#  * "best" = max over {beam+genetic+hc, proxy_greedy+sa+hc, marginal_greedy+sa+hc}
+#    is shipped: it matches the best single method here AND can never do worse
+#    than any component on a future roster, at ~100s (well under the ~10-min CI
+#    budget). Simulated annealing underperformed the GA here but is retained in
+#    the ensemble as cheap diversity insurance.
+
+# --- Local search (hill_climb) ----------------------------------------------
+# Best-improvement iteration cap; convergence usually well below this. Bounds
+# worst-case build time.
+OPT_HILLCLIMB_MAX_ITERS = 500
+
+# --- Simulated annealing (sa) -----------------------------------------------
+# Point deltas come in multiples of ~100 (one tier), so the temperature band is
+# scaled to that: T_START accepts a one-tier loss ~exp(-0.67); T_END rejects it.
+# Restarts spend the daily budget on escaping distinct local optima (best kept).
+OPT_SA_ITERS = 50000
+OPT_SA_RESTARTS = 2
+OPT_SA_T_START = 150.0
+OPT_SA_T_END = 0.5
+
+# --- Beam search (beam) -----------------------------------------------------
+OPT_BEAM_WIDTH = 16
+
+# --- Genetic algorithm (genetic) --------------------------------------------
+OPT_GA_POP = 100
+OPT_GA_GENERATIONS = 200
+OPT_GA_MUTATION = 0.05
+OPT_GA_ELITE = 6
+OPT_GA_TOURNAMENT = 3
+
 # --- Tier race budget -------------------------------------------------------
 # research/trial-messages.md CORRECTION (2026-07-17): 1 hour PER TRIAL (not per
 # tier); the party races cumulatively upward through tiers within this budget.

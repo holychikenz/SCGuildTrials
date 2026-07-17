@@ -404,6 +404,7 @@ class WeekResult:
     target_scale: float
     member_count: int
     total_points: int
+    strategy: str = "random"
     trials: list[TrialResult] = field(default_factory=list)
     bench: list[str] = field(default_factory=list)
 
@@ -417,6 +418,7 @@ class WeekResult:
             "target_scale": self.target_scale,
             "member_count": self.member_count,
             "total_points": self.total_points,
+            "strategy": self.strategy,
             "trials": [t.to_dict() for t in self.trials],
             "bench": self.bench,
         }
@@ -428,15 +430,37 @@ def run_week(
     seed: Optional[int] = None,
     cap: Optional[int] = None,
     target_scale: Optional[float] = None,
+    strategy: Optional[str] = None,
 ) -> WeekResult:
-    """Assign parties and simulate all of this week's skilling trials."""
+    """Assign parties and simulate all of this week's skilling trials.
+
+    ``strategy`` selects the Phase 2 assignment algorithm (see
+    :mod:`src.optimizer`); ``"random"`` restores the Phase 1 shuffle. Defaults to
+    ``config.TRIAL_OPTIMIZER_STRATEGY``. The optimizer is imported lazily to keep
+    the ``trials`` <-> ``optimizer`` dependency one-directional at import time.
+    """
     skills = list(skills if skills is not None else config.TRIAL_SKILLS_CURRENT)
     seed = seed if seed is not None else config.TRIAL_RNG_SEED
     cap = cap if cap is not None else config.TRIAL_PARTY_CAP
     if target_scale is None:
         target_scale = config.TARGET_SCALE
+    if strategy is None:
+        strategy = config.TRIAL_OPTIMIZER_STRATEGY
 
-    assignment = random_assignment(members, skills, seed, cap)
+    if strategy == "random":
+        assignment = random_assignment(members, skills, seed, cap)
+    else:
+        from .optimizer import optimize
+
+        assignment = optimize(
+            members,
+            skills,
+            seed=config.TRIAL_OPTIMIZER_SEED,
+            cap=cap,
+            target_scale=target_scale,
+            strategy=strategy,
+        )
+
     trials = [
         simulate_race(assignment.parties[skill], skill, target_scale)
         for skill in skills
@@ -451,6 +475,7 @@ def run_week(
         target_scale=target_scale,
         member_count=len(members),
         total_points=sum(t.points for t in trials),
+        strategy=strategy,
         trials=trials,
         bench=[m.name for m in assignment.bench],
     )
