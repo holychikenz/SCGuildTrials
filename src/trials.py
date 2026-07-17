@@ -91,18 +91,30 @@ def _sheet_column(skill: str) -> str:
 
 def _resolve_level_and_checks(
     member: MemberRow, skill: str
-) -> tuple[Optional[int], bool, bool, bool]:
-    """Return (level, tool, top, bot) for a member+trial-skill.
+) -> tuple[Optional[int], bool, bool, bool, Optional[int]]:
+    """Return (level, tool, top, bot, house) for a member+trial-skill.
 
-    The level and checkboxes come straight from the member sheet column that
-    the trial skill maps to. "Alchemy" maps to the "Bell Farming" column (the
-    guild joke — that column IS Alchemy); every other skill maps to its own
-    column. A member with no such column contributes nothing.
+    The level, checkboxes, and per-skill house level come straight from the
+    member sheet column that the trial skill maps to. "Alchemy" maps to the
+    "Bell Farming" column (the guild joke — that column IS Alchemy); every other
+    skill maps to its own column. A member with no such column contributes
+    nothing (and a blank house cell -> None).
     """
     entry = member.skills.get(_sheet_column(skill))
     if entry is None:
-        return None, False, False, False
-    return entry.level, entry.tool, entry.top, entry.bot
+        return None, False, False, False, None
+    return entry.level, entry.tool, entry.top, entry.bot, entry.house
+
+
+def _house_level(house: Optional[int]) -> int:
+    """Resolve a member's per-skill house level for the model.
+
+    Blank (None) -> DEFAULT_HOUSE_LEVEL (the former flat assumption of 4);
+    otherwise the sheet value, clamped to the in-game range 0..8.
+    """
+    if house is None:
+        house = config.DEFAULT_HOUSE_LEVEL
+    return max(0, min(config.HOUSE_MAX_LEVEL, house))
 
 
 def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
@@ -118,8 +130,12 @@ def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
         ENHANCING special case: the gloves grant +0.1182 enhancingSPEED instead.
       - Skilling top +7 if "top": +0.1182 efficiency.
       - Skilling bottom +7 if "bot": +0.1182 efficiency.
+      - House (per-skill "H" level from the sheet): +0.015 efficiency/level for
+        gathering + production; the enhancing house grants +0.010 speed/level
+        instead. Blank -> DEFAULT_HOUSE_LEVEL (4), clamped to 0..8.
     """
-    level, tool, top, bot = _resolve_level_and_checks(member, skill)
+    level, tool, top, bot, house = _resolve_level_and_checks(member, skill)
+    house_level = _house_level(house)
 
     speed = config.CAPE_SPEED_PLUS3  # +3 cape speed, everyone, every skill
     efficiency = 0.0
@@ -136,8 +152,9 @@ def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
         speed += config.GLOVES_ENHANCING_SPEED_PLUS7
         # Community enhancing-speed buff (event): +0.20 speed while live.
         speed += config.COMMUNITY_ENHANCING_SPEED_BUFF
-        # Enhancing house (Observatory) grants action-SPEED, not efficiency.
-        speed += config.HOUSE_ENHANCING_SPEED
+        # Enhancing house (Observatory) grants action-SPEED, not efficiency,
+        # scaled by the member's real house level (0.010/level).
+        speed += config.HOUSE_ENHANCING_SPEED_PER_LEVEL * house_level
     else:
         # Tool grants SPEED.
         speed += (
@@ -147,8 +164,9 @@ def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
         )
         # Family piece grants efficiency.
         efficiency += config.ARMOUR_EFFICIENCY_PLUS7
-        # Gathering + production house rooms grant efficiency (+0.06 at L4).
-        efficiency += config.HOUSE_EFFICIENCY
+        # Gathering + production house rooms grant efficiency (0.015/level),
+        # scaled by the member's real house level.
+        efficiency += config.HOUSE_EFFICIENCY_PER_LEVEL * house_level
         # Community production-efficiency buff (event): +0.15 efficiency for
         # production skills while live. Gathering skills instead receive the
         # gathering buff as a doubling chance (see double_chance()), so exclude

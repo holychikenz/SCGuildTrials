@@ -150,6 +150,7 @@ def parse_gviz(csv_text: str) -> list[MemberRow]:
                 tool=_to_bool(_cell(row, base + config.SKILL_TOOL_OFFSET)),
                 top=_to_bool(_cell(row, base + config.SKILL_TOP_OFFSET)),
                 bot=_to_bool(_cell(row, base + config.SKILL_BOT_OFFSET)),
+                house=_to_int(_cell(row, base + config.SKILL_HOUSE_OFFSET)),
             )
 
         members.append(

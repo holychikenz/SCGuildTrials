@@ -36,23 +36,28 @@ SKILLS = [
     "Enhancing",
 ]
 
-# Fixed-position columns (0-based).
-COL_NAME = 0
-COL_MAIN_CLASSES = 1
-COL_FLEX = 2
+# Fixed-position columns (0-based). SHEET CHANGE (2026-07-17): the guild sheet
+# gained a new leading column at index 0, shifting Member/Main Classes/Flex and
+# the flex thresholds one place right; and each skill block gained an "H" (house
+# level) column between the level and the Tool checkbox, widening the block from
+# 4 to 5 columns. The maps below reflect the post-change layout.
+COL_NAME = 1
+COL_MAIN_CLASSES = 2
+COL_FLEX = 3
 
 # Five flex-related threshold level columns: 30+, 25+, 35+, 35+, 35+.
-FLEX_LEVEL_COLS = [3, 4, 5, 6, 7]
+FLEX_LEVEL_COLS = [4, 5, 6, 7, 8]
 FLEX_THRESHOLDS = ["30+", "25+", "35+", "35+", "35+"]
 
-# Each skill occupies a 4-column block: [level, Tool, Top, Bot].
-# The first block (Milking) starts at column 8; blocks are contiguous.
-SKILL_BLOCK_START = 8
-SKILL_BLOCK_STRIDE = 4
+# Each skill occupies a 5-column block: [level, H (house level), Tool, Top, Bot].
+# The first block (Milking) starts at column 9; blocks are contiguous.
+SKILL_BLOCK_START = 9
+SKILL_BLOCK_STRIDE = 5
 SKILL_LEVEL_OFFSET = 0
-SKILL_TOOL_OFFSET = 1
-SKILL_TOP_OFFSET = 2
-SKILL_BOT_OFFSET = 3
+SKILL_HOUSE_OFFSET = 1
+SKILL_TOOL_OFFSET = 2
+SKILL_TOP_OFFSET = 3
+SKILL_BOT_OFFSET = 4
 
 # --- Structure guard --------------------------------------------------------
 # Sentinel header cells the parser expects to find (0-based col -> text).
@@ -61,13 +66,14 @@ SKILL_BOT_OFFSET = 3
 # garbage. (Note: the real header cell is "Main Classes " with a trailing
 # space; stripping handles that.)
 SENTINEL_HEADERS = {
-    0: "Member",
-    1: "Main Classes",
-    2: "Flex",
-    9: "Tool",
-    10: "Top",
-    11: "Bot",
-    13: "Tool",  # start of the Foraging block, confirms stride
+    1: "Member",
+    2: "Main Classes",
+    3: "Flex",
+    10: "H",     # Milking house-level column (new 2026-07-17)
+    11: "Tool",
+    12: "Top",
+    13: "Bot",
+    16: "Tool",  # start of the Foraging block, confirms the 5-col stride
 }
 
 # Network timeout for the CSV fetch, in seconds.
@@ -95,10 +101,11 @@ TABS = {
 }
 
 # Rightmost real column of the member table; rows are sliced to 0..GVIZ_LAST_COL
-# inclusive to drop the trailing side-summary junk columns. The layout (name,
-# flex, and the 10 four-column skill blocks) is shared with the export path
-# above, so Enhancing's Bot cell lands at column 47.
-GVIZ_LAST_COL = 47
+# inclusive to drop the trailing side-summary junk columns. The layout (leading
+# column, name, flex, and the 10 five-column skill blocks) is shared with the
+# export path above, so Enhancing's Bot cell now lands at column 58
+# (9 + 5*9 + 4).
+GVIZ_LAST_COL = 58
 
 # gviz wrong-tab / structure guard. Because gviz prepends merged junk text and
 # leaves trailing spaces on some header cells, sentinels match by substring
@@ -106,11 +113,11 @@ GVIZ_LAST_COL = 47
 # tab likely does not exist, gviz served a different tab, or the layout changed.
 # 0-based col -> (mode, expected) where mode is "contains" or "equals".
 GVIZ_SENTINEL_HEADERS = {
-    0: ("contains", "Member"),
-    2: ("equals", "Flex"),
-    8: ("contains", "Milking"),
-    12: ("contains", "Foraging"),
-    44: ("contains", "Enhancing"),
+    1: ("contains", "Member"),
+    3: ("equals", "Flex"),
+    9: ("contains", "Milking"),
+    14: ("contains", "Foraging"),
+    54: ("contains", "Enhancing"),
 }
 
 # ===========================================================================
@@ -347,12 +354,17 @@ COMMUNITY_ENHANCING_SPEED_BUFF = 0.20        # +20% speed for enhancing
 # grants +0.010 action-SPEED per level (its enhancing-success buff is 0). The
 # in-game value is `flatBoost + (level-1)*flatBoostLevelBonus`; for these rooms
 # flatBoost == flatBoostLevelBonus, so the value is simply per_level * level.
-# ASSUMPTION (2026-07-17): everyone runs a LEVEL-4 house for their trial skill.
-HOUSE_LEVEL = 4
-_HOUSE_EFFICIENCY_PER_LEVEL = 0.015        # gathering + production house rooms
-_HOUSE_ENHANCING_SPEED_PER_LEVEL = 0.010   # Observatory (enhancing house)
-HOUSE_EFFICIENCY = _HOUSE_EFFICIENCY_PER_LEVEL * HOUSE_LEVEL           # 0.06 at L4
-HOUSE_ENHANCING_SPEED = _HOUSE_ENHANCING_SPEED_PER_LEVEL * HOUSE_LEVEL  # 0.04 at L4
+# The guild sheet now records each member's per-skill house level in the new "H"
+# column, so trials.member_bonuses reads the REAL level (clamped to 0..8). When
+# the H cell is blank we fall back to DEFAULT_HOUSE_LEVEL (the former flat
+# assumption of 4).
+DEFAULT_HOUSE_LEVEL = 4   # assumed when a member's per-skill "H" cell is blank
+HOUSE_MAX_LEVEL = 8       # in-game house rooms cap at level 8
+HOUSE_EFFICIENCY_PER_LEVEL = 0.015        # gathering + production house rooms
+HOUSE_ENHANCING_SPEED_PER_LEVEL = 0.010   # Observatory (enhancing house)
+# Default (blank-cell) contributions, retained for reference/tests.
+HOUSE_EFFICIENCY = HOUSE_EFFICIENCY_PER_LEVEL * DEFAULT_HOUSE_LEVEL           # 0.06 at L4
+HOUSE_ENHANCING_SPEED = HOUSE_ENHANCING_SPEED_PER_LEVEL * DEFAULT_HOUSE_LEVEL  # 0.04 at L4
 
 # --- TARGET_SCALE (neutral: the confirmed TotalWork formula carries no scale) -
 # Superseded 2026-07-17. The old lab-mirror targets were single-player-scaled

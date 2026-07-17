@@ -11,41 +11,46 @@ import pytest
 
 from src.reader import SheetStructureError, parse
 
-# Column layout (0-based), mirroring config.py:
-#   0 Member | 1 Main Classes | 2 Flex | 3-7 flex levels
-#   8+ skill blocks of [level, Tool, Top, Bot] x 10 skills
-# We build rows with the correct offsets. Skill block 1 (Milking) at col 8.
-
-_NOTE_ROW = "SURVEY CORPS,notes,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,"
-_GROUP_ROW = (
-    ",labels,,30+,25+,35+,35+,35+,Milking,,,,Foraging,,,,Woodcutting,,,,"
-    "C.Smithing,,,,Crafting,,,,Tailoring,,,,Cooking,,,,Brewing,,,,"
-    "Bell Farming,,,,Enhancing,,,"
-)
-_HEADER_ROW = (
-    "Member,Main Classes ,Flex,,,,,,,Tool,Top,Bot,,Tool,Top,Bot,,Tool,Top,Bot,"
-    ",Tool,Top,Bot,,Tool,Top,Bot,,Tool,Top,Bot,,Tool,Top,Bot,,Tool,Top,Bot,"
-    ",Tool,Top,Bot,,Tool,Top,Bot"
-)
+# Column layout (0-based), mirroring config.py (post 2026-07-17 sheet change):
+#   0 lead | 1 Member | 2 Main Classes | 3 Flex | 4-8 flex levels
+#   9+ skill blocks of [level, H (house), Tool, Top, Bot] x 10 skills (stride 5)
+# We build rows with the correct offsets. Skill block 1 (Milking) at col 9.
 
 
-def _member_row(name, main, flex, flex_levels, skill_specs):
+def _row(cells):
+    """Join cells into a CSV line, quoting any cell containing a comma."""
+    return ",".join(f'"{c}"' if "," in c else c for c in cells)
+
+
+_NOTE_ROW = _row([""] * 59)   # row 0: notes (ignored by the parser)
+_GROUP_ROW = _row([""] * 59)  # row 1: group labels (ignored by the parser)
+
+
+def _header_cells():
+    """Row 2 (the validated header): lead, Member, Main Classes, Flex, then a
+    5-cell block per skill: [<level blank>, H, Tool, Top, Bot]."""
+    cells = ["", "Member", "Main Classes ", "Flex", "", "", "", "", ""]
+    for _ in range(10):
+        cells.extend(["", "H", "Tool", "Top", "Bot"])
+    return cells
+
+
+_HEADER_ROW = _row(_header_cells())
+
+
+def _member_row(name, main, flex, flex_levels, skill_specs, lead="", houses=None):
     """Assemble a CSV data row.
 
-    flex_levels: 5 strings for cols 3-7.
+    flex_levels: 5 strings for cols 4-8.
     skill_specs: list of 10 tuples (level, tool, top, bot) as strings.
+    lead: the new leading column (col 0).
+    houses: 10 house-level strings (one per skill); defaults to all blank.
     """
-    cells = [name, main, flex] + list(flex_levels)
-    for level, tool, top, bot in skill_specs:
-        cells.extend([level, tool, top, bot])
-    # Quote flex if it contains commas.
-    out = []
-    for c in cells:
-        if "," in c:
-            out.append(f'"{c}"')
-        else:
-            out.append(c)
-    return ",".join(out)
+    houses = houses if houses is not None else [""] * 10
+    cells = [lead, name, main, flex] + list(flex_levels)  # cols 0..8
+    for (level, tool, top, bot), house in zip(skill_specs, houses):
+        cells.extend([level, house, tool, top, bot])  # [level, H, Tool, Top, Bot]
+    return _row(cells)
 
 
 def _ten_skills(level="100"):
@@ -77,6 +82,19 @@ def test_happy_path_parses_members():
         "Milking", "Foraging", "Woodcutting", "C.Smithing", "Crafting",
         "Tailoring", "Cooking", "Brewing", "Bell Farming", "Enhancing",
     }
+
+
+def test_house_level_parsed_from_h_column():
+    skills = _ten_skills("113")
+    # Milking house 4, Woodcutting house 6, the rest blank.
+    houses = ["4", "", "6", "", "", "", "", "", "", ""]
+    row = _member_row(
+        "Feal", "Water", "Nature", ["", "", "", "", "47"], skills, houses=houses
+    )
+    m = parse(_csv(row))[0]
+    assert m.skills["Milking"].house == 4
+    assert m.skills["Foraging"].house is None
+    assert m.skills["Woodcutting"].house == 6
 
 
 def test_boolean_and_none_coercion():

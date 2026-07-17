@@ -682,13 +682,13 @@ def _render_trials_html(week: dict) -> str:
         production buff. <em>Enhancing</em>: +0.20 speed from the community
         enhancing buff. Placeholders that apply only while each buff is active;
         the ~5% gear term awaits the per-member gear harvest.</li>
-    <li><strong>Level-4 houses (ASSUMPTION).</strong> Everyone is assumed to run
-        a <code>level&nbsp;4</code> house room for their trial skill. Per the
-        game data, gathering and production house rooms grant
-        <code>+0.015</code> efficiency per level (<code>+0.06</code> at level 4),
-        while the enhancing house (Observatory) grants <code>+0.010</code>
-        action-speed per level (<code>+0.04</code> at level 4) rather than
-        efficiency.</li>
+    <li><strong>Houses (per-member, from the sheet).</strong> Each member's
+        per-skill house level is read from the guild sheet's &ldquo;H&rdquo;
+        column. Per the game data, gathering and production house rooms grant
+        <code>+0.015</code> efficiency per level, while the enhancing house
+        (Observatory) grants <code>+0.010</code> action-speed per level rather
+        than efficiency. A blank H cell falls back to the assumed default of
+        <code>level&nbsp;4</code>; levels are clamped to the in-game max of 8.</li>
     <li><strong>{html.escape(_assignment_footnote(week))}</strong></li>
   </ol>
   <p>Machine-readable copy of this page's data: <code>trials.json</code>.

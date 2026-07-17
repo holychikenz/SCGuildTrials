@@ -275,6 +275,50 @@ def test_enhancing_speed_buff_applied():
     assert b.efficiency == pytest.approx(0.0)
 
 
+# ---------------------------------------------------------------------------
+# per-member house level (sheet "H" column)
+# ---------------------------------------------------------------------------
+def test_blank_house_falls_back_to_default_level():
+    # No "H" cell -> DEFAULT_HOUSE_LEVEL; equals the reference HOUSE_EFFICIENCY.
+    m = _member("D", {"Foraging": 120})  # SkillEntry.house defaults to None
+    b = trials.member_bonuses(m, "Foraging")
+    assert b.efficiency == pytest.approx(
+        config.ARMOUR_EFFICIENCY_PLUS7
+        + config.HOUSE_EFFICIENCY_PER_LEVEL * config.DEFAULT_HOUSE_LEVEL
+    )
+
+
+def test_real_gathering_house_level_scales_efficiency():
+    m = _member("H", {"Foraging": 120})
+    m.skills["Foraging"].house = 7
+    b = trials.member_bonuses(m, "Foraging")
+    assert b.efficiency == pytest.approx(
+        config.ARMOUR_EFFICIENCY_PLUS7 + config.HOUSE_EFFICIENCY_PER_LEVEL * 7
+    )
+
+
+def test_real_enhancing_house_level_scales_speed():
+    m = _member("H", {"Enhancing": 120})
+    m.skills["Enhancing"].house = 6
+    b = trials.member_bonuses(m, "Enhancing")
+    assert b.speed == pytest.approx(
+        config.CAPE_SPEED_PLUS3
+        + config.GLOVES_ENHANCING_SPEED_PLUS7
+        + config.COMMUNITY_ENHANCING_SPEED_BUFF
+        + config.HOUSE_ENHANCING_SPEED_PER_LEVEL * 6
+    )
+
+
+def test_house_level_clamped_to_max():
+    m = _member("C", {"Foraging": 120})
+    m.skills["Foraging"].house = 999  # absurd -> clamp to HOUSE_MAX_LEVEL
+    b = trials.member_bonuses(m, "Foraging")
+    assert b.efficiency == pytest.approx(
+        config.ARMOUR_EFFICIENCY_PLUS7
+        + config.HOUSE_EFFICIENCY_PER_LEVEL * config.HOUSE_MAX_LEVEL
+    )
+
+
 def test_missing_level_yields_zero_rate():
     m = _member("Z", {"Foraging": None})
     m.skills["Foraging"] = SkillEntry(level=None, tool=False, top=False, bot=False)
