@@ -213,6 +213,62 @@ def test_headcount_deadweight_never_lowers_result():
 
 
 # ---------------------------------------------------------------------------
+# Final bench-fill courtesy pass
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+def test_no_free_rider_left_behind(strategy):
+    # After optimize, every benched member must be genuinely deadweight: adding
+    # them to ANY non-full party would strictly lower that party's points. If a
+    # zero-or-positive seat existed, the fill pass should have taken it.
+    members = _roster(86, seed=29)
+    asn = optimizer.optimize(members, SKILLS, seed=4, cap=20, strategy=strategy)
+
+    name_to_member = {m.name: m for m in members}
+    scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
+    party_ids = {
+        s: {members.index(name_to_member[m.name]) for m in asn.parties[sk]}
+        for s, sk in enumerate(SKILLS)
+    }
+    for benched in asn.bench:
+        bi = members.index(name_to_member[benched.name])
+        for s, sk in enumerate(SKILLS):
+            if len(party_ids[s]) >= 20:
+                continue
+            base = scorer.party_points(s, party_ids[s])
+            withm = scorer.party_points(s, party_ids[s] | {bi})
+            assert withm - base < 0, (
+                f"{benched.name} could have joined {sk} at no cost ({strategy})"
+            )
+
+
+def test_fill_bench_never_lowers_total_and_only_adds():
+    # Start from a deliberately under-filled assignment (everyone benched) and
+    # let the courtesy pass seat people. It must never lower the total and must
+    # only ADD members to parties (never remove or reshuffle).
+    members = _roster(40, seed=31)
+    scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
+    empty = [set() for _ in SKILLS]
+
+    before = scorer.total_points(empty)  # 0
+    filled = optimizer._fill_bench(empty, scorer)
+    after = scorer.total_points(filled)
+
+    assert after >= before
+    # No member appears twice; the cap is respected.
+    all_ids = [m for p in filled for m in p]
+    assert len(all_ids) == len(set(all_ids))
+    assert all(len(p) <= 20 for p in filled)
+    # Terminal invariant: no benched member could still join at Δ >= 0.
+    benched = set(range(len(members))) - set(all_ids)
+    for s in range(len(SKILLS)):
+        if len(filled[s]) >= 20:
+            continue
+        base = scorer.party_points(s, filled[s])
+        for bi in benched:
+            assert scorer.party_points(s, filled[s] | {bi}) - base < 0
+
+
+# ---------------------------------------------------------------------------
 # Strategy parsing
 # ---------------------------------------------------------------------------
 def test_parse_strategy_constructor_and_refiners():

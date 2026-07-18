@@ -673,6 +673,58 @@ def run_strategy(
 
 
 # ---------------------------------------------------------------------------
+# Final courtesy pass: seat the leftover bench where it does no harm
+# ---------------------------------------------------------------------------
+def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
+    """Seat still-benched members in parties with room, never lowering points.
+
+    A no-regret pass applied AFTER the search has settled — outside any strategy,
+    so the bake-off still measures strategies on their own merits. Members the
+    search left benched are offered a seat in any non-full party where they do
+    not *reduce* that party's points (Δ >= 0). Because points are a STEP function
+    of tier, a member who crosses no threshold contributes exactly zero — no harm
+    done — so they may as well come along for the ride and share in the reward.
+    Members who would only inflate a party's effective target everywhere (Δ < 0
+    in every open slot) stay benched.
+
+    The search itself never makes these moves: hill-climb and SA apply only
+    STRICT improvements, so a benched member whose best placement is Δ == 0 is
+    never seated by them — this pass exists to give those riders a seat.
+
+    Deterministic: repeatedly seats the (member, slot) with the greatest true
+    Δpoints (>= 0), lowest member then lowest slot index breaking ties (matching
+    :func:`_construct_marginal_greedy`), until no benched member can be placed
+    without lowering some party's points. Cache-backed, so it stays cheap.
+    """
+    parties = [set(p) for p in parties]
+    S = len(scorer.skills)
+    cap = scorer.cap
+    assigned: set[int] = set()
+    for p in parties:
+        assigned |= p
+    benched = set(range(len(scorer.members))) - assigned
+
+    while benched:
+        best: Optional[tuple[int, int, int]] = None  # (gain, member, slot)
+        for s in range(S):
+            if len(parties[s]) >= cap:
+                continue
+            base = scorer.party_points(s, parties[s])
+            for m in sorted(benched):
+                gain = scorer.party_points(s, parties[s] | {m}) - base
+                if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
+                    best = (gain, m, s)
+        # Halt once the best available seat would STRICTLY lower points; Δ == 0
+        # riders are welcomed aboard (they never hurt).
+        if best is None or best[0] < 0:
+            break
+        _, m, s = best
+        parties[s].add(m)
+        benched.discard(m)
+    return parties
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def optimize(
@@ -701,6 +753,9 @@ def optimize(
 
     scorer = AssignmentScorer(members, skills, target_scale, cap)
     parties = run_strategy(scorer, strategy, seed)
+    # Courtesy pass: seat any leftover bench where it does not lower points, so
+    # stragglers come along for the ride rather than sit idle.
+    parties = _fill_bench(parties, scorer)
 
     assigned: set[int] = set()
     party_map: dict[str, list[MemberRow]] = {}
