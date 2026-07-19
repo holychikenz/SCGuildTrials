@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from . import config
+from . import signup as signup_model
 from . import trials as trials_model
 from .processor import process
 from .reader import SheetStructureError, fetch_csv, parse
@@ -119,7 +120,8 @@ def _render_html(data: dict) -> str:
   <h1>SURVEY CORPS &mdash; Skill Register</h1>
   <p class="meta">Milky Way Idle guild &middot; {data['member_count']} members &middot;
      generated {html.escape(data['generated_at'])} (UTC)</p>
-  <p class="nav"><a href="trials.html">Guild Trials &rarr;</a></p>
+  <p class="nav"><a href="trials.html">Guild Trials &rarr;</a>
+     &nbsp;&middot;&nbsp; <a href="signup.html">Sign-up Optimiser &rarr;</a></p>
 </header>
 <main>
   <h2>Per-skill summary</h2>
@@ -608,7 +610,8 @@ def _render_trials_html(week: dict) -> str:
   <p class="meta">SURVEY CORPS &middot; {week['member_count']} members &middot;
      {html.escape(_assignment_detail(week))} &middot;
      generated {html.escape(week['generated_at'])} (UTC)</p>
-  <p class="nav"><a href="index.html">&larr; Skill Register</a></p>
+  <p class="nav"><a href="index.html">&larr; Skill Register</a>
+     &nbsp;&middot;&nbsp; <a href="signup.html">Sign-up Optimiser &rarr;</a></p>
 </header>
 <main>
   <div class="strip">
@@ -701,6 +704,281 @@ def _render_trials_html(week: dict) -> str:
 """
 
 
+def _render_signup_html(p: dict) -> str:
+    """Render the sign-up optimiser page from a ``signup.SignupPlan`` dict.
+
+    The enforced plan (real sign-ups locked, open seats filled from the
+    uncommitted pool) is shown per trial with volunteers colour-coded green and
+    recommended fills blue; below it, the minimal strictly-improving swaps to
+    reach the full-roster optimum, and the optimum itself for comparison.
+    """
+    optimal_by_skill = {o["skill"]: o for o in p["optimal_summary"]}
+
+    # --- Summary strip: likely / with-swaps / ceiling ----------------------
+    strip = f"""
+    <div class="stat"><div class=stat-skill>Likely score</div>
+      <div class=stat-tier>{p['enforced_total']}</div>
+      <div class=stat-pts>sign-ups + recommended fills</div></div>
+    <div class="stat"><div class=stat-skill>With swaps</div>
+      <div class=stat-tier>{p['reachable_total']}</div>
+      <div class=stat-pts>after the swaps below</div></div>
+    <div class="total"><div class=stat-skill>Optimal ceiling</div>
+      <div class=stat-tier>{p['optimal_total']}</div>
+      <div class=stat-pts>best possible &middot; gap {p['gap']}</div></div>"""
+
+    # --- Per-trial enforced rosters ----------------------------------------
+    def _row(r: dict) -> str:
+        assigned = r["status"] == "assigned"
+        cls = "assigned" if assigned else "rec"
+        badges = _badge(r["tool"], "Tool") + _badge(r["top"], "Top") + _badge(r["bot"], "Bot")
+        if assigned:
+            chip = '<span class="chip assigned">Signed up</span>'
+        elif r.get("lifts_tier"):
+            chip = f'<span class="chip rec">Fill +{r["fill_gain"]}</span>'
+        else:
+            chip = '<span class="chip filler">Fill (safe)</span>'
+        level = "" if r["level"] is None else r["level"]
+        return (
+            f'<tr class="{cls}">'
+            f'<th scope=row>{html.escape(r["name"])}</th>'
+            f'<td class=num>{level}</td>'
+            f'<td class=cbadges>{badges}</td>'
+            f'<td class=num>{_num(r["rate_final"])}</td>'
+            f'<td>{chip}</td>'
+            "</tr>"
+        )
+
+    cards = []
+    for t in p["trials"]:
+        opt = optimal_by_skill.get(t["skill"], {})
+        opt_tier = opt.get("tier_reached")
+        opt_note = ""
+        if opt_tier is not None and opt_tier != t["tier_reached"]:
+            opt_note = (
+                f' &middot; <span class="hl">optimal reaches tier {opt_tier} '
+                f'({opt.get("points")} pts)</span>'
+            )
+        n_assigned = sum(1 for r in t["roster"] if r["status"] == "assigned")
+        n_rec = sum(1 for r in t["roster"] if r["status"] == "recommended")
+        rows = "".join(_row(r) for r in t["roster"])
+        cards.append(f"""
+  <section class="card">
+    <h2>{html.escape(t['skill'])}</h2>
+    <p class="meta">Party {t['party_size']} &middot; tier <strong>{t['tier_reached']}</strong>
+       &middot; {t['points']} pts &middot; {n_assigned} signed up, {n_rec} recommended,
+       {t['open_seats']} seat(s) still open{opt_note}</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Member</th><th class=num>Level</th>
+          <th>Tool / Top / Bot</th><th class=num>Rate @final</th><th>Status</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+  </section>""")
+    cards_html = "".join(cards)
+
+    # --- Swaps to reach optimal --------------------------------------------
+    if p["swaps"]:
+        swap_rows = "".join(
+            f'<tr><td><span class="chip swap">{html.escape(s["action"])}</span></td>'
+            f'<td>{html.escape(s["note"])}</td>'
+            f'<td class=num>+{s["gain"]}</td></tr>'
+            for s in p["swaps"]
+        )
+        gained = sum(s["gain"] for s in p["swaps"])
+        if p["reachable_total"] >= p["optimal_total"]:
+            swap_lead = (
+                f"These {len(p['swaps'])} swap(s) raise the likely "
+                f"{p['enforced_total']} to {p['reachable_total']} points "
+                "&mdash; the optimal ceiling. Each is purely advisory and "
+                "overrides a sign-up."
+            )
+        else:
+            swap_lead = (
+                f"These {len(p['swaps'])} swap(s) raise the likely "
+                f"{p['enforced_total']} to {p['reachable_total']} points "
+                f"(+{gained}); a further {p['optimal_total'] - p['reachable_total']} "
+                "would need a wider reshuffle. Each is advisory and overrides a "
+                "sign-up."
+            )
+        swaps_section = f"""
+  <section class="card">
+    <h2>Recommended swaps to reach optimal</h2>
+    <p class="meta">{swap_lead}</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Move</th><th>Detail</th><th class=num>Gain</th></tr></thead>
+        <tbody>{swap_rows}</tbody>
+      </table>
+    </div>
+  </section>"""
+    else:
+        swaps_section = f"""
+  <section class="card">
+    <h2>Recommended swaps to reach optimal</h2>
+    <p class="meta">None &mdash; the enforced sign-up plan ({p['enforced_total']} pts)
+       already matches the optimal ceiling ({p['optimal_total']} pts). Nothing to change.</p>
+  </section>"""
+
+    # --- Optimal comparison table ------------------------------------------
+    opt_rows = "".join(
+        f'<tr><th scope=row>{html.escape(o["skill"])}</th>'
+        f'<td class=num>{o["party_size"]}</td>'
+        f'<td class=num>{o["tier_reached"]}</td>'
+        f'<td class=num>{o["points"]}</td></tr>'
+        for o in p["optimal_summary"]
+    )
+
+    conflicts_html = ""
+    if p["conflicts"]:
+        items = "".join(f"<li>{html.escape(c)}</li>" for c in p["conflicts"])
+        conflicts_html = (
+            f'<p class="meta warn-text">Sign-up conflicts (multiple ticks): '
+            f'resolved to the first drawn choice.</p><ul>{items}</ul>'
+        )
+
+    bench_html = (
+        ", ".join(html.escape(n) for n in p["enforced_bench"])
+        if p["enforced_bench"] else "(none — every uncommitted member found a seat)"
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SURVEY CORPS - Sign-up Optimiser</title>
+<style>
+  :root {{
+    --bg: #0f1115; --panel: #171a21; --line: #2a2f3a;
+    --text: #e6e8ec; --muted: #99a0ad; --accent: #6ea8fe;
+    --on: #3ecf8e; --off: #3a3f4b; --warn: #e0b341;
+    --assigned: #3ecf8e; --rec: #6ea8fe;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; padding: 2rem 1.25rem 4rem;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); }}
+  header, main, footer {{ max-width: 1100px; margin-left: auto; margin-right: auto; }}
+  header {{ margin-bottom: 1.5rem; }}
+  h1 {{ margin: 0 0 .25rem; font-size: 1.6rem; letter-spacing: .5px; }}
+  h2 {{ font-size: 1.15rem; margin: 0 0 .3rem; color: var(--accent); }}
+  .meta {{ color: var(--muted); font-size: .85rem; }}
+  .hl {{ color: var(--warn); }}
+  .warn-text {{ color: var(--warn); }}
+  .nav {{ margin: .5rem 0 0; font-size: .95rem; }}
+  .nav a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
+  .nav a:hover {{ text-decoration: underline; }}
+  .strip {{ display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.25rem 0 .5rem; }}
+  .stat {{ flex: 1 1 180px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 8px; padding: .75rem .9rem; }}
+  .stat-skill {{ font-weight: 700; font-size: 1rem; }}
+  .stat-tier {{ color: var(--accent); font-size: 1.7rem; font-variant-numeric: tabular-nums; }}
+  .stat-pts {{ color: var(--muted); font-size: .85rem; }}
+  .total {{ flex: 1 1 180px; background: #14251c; border: 1px solid var(--on);
+            border-radius: 8px; padding: .75rem .9rem; }}
+  .total .stat-tier {{ color: var(--on); }}
+  .card {{ background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 1.1rem 1.2rem; margin: 1.5rem 0; }}
+  .scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
+  table {{ border-collapse: collapse; width: 100%; background: var(--panel); }}
+  th, td {{ padding: .4rem .6rem; border-bottom: 1px solid var(--line);
+            text-align: left; white-space: nowrap; }}
+  thead th {{ background: #1d222c; font-size: .78rem; text-transform: uppercase;
+              letter-spacing: .4px; color: var(--muted); }}
+  tbody th {{ font-weight: 600; }}
+  td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .cbadges {{ text-align: center; }}
+  .badge {{ display: inline-grid; place-items: center; width: 16px; height: 16px;
+            border-radius: 3px; font-size: 10px; font-weight: 700; margin: 0 1px; }}
+  .badge.on {{ background: var(--on); color: #06231a; }}
+  .badge.off {{ background: var(--off); color: #6b7180; }}
+  /* Row colour-coding: green = signed up, blue = recommended fill. */
+  tr.assigned > th, tr.assigned > td {{ background: rgba(62,207,142,.09);
+     box-shadow: inset 3px 0 0 var(--assigned); }}
+  tr.rec > th, tr.rec > td {{ background: rgba(110,168,254,.11);
+     box-shadow: inset 3px 0 0 var(--rec); }}
+  tbody tr:hover > th, tbody tr:hover > td {{ background: #1b2029; }}
+  .chip {{ display: inline-block; padding: .05rem .5rem; border-radius: 999px;
+           font-size: .75rem; font-weight: 700; }}
+  .chip.assigned {{ background: rgba(62,207,142,.18); color: var(--on); }}
+  .chip.rec {{ background: rgba(110,168,254,.20); color: var(--accent); }}
+  .chip.filler {{ background: var(--off); color: #aab1c0; }}
+  .chip.swap {{ background: rgba(224,179,65,.20); color: var(--warn);
+               text-transform: capitalize; }}
+  .legend {{ display: flex; gap: 1.25rem; flex-wrap: wrap; margin: .5rem 0 0;
+             font-size: .82rem; color: var(--muted); }}
+  .legend span {{ display: inline-flex; align-items: center; gap: .4rem; }}
+  .sw {{ width: 12px; height: 12px; border-radius: 3px; display: inline-block; }}
+  footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
+  footer ol {{ padding-left: 1.2rem; }} footer li {{ margin: .25rem 0; }}
+  code {{ background: #0b0d11; padding: 0 .3em; border-radius: 3px; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Guild Trials &mdash; Sign-up Optimiser
+      <span class="meta">(week of {html.escape(p['week_date'])})</span></h1>
+  <p class="meta">SURVEY CORPS &middot; {p['roster_count']} members &middot;
+     {p['signup_count']} signed up &middot; generated {html.escape(p['generated_at'])} (UTC)</p>
+  <p class="nav"><a href="index.html">&larr; Skill Register</a>
+     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a></p>
+</header>
+<main>
+  <div class="strip">{strip}</div>
+  <p class="legend">
+    <span><span class="sw" style="background:var(--assigned)"></span> Signed up (locked)</span>
+    <span><span class="sw" style="background:var(--rec)"></span> Recommended fill (from the uncommitted pool)</span>
+    <span><span class="sw" style="background:var(--warn)"></span> Swap (advisory)</span>
+  </p>
+  {cards_html}
+  {swaps_section}
+
+  <section class="card">
+    <h2>Optimal (unconstrained) for comparison</h2>
+    <p class="meta">The best possible teams over the full {p['roster_count']}-member roster,
+       ignoring who signed up &mdash; the ceiling above. Full rosters on the
+       <a href="trials.html">Guild Trials</a> page.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Trial</th><th class=num>Party</th>
+          <th class=num>Tier</th><th class=num>Points</th></tr></thead>
+        <tbody>{opt_rows}</tbody>
+      </table>
+    </div>
+  </section>
+  {conflicts_html}
+</main>
+<footer>
+  <h3>How this page is built</h3>
+  <ol>
+    <li><strong>Sign-ups are enforced.</strong> Every member who ticked a trial on
+        the sheet's <em>Trial Signup</em> tab is locked into that trial and shown
+        <span style="color:var(--on)">green</span>; they are never moved or benched
+        in the plan.</li>
+    <li><strong>Open seats are recommended fills.</strong> Remaining seats (up to the
+        {p['cap']}-per-party cap) are offered to members who signed up for nothing
+        &mdash; the {len(p['non_signups'])} uncommitted members &mdash; shown
+        <span style="color:var(--accent)">blue</span>. A fill is only suggested where
+        it does not <em>lower</em> a party's tier; ones that raise it are marked
+        <code>Fill +pts</code>, harmless riders <code>Fill (safe)</code>.
+        Uncommitted members with no useful seat: {bench_html}.</li>
+    <li><strong>Swaps are advisory.</strong> The swap list is the minimal set of
+        strictly-improving moves (each raising the score) from the enforced plan
+        toward the full-roster optimum. Applying them overrides sign-ups.</li>
+    <li><strong>Optimal is the ceiling.</strong> The optimum reuses the exact
+        assignment the <a href="trials.html">Guild Trials</a> page computes, so the
+        two never disagree. The scoring model, tiers and equipment assumptions are
+        documented there.</li>
+  </ol>
+  <p>Machine-readable copy of this page's data: <code>signup.json</code>.
+     Static build from the public guild sheet; no credentials, read-only.</p>
+</footer>
+</body>
+</html>
+"""
+
+
 def main() -> int:
     try:
         csv_text = fetch_csv()
@@ -741,13 +1019,39 @@ def main() -> int:
         _render_trials_html(week_dict), encoding="utf-8"
     )
 
+    # --- Sign-up Optimiser ---------------------------------------------------
+    # Fetch the real "Trial Signup" tab, enforce those picks, recommend fills
+    # for the open seats, and diff against the (already-computed) optimum. Reuses
+    # ``week`` as the optimal ceiling so the two pages never disagree.
+    try:
+        picks = signup_model.parse_signup(signup_model.fetch_signup_csv())
+    except SheetStructureError as exc:
+        print(f"ERROR: sheet structure mismatch (signup):\n{exc}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    optimal_total, optimal_summary = signup_model.optimal_from_week(week)
+    plan = signup_model.plan(sc.members, picks, optimal_total, optimal_summary)
+    plan_dict = plan.to_dict()
+    (OUTPUT_DIR / "signup.json").write_text(
+        json.dumps(plan_dict, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    (OUTPUT_DIR / "signup.html").write_text(
+        _render_signup_html(plan_dict), encoding="utf-8"
+    )
+
     print(
         f"Built _site/ with {data['member_count']} members "
         f"({len(data['skills'])} skills); trials: "
         + ", ".join(
             f"{t.skill} T{t.tier_reached}/{t.points}pts" for t in week.trials
         )
-        + f" (total {week.total_points} pts)."
+        + f" (total {week.total_points} pts); signup: "
+        + f"{plan.signup_count} signed, enforced {plan.enforced_total} pts "
+        + f"-> {plan.reachable_total} via {len(plan.swaps)} swap(s) "
+        + f"(optimal {plan.optimal_total})."
     )
     return 0
 

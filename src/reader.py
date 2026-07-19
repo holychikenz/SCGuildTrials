@@ -92,27 +92,47 @@ def _to_bool(value: str) -> bool:
 
 
 def _validate_header(rows: list[list[str]]) -> None:
-    """Check the real header row against sentinel columns."""
-    if len(rows) <= config.HEADER_ROW_INDEX:
+    """Check the header against sentinel cells.
+
+    Two rows are validated: the real header row (Member / Main Classes / Flex)
+    and the skill-group-name row, whose block-start cells must spell each skill
+    in ``config.SKILLS`` — this pins ``SKILL_BLOCK_START`` and
+    ``SKILL_BLOCK_STRIDE`` for every block (see the SENTINEL_HEADERS note in
+    config.py about the 2026-07-19 header reformat).
+    """
+    needed = max(config.HEADER_ROW_INDEX, config.SKILL_GROUP_ROW_INDEX)
+    if len(rows) <= needed:
         raise SheetStructureError(
-            "CSV has too few rows to contain the expected header row "
-            f"(need > {config.HEADER_ROW_INDEX}, got {len(rows)})."
+            "CSV has too few rows to contain the expected header rows "
+            f"(need > {needed}, got {len(rows)})."
         )
 
-    header = rows[config.HEADER_ROW_INDEX]
     mismatches = []
+
+    header = rows[config.HEADER_ROW_INDEX]
     for col, expected in config.SENTINEL_HEADERS.items():
         actual = _cell(header, col)
         if actual != expected:
-            mismatches.append(f"col {col}: expected {expected!r}, got {actual!r}")
+            mismatches.append(
+                f"header row col {col}: expected {expected!r}, got {actual!r}"
+            )
+
+    group = rows[config.SKILL_GROUP_ROW_INDEX]
+    for i, skill in enumerate(config.SKILLS):
+        col = config.SKILL_BLOCK_START + i * config.SKILL_BLOCK_STRIDE
+        actual = _cell(group, col)
+        if actual != skill:
+            mismatches.append(
+                f"skill-group row col {col}: expected {skill!r}, got {actual!r}"
+            )
 
     if mismatches:
         raise SheetStructureError(
             "Guild sheet structure has changed; the column map in config.py "
-            "no longer matches the header row. Mismatches:\n  - "
+            "no longer matches the sheet header. Mismatches:\n  - "
             + "\n  - ".join(mismatches)
-            + "\nInspect the CSV and update config.SENTINEL_HEADERS / column "
-            "offsets before this pipeline can run again."
+            + "\nInspect the CSV and update config.SENTINEL_HEADERS / the skill "
+            "block offsets before this pipeline can run again."
         )
 
 

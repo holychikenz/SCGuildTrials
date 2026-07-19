@@ -1,17 +1,19 @@
 """Unit tests for reader.parse. No network access.
 
-The inline fixture replicates the real 3-header-row structure:
+The inline fixture replicates the real 3-header-row structure (post the
+2026-07-19 header reformat):
   row 1: notes
-  row 2: group labels
-  row 3: real header (with sentinel cells)
+  row 2: skill-GROUP names at each block start (Milking, Foraging, ...) -> validated
+  row 3: real header (Member / Main Classes / Flex; sub-labels removed) -> validated
   rows 4+: member data, terminated by a blank Member cell.
 """
 
 import pytest
 
+from src import config
 from src.reader import SheetStructureError, parse
 
-# Column layout (0-based), mirroring config.py (post 2026-07-17 sheet change):
+# Column layout (0-based), mirroring config.py:
 #   0 lead | 1 Member | 2 Main Classes | 3 Flex | 4-8 flex levels
 #   9+ skill blocks of [level, H (house), Tool, Top, Bot] x 10 skills (stride 5)
 # We build rows with the correct offsets. Skill block 1 (Milking) at col 9.
@@ -22,16 +24,23 @@ def _row(cells):
     return ",".join(f'"{c}"' if "," in c else c for c in cells)
 
 
-_NOTE_ROW = _row([""] * 59)   # row 0: notes (ignored by the parser)
-_GROUP_ROW = _row([""] * 59)  # row 1: group labels (ignored by the parser)
+def _group_cells():
+    """Row 1 (the skill-group row): skill name at each block start, else blank."""
+    cells = [""] * 59
+    for i, skill in enumerate(config.SKILLS):
+        cells[config.SKILL_BLOCK_START + i * config.SKILL_BLOCK_STRIDE] = skill
+    return cells
+
+
+_NOTE_ROW = _row([""] * 59)      # row 0: notes (ignored by the parser)
+_GROUP_ROW = _row(_group_cells())  # row 1: skill-group names (validated)
 
 
 def _header_cells():
-    """Row 2 (the validated header): lead, Member, Main Classes, Flex, then a
-    5-cell block per skill: [<level blank>, H, Tool, Top, Bot]."""
-    cells = ["", "Member", "Main Classes ", "Flex", "", "", "", "", ""]
-    for _ in range(10):
-        cells.extend(["", "H", "Tool", "Top", "Bot"])
+    """Row 2 (the validated header): lead, Member, Main Classes, Flex. The
+    per-block H/Tool/Top/Bot sub-labels were removed in the 2026-07-19 reformat,
+    so they are absent here — only the data columns carry those values."""
+    cells = ["", "Member", "Main Classes ", "Flex"] + [""] * 55
     return cells
 
 
@@ -136,6 +145,20 @@ def test_structure_guard_raises_on_bad_header():
     with pytest.raises(SheetStructureError) as exc:
         parse(bad_csv)
     assert "structure has changed" in str(exc.value)
+
+
+def test_structure_guard_raises_on_bad_skill_group_row():
+    # A wrong skill-group name at a block start must fail loudly (this is the
+    # sentinel that replaced the removed H/Tool/Top/Bot sub-labels).
+    bad_group = _group_cells()
+    bad_group[config.SKILL_BLOCK_START] = "NotMilking"  # Milking block start
+    bad_csv = "\n".join(
+        [_NOTE_ROW, _row(bad_group), _HEADER_ROW,
+         _member_row("A", "", "", ["", "", "", "", ""], _ten_skills())]
+    ) + "\n"
+    with pytest.raises(SheetStructureError) as exc:
+        parse(bad_csv)
+    assert "skill-group row" in str(exc.value)
 
 
 def test_structure_guard_raises_on_too_few_rows():

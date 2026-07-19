@@ -21,6 +21,10 @@ CSV_URL = (
 # Row 3 (0-based index 2) is the real header row we validate against.
 HEADER_ROW_INDEX = 2  # 0-based index of the real header row
 FIRST_DATA_ROW_INDEX = 3  # 0-based index of the first member row
+# Row 2 (0-based index 1) carries the per-skill GROUP name at each block start
+# (Milking, Foraging, ... Enhancing). Since the 2026-07-19 header reformat this
+# is the strongest structural sentinel available (see SENTINEL_HEADERS note).
+SKILL_GROUP_ROW_INDEX = 1  # 0-based index of the skill-group-name row
 
 # Ordered skill group names, matching the repeating column blocks left-to-right.
 SKILLS = [
@@ -60,20 +64,24 @@ SKILL_TOP_OFFSET = 3
 SKILL_BOT_OFFSET = 4
 
 # --- Structure guard --------------------------------------------------------
-# Sentinel header cells the parser expects to find (0-based col -> text).
-# Values are compared after ``str.strip()``. If any of these fail to match,
-# the sheet has been restructured and we must fail loudly rather than emit
-# garbage. (Note: the real header cell is "Main Classes " with a trailing
-# space; stripping handles that.)
+# Sentinel header cells on the real header row (HEADER_ROW_INDEX, 0-based col ->
+# text). Values are compared after ``str.strip()``. If any fail to match, the
+# sheet has been restructured and we fail loudly rather than emit garbage.
+# (Note: the real header cell is "Main Classes " with a trailing space;
+# stripping handles that.)
+#
+# SHEET CHANGE (2026-07-19): the guild removed the per-block "H / Tool / Top /
+# Bot" sub-label cells from the header row — in the CSV export cols 10-13 (etc.)
+# are now blank. The underlying DATA columns are unchanged (stride 5:
+# [level, H, Tool, Top, Bot]), so those sub-labels are dropped as sentinels.
+# Their structural role is taken over — more strongly — by the skill-group-name
+# row (SKILL_GROUP_ROW_INDEX): each block start there must spell the skill name,
+# which pins SKILL_BLOCK_START and SKILL_BLOCK_STRIDE for all ten blocks. See
+# reader._validate_header.
 SENTINEL_HEADERS = {
     1: "Member",
     2: "Main Classes",
     3: "Flex",
-    10: "H",     # Milking house-level column (new 2026-07-17)
-    11: "Tool",
-    12: "Top",
-    13: "Bot",
-    16: "Tool",  # start of the Foraging block, confirms the 5-col stride
 }
 
 # Network timeout for the CSV fetch, in seconds.

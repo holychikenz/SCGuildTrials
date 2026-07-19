@@ -55,6 +55,28 @@ a **beam-search-seeded genetic algorithm** — and returns the single best resul
 `# BAKE-OFF RESULTS` block in `config.py`). To restore the Phase-1 random split,
 set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 
+## Sign-up optimiser (real sign-ups)
+
+`src/signup.py` reads the sheet's **Trial Signup** tab — the guild's *actual*
+weekly volunteers — and builds `_site/signup.html` + `signup.json`:
+
+1. **Sign-ups are enforced.** Every member who ticked a trial is locked into it
+   (shown green) and is never moved or benched.
+2. **Open seats are recommended fills.** Remaining seats (to the per-party cap)
+   are offered only to members who signed up for *nothing* (shown blue), and only
+   where they do not lower a party's tier — the same no-regret rule as
+   `optimizer._fill_bench`.
+3. **Swaps to reach optimal.** The page lists the minimal set of
+   *strictly-improving* moves from the enforced plan toward the unconstrained
+   full-roster optimum, each annotated with the guild points it gains. The
+   optimum reuses the exact assignment `trials.html` already computes (no second
+   optimizer run — the two pages never disagree on the ceiling).
+
+The Trial Signup tab is `col 0 = User`, then one TRUE/FALSE column per skill in
+`config.SKILLS` order (col 9, "Bell Farming", is the Alchemy trial). Only this
+week's drawn skills carry ticks; parsing is positional and guarded by the "User"
+sentinel (gviz silently serves a different tab on a bad name).
+
 ## Deploy (GitHub Actions)
 
 `.github/workflows/deploy.yml` builds and deploys on a **daily** schedule and on
@@ -78,3 +100,10 @@ All layout assumptions live in `src/config.py` (spreadsheet ID, CSV URL, ordered
 skill list, column offsets, and header sentinels). If the sheet layout changes,
 `src/build.py` exits non-zero with a `SheetStructureError` describing the
 mismatch — update `config.py` to match the new layout.
+
+The member-table structure guard validates two header rows: the real header
+(Member / Main Classes / Flex) and the skill-**group** row, whose block-start
+cells must spell each `config.SKILLS` name (this pins the block start and the
+5-column stride). The 2026-07-19 sheet reformat removed the per-block
+`H / Tool / Top / Bot` sub-label cells from the header, so those are no longer
+used as sentinels; the data columns behind them are unchanged.

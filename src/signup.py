@@ -1,0 +1,549 @@
+"""Sign-up-aware trial planning.
+
+The guild's "Trial Signup" sheet tab records who has *volunteered* for which of
+this week's four skilling trials. This module turns those real sign-ups into a
+plan the guild can actually run:
+
+  1. **Enforce** the sign-ups — every volunteer is LOCKED into the exact trial
+     they ticked; they are never moved or benched.
+  2. **Recommend fills** — the still-open seats are offered to members who
+     signed up for *nothing* (the uncommitted pool), choosing the placement that
+     most raises total guild points and never seating anyone who would lower a
+     party's tier (the same no-regret rule as :func:`src.optimizer._fill_bench`).
+  3. **Compare to optimal** — the enforced plan is diffed against the
+     unconstrained full-roster optimum (the very assignment ``trials.html``
+     already computes), yielding the score gap and the advisory list of swaps
+     (recruit / bench / move) that would close it.
+
+PURE-ish LOGIC: :func:`plan` and everything it calls are network-free and take
+their inputs as plain data. Only :func:`fetch_signup_csv` touches the network
+(the anonymous gviz CSV export, exactly like :mod:`src.scraper`). HTML lives in
+``build.py``.
+
+The Trial Signup tab layout (verified against the live sheet)::
+
+    col 0            = "User"  (member name)
+    cols 1..10       = TRUE/FALSE tick-boxes, one per skill in config.SKILLS
+                       order (col 9 is "Bell Farming" = the Alchemy trial).
+
+Only the columns matching this week's draw carry any ticks. gviz collapses the
+header to a single row and only labels col 0; the skill columns are positional,
+so parsing is by position (config.SKILLS order) and guarded by the "User"
+sentinel — gviz silently serves a *different* tab on a bad name, so the guard is
+mandatory (mirrors the reasoning in :mod:`src.scraper`).
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Optional
+from urllib.parse import quote
+
+import requests
+
+from . import config
+from .reader import MemberRow, SheetStructureError, _cell, _to_bool
+from .optimizer import AssignmentScorer
+from .trials import RosterEntry, simulate_race
+
+
+# ---------------------------------------------------------------------------
+# Fetch + parse the "Trial Signup" tab
+# ---------------------------------------------------------------------------
+SIGNUP_TAB = "Trial Signup"
+
+
+def fetch_signup_csv(tab_name: str = SIGNUP_TAB) -> str:
+    """Fetch the sign-up tab's gviz CSV export as text, addressed by name.
+
+    Raises:
+        RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
+    """
+    url = config.GVIZ_URL.format(sheet=quote(tab_name))
+    try:
+        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
+    except requests.RequestException as exc:  # network-level failure
+        raise RuntimeError(
+            f"Failed to reach Google Sheets gviz endpoint: {exc}"
+        ) from exc
+
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"Google Sheets returned {resp.status_code} for the gviz export of "
+            f"tab {tab_name!r}. The sheet's 'anyone with the link' sharing may "
+            f"have been revoked. URL: {url}"
+        )
+
+    resp.raise_for_status()
+    return resp.text
+
+
+def parse_signup(csv_text: str) -> dict[str, set[str]]:
+    """Parse the sign-up CSV into ``{member_name: {sheet_skill_names_ticked}}``.
+
+    Keys are member names in the "User" column; values are the set of
+    ``config.SKILLS`` names the member ticked TRUE. Reads until the first blank
+    User cell. Guards against gviz serving the wrong tab (the "User" sentinel).
+
+    Skill columns are positional: column ``i + 1`` is ``config.SKILLS[i]`` (the
+    9th, "Bell Farming", is the Alchemy trial — see
+    ``config.TRIAL_SKILL_TO_SHEET_COLUMN``).
+    """
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    if not rows:
+        raise SheetStructureError(
+            "Trial Signup CSV was empty; cannot locate the header row."
+        )
+
+    header = rows[0]
+    if "User" not in _cell(header, 0):
+        raise SheetStructureError(
+            "Trial Signup header did not match: expected column 0 to contain "
+            f"'User', got {_cell(header, 0)!r}. The tab may not exist (gviz "
+            "silently serves a different tab in that case) or the layout "
+            "changed. Inspect the 'Trial Signup' tab before this can run again."
+        )
+
+    n_skills = len(config.SKILLS)
+    picks: dict[str, set[str]] = {}
+    for row in rows[1:]:
+        name = _cell(row, 0)
+        if name == "":
+            break  # first blank User cell ends the table
+        ticked = {
+            config.SKILLS[i]
+            for i in range(n_skills)
+            if _to_bool(_cell(row, i + 1))
+        }
+        picks[name] = ticked
+    return picks
+
+
+# ---------------------------------------------------------------------------
+# Result types
+# ---------------------------------------------------------------------------
+@dataclass
+class SignupRosterEntry:
+    """One member's line in an enforced-plan trial roster."""
+
+    name: str
+    level: Optional[int]
+    tool: bool
+    top: bool
+    bot: bool
+    rate_final: float
+    status: str  # "assigned" (volunteer) | "recommended" (fill from free pool)
+    fill_gain: Optional[int] = None  # points this fill added (recommended only)
+    lifts_tier: bool = False  # True when the fill strictly raised the party's points
+
+
+@dataclass
+class SignupTrial:
+    """One trial in the enforced plan: locked volunteers + recommended fills."""
+
+    skill: str
+    party_size: int
+    tier_reached: int
+    points: int
+    open_seats: int  # seats still empty after fills (cap - party_size)
+    roster: list[SignupRosterEntry] = field(default_factory=list)
+
+
+@dataclass
+class Swap:
+    """One advisory, strictly-improving move from the enforced plan.
+
+    Each swap RAISES total guild points by ``gain`` — the list is the minimal
+    sequence of best-improvement moves a hill-climb takes from the enforced plan,
+    so every entry matters (contrast a naive diff against the arbitrary global
+    optimum, which reshuffles the whole guild for no real gain).
+    """
+
+    member: str
+    action: str  # "recruit" | "bench" | "move" | "swap"
+    from_skill: Optional[str]
+    to_skill: Optional[str]
+    note: str
+    partner: Optional[str] = None  # the other member, for an "action == swap"
+    gain: int = 0  # guild points this move adds
+
+
+@dataclass
+class SignupPlan:
+    """Everything the sign-up page needs for one week's real sign-ups."""
+
+    generated_at: str
+    week_date: str
+    skills: list[str]
+    cap: int
+    target_scale: float
+    roster_count: int
+    signup_count: int
+    non_signups: list[str]
+    conflicts: list[str]
+    enforced_total: int
+    optimal_total: int
+    gap: int
+    reachable_total: int  # score after applying the listed swaps
+    trials: list[SignupTrial] = field(default_factory=list)
+    enforced_bench: list[str] = field(default_factory=list)
+    optimal_summary: list[dict] = field(default_factory=list)
+    swaps: list[Swap] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "generated_at": self.generated_at,
+            "week_date": self.week_date,
+            "skills": self.skills,
+            "cap": self.cap,
+            "target_scale": self.target_scale,
+            "roster_count": self.roster_count,
+            "signup_count": self.signup_count,
+            "non_signups": self.non_signups,
+            "conflicts": self.conflicts,
+            "enforced_total": self.enforced_total,
+            "optimal_total": self.optimal_total,
+            "gap": self.gap,
+            "reachable_total": self.reachable_total,
+            "trials": [
+                {
+                    "skill": t.skill,
+                    "party_size": t.party_size,
+                    "tier_reached": t.tier_reached,
+                    "points": t.points,
+                    "open_seats": t.open_seats,
+                    "roster": [asdict(r) for r in t.roster],
+                }
+                for t in self.trials
+            ],
+            "enforced_bench": self.enforced_bench,
+            "optimal_summary": self.optimal_summary,
+            "swaps": [asdict(s) for s in self.swaps],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Core planning
+# ---------------------------------------------------------------------------
+def _sheet_column_for(trial_skill: str) -> str:
+    """The config.SKILLS column name a trial skill maps to (Alchemy->Bell Farming)."""
+    return config.TRIAL_SKILL_TO_SHEET_COLUMN.get(trial_skill, trial_skill)
+
+
+def _locked_skill_of(
+    picks: set[str], draw: list[str]
+) -> Optional[str]:
+    """Which drawn trial a member is locked into, or ``None`` if uncommitted.
+
+    A member is locked into the FIRST drawn trial (in ``draw`` order) whose sheet
+    column they ticked. Ticking more than one drawn trial is a conflict recorded
+    by the caller; the first tick wins so the member is still placed.
+    """
+    for t in draw:
+        if _sheet_column_for(t) in picks:
+            return t
+    return None
+
+
+def _fill_open_seats(
+    parties: list[set[int]],
+    scorer: AssignmentScorer,
+    free_pool: set[int],
+    cap: int,
+) -> tuple[list[set[int]], dict[int, tuple[int, int]]]:
+    """Seat ``free_pool`` members into non-full parties, never lowering points.
+
+    Mirrors :func:`src.optimizer._fill_bench` but restricted to the given free
+    pool (the uncommitted members): repeatedly seats the (member, slot) with the
+    greatest true Δpoints (>= 0), lowest member then lowest slot breaking ties,
+    until every remaining free member would strictly lower some party's points.
+    Because points are a STEP function of tier, a Δ == 0 rider crosses no
+    threshold and does no harm, so they are welcomed aboard.
+
+    Returns ``(parties, placed)`` where ``placed`` maps ``member_idx ->
+    (slot_idx, gain)`` for each fill actually seated.
+    """
+    parties = [set(p) for p in parties]
+    remaining = set(free_pool)
+    placed: dict[int, tuple[int, int]] = {}
+    S = len(scorer.skills)
+
+    while remaining:
+        best: Optional[tuple[int, int, int]] = None  # (gain, member, slot)
+        for s in range(S):
+            if len(parties[s]) >= cap:
+                continue
+            base = scorer.party_points(s, parties[s])
+            for m in sorted(remaining):
+                gain = scorer.party_points(s, parties[s] | {m}) - base
+                if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
+                    best = (gain, m, s)
+        if best is None or best[0] < 0:
+            break
+        gain, m, s = best
+        parties[s].add(m)
+        remaining.discard(m)
+        placed[m] = (s, gain)
+    return parties, placed
+
+
+def _improving_swaps(
+    parties: list[set[int]],
+    scorer: AssignmentScorer,
+    cap: int,
+    draw: list[str],
+    members: list[MemberRow],
+) -> tuple[list["Swap"], int]:
+    """Best-improvement hill-climb from ``parties``, RECORDING each move.
+
+    Returns ``(swaps, reachable_total)``. Mirrors
+    :func:`src.optimizer._refine_hill_climb` — the same relocate + swap
+    neighbourhood, best strictly-improving move each step — but records every
+    applied move as a :class:`Swap` carrying the exact points it gains. Because
+    only strict improvements are taken, the resulting list is short and every
+    entry is worth acting on; ``reachable_total`` is the score once they are all
+    applied (a local optimum, which may or may not reach the global ceiling).
+
+    The climb is advisory and unconstrained: it MAY move or bench a volunteer
+    (that is the whole point of "swaps to hit optimal"), and it may recruit a
+    still-benched member. Deterministic (fixed scan order, no randomness).
+    """
+    from .optimizer import _relocate_delta, _swap_delta
+
+    S = len(scorer.skills)
+    n = len(scorer.members)
+    parties = [set(p) for p in parties]
+    swaps: list[Swap] = []
+    total = scorer.total_points(parties)
+
+    for _ in range(config.OPT_HILLCLIMB_MAX_ITERS):
+        assigned = {m: s for s in range(S) for m in parties[s]}
+        best_delta = 0
+        best_move: Optional[tuple] = None
+
+        for m in range(n):
+            a = assigned.get(m, -1)
+            for b in range(-1, S):
+                if b == a:
+                    continue
+                if b >= 0 and len(parties[b]) >= cap:
+                    continue
+                delta = _relocate_delta(scorer, parties, m, a, b)
+                if delta > best_delta:
+                    best_delta = delta
+                    best_move = ("R", m, a, b)
+
+        items = sorted(assigned.items())
+        for i in range(len(items)):
+            m1, a = items[i]
+            for j in range(i + 1, len(items)):
+                m2, b = items[j]
+                if a == b:
+                    continue
+                delta = _swap_delta(scorer, parties, m1, a, m2, b)
+                if delta > best_delta:
+                    best_delta = delta
+                    best_move = ("S", m1, a, m2, b)
+
+        if best_move is None:
+            break
+
+        if best_move[0] == "R":
+            _, m, a, b = best_move
+            if a >= 0:
+                parties[a].discard(m)
+            if b >= 0:
+                parties[b].add(m)
+            name = members[m].name
+            if a == -1:
+                swaps.append(
+                    Swap(name, "recruit", None, draw[b],
+                         f"Recruit into {draw[b]}.", gain=best_delta)
+                )
+            elif b == -1:
+                swaps.append(
+                    Swap(name, "bench", draw[a], None,
+                         f"Bench from {draw[a]} (headcount penalty).",
+                         gain=best_delta)
+                )
+            else:
+                swaps.append(
+                    Swap(name, "move", draw[a], draw[b],
+                         f"Move from {draw[a]} to {draw[b]}.", gain=best_delta)
+                )
+        else:
+            _, m1, a, m2, b = best_move
+            parties[a].discard(m1)
+            parties[a].add(m2)
+            parties[b].discard(m2)
+            parties[b].add(m1)
+            n1, n2 = members[m1].name, members[m2].name
+            swaps.append(
+                Swap(n1, "swap", draw[a], draw[b],
+                     f"Swap {n1} ({draw[a]}) with {n2} ({draw[b]}).",
+                     partner=n2, gain=best_delta)
+            )
+        total += best_delta
+
+    return swaps, total
+
+
+def plan(
+    members: list[MemberRow],
+    picks: dict[str, set[str]],
+    optimal_total: int,
+    optimal_summary: list[dict],
+    draw: Optional[list[str]] = None,
+    cap: Optional[int] = None,
+    target_scale: Optional[float] = None,
+) -> SignupPlan:
+    """Build the enforced sign-up plan and its improving-swap advice.
+
+    Args:
+        members: the full guild roster (from the SC member tab).
+        picks: ``{member_name: {sheet_skill_names_ticked}}`` (from
+            :func:`parse_signup`); a member absent from this map is treated as
+            having signed up for nothing.
+        optimal_total: total guild points of the unconstrained full-roster
+            optimum (the ceiling ``trials.html`` already computes) — reported
+            for comparison.
+        optimal_summary: per-trial ``{skill, tier_reached, points, party_size}``
+            for that optimum (rendered alongside the enforced plan).
+        draw / cap / target_scale: default to the shipped config values.
+    """
+    draw = list(draw if draw is not None else config.TRIAL_SKILLS_CURRENT)
+    cap = cap if cap is not None else config.TRIAL_PARTY_CAP
+    if target_scale is None:
+        target_scale = config.TARGET_SCALE
+
+    name_to_idx = {m.name: i for i, m in enumerate(members)}
+
+    # --- Lock each volunteer into their chosen trial -----------------------
+    locked: list[set[int]] = [set() for _ in draw]
+    conflicts: list[str] = []
+    signed_names: set[str] = set()
+    for i, m in enumerate(members):
+        member_picks = picks.get(m.name, set())
+        drawn_picks = [t for t in draw if _sheet_column_for(t) in member_picks]
+        if not drawn_picks:
+            continue
+        if len(drawn_picks) > 1:
+            conflicts.append(
+                f"{m.name} ticked {', '.join(drawn_picks)} — locked into "
+                f"{drawn_picks[0]} (first drawn choice)."
+            )
+        locked[draw.index(drawn_picks[0])].add(i)
+        signed_names.add(m.name)
+
+    non_signups = [m.name for m in members if m.name not in signed_names]
+    free_pool = {name_to_idx[n] for n in non_signups}
+
+    # --- Fill the open seats from the uncommitted pool ---------------------
+    scorer = AssignmentScorer(members, draw, target_scale, cap)
+    enforced, placed = _fill_open_seats(locked, scorer, free_pool, cap)
+
+    # --- Build per-trial rosters (volunteers first, then recommended) ------
+    trials: list[SignupTrial] = []
+    enforced_slot: dict[int, Optional[int]] = {
+        i: None for i in range(len(members))
+    }
+    for s, skill in enumerate(draw):
+        party_idx = sorted(enforced[s])
+        for i in party_idx:
+            enforced_slot[i] = s
+        party = [members[i] for i in party_idx]
+        result = simulate_race(party, skill, target_scale)
+        by_name = {r.name: r for r in result.roster}
+
+        assigned_rows: list[SignupRosterEntry] = []
+        rec_rows: list[SignupRosterEntry] = []
+        for i in party_idx:
+            m = members[i]
+            r: RosterEntry = by_name[m.name]
+            if i in locked[s]:
+                assigned_rows.append(
+                    SignupRosterEntry(
+                        name=r.name, level=r.level, tool=r.tool, top=r.top,
+                        bot=r.bot, rate_final=r.rate_final, status="assigned",
+                    )
+                )
+            else:
+                gain = placed.get(i, (s, 0))[1]
+                rec_rows.append(
+                    SignupRosterEntry(
+                        name=r.name, level=r.level, tool=r.tool, top=r.top,
+                        bot=r.bot, rate_final=r.rate_final, status="recommended",
+                        fill_gain=gain, lifts_tier=gain > 0,
+                    )
+                )
+        assigned_rows.sort(key=lambda e: e.rate_final, reverse=True)
+        rec_rows.sort(key=lambda e: (e.fill_gain or 0, e.rate_final), reverse=True)
+
+        trials.append(
+            SignupTrial(
+                skill=skill,
+                party_size=result.party_size,
+                tier_reached=result.tier_reached,
+                points=result.points,
+                open_seats=cap - result.party_size,
+                roster=assigned_rows + rec_rows,
+            )
+        )
+
+    enforced_total = sum(t.points for t in trials)
+    seated_free = {i for i in placed}
+    enforced_bench = sorted(
+        members[i].name for i in free_pool if i not in seated_free
+    )
+
+    # --- Advisory swaps: the minimal strictly-improving moves from here -----
+    # A best-improvement hill-climb from the enforced plan, recording each move
+    # and the points it gains. Unlike a diff against the arbitrary global
+    # optimum (which reshuffles the whole guild for no net gain), every entry
+    # here strictly raises the score, so the list is short and actionable.
+    swaps, reachable_total = _improving_swaps(
+        enforced, scorer, cap, draw, members
+    )
+
+    now = datetime.now(timezone.utc)
+    return SignupPlan(
+        generated_at=now.isoformat(),
+        week_date=now.strftime("%Y-%m-%d"),
+        skills=draw,
+        cap=cap,
+        target_scale=target_scale,
+        roster_count=len(members),
+        signup_count=len(signed_names),
+        non_signups=non_signups,
+        conflicts=conflicts,
+        enforced_total=enforced_total,
+        optimal_total=optimal_total,
+        gap=optimal_total - enforced_total,
+        reachable_total=reachable_total,
+        trials=trials,
+        enforced_bench=enforced_bench,
+        optimal_summary=optimal_summary,
+        swaps=swaps,
+    )
+
+
+def optimal_from_week(week) -> tuple[int, list[dict]]:
+    """Adapt a :class:`src.trials.WeekResult` into ``plan``'s optimal inputs.
+
+    Returns ``(optimal_total, optimal_summary)`` so the sign-up page reuses the
+    exact optimum ``trials.html`` already computed — no second optimizer run,
+    and the two pages never disagree on the ceiling.
+    """
+    optimal_summary = [
+        {
+            "skill": t.skill,
+            "tier_reached": t.tier_reached,
+            "points": t.points,
+            "party_size": t.party_size,
+        }
+        for t in week.trials
+    ]
+    return week.total_points, optimal_summary
