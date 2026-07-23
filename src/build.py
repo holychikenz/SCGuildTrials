@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
@@ -979,6 +980,73 @@ def _render_signup_html(p: dict) -> str:
 """
 
 
+def _render_signup_inactive_html(reason: str, generated_at: str) -> str:
+    """Render a graceful placeholder for the sign-up optimiser page.
+
+    Emitted when the live "Trial Signup" tab no longer matches the expected
+    tick-box layout (a :class:`SheetStructureError` from ``parse_signup``) — e.g.
+    the guild switched to *free-assigned* trials and repurposed the tab. This is
+    an upstream DATA change, not a build failure, so the build stays green and
+    still ships this page: the nav links on the other pages keep resolving (no
+    404) and a visitor gets an honest explanation. The real optimiser page
+    returns automatically once a parseable sign-up tab is published again.
+    """
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SURVEY CORPS - Sign-up Optimiser</title>
+<style>
+  :root {{ --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --text:#e6e8ec;
+    --muted:#99a0ad; --accent:#6ea8fe; --warn:#e0b341; }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; padding:2rem 1.25rem 4rem;
+    font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background:var(--bg); color:var(--text); }}
+  header, main {{ max-width:1100px; margin:0 auto; }}
+  header {{ margin-bottom:1.5rem; }}
+  h1 {{ margin:0 0 .25rem; font-size:1.6rem; letter-spacing:.5px; }}
+  h2 {{ font-size:1.15rem; margin:0 0 .3rem; color:var(--warn); }}
+  .meta {{ color:var(--muted); font-size:.85rem; }}
+  .nav {{ margin:.5rem 0 0; font-size:.95rem; }}
+  .nav a {{ color:var(--accent); text-decoration:none; font-weight:600; }}
+  .nav a:hover {{ text-decoration:underline; }}
+  .card {{ background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:1.1rem 1.2rem; margin:1.5rem 0; }}
+  code {{ background:#0b0d11; padding:0 .3em; border-radius:3px;
+    word-break:break-word; }}
+  p {{ margin:.6rem 0; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Guild Trials &mdash; Sign-up Optimiser</h1>
+  <p class="meta">SURVEY CORPS &middot; generated {html.escape(generated_at)} (UTC)</p>
+  <p class="nav"><a href="index.html">&larr; Skill Register</a>
+     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a></p>
+</header>
+<main>
+  <section class="card">
+    <h2>Sign-up optimiser is currently inactive</h2>
+    <p>This page enforces the guild's per-member trial sign-ups (the tick-box
+       <em>Trial Signup</em> tab) and recommends fills for the open seats. It is
+       paused because that sign-up table is not currently published in the
+       expected format:</p>
+    <p class="meta"><code>{html.escape(reason)}</code></p>
+    <p>The guild sheet presently runs trials as <strong>free-assigned</strong>
+       (members pick their own trial), so there is no tick-box sign-up table to
+       enforce. This page repopulates automatically once a parseable
+       <em>Trial Signup</em> tab exists again.</p>
+    <p>In the meantime, the <a href="trials.html">Guild Trials</a> page shows the
+       full-roster optimal assignment.</p>
+  </section>
+</main>
+</body>
+</html>
+"""
+
+
 def main() -> int:
     try:
         csv_text = fetch_csv()
@@ -1019,29 +1087,56 @@ def main() -> int:
         _render_trials_html(week_dict), encoding="utf-8"
     )
 
-    # --- Sign-up Optimiser ---------------------------------------------------
+    # --- Sign-up Optimiser (OPTIONAL) ---------------------------------------
     # Fetch the real "Trial Signup" tab, enforce those picks, recommend fills
     # for the open seats, and diff against the (already-computed) optimum. Reuses
     # ``week`` as the optimal ceiling so the two pages never disagree.
+    #
+    # A SheetStructureError here means the guild's "Trial Signup" tab no longer
+    # carries the tick-box sign-up table (e.g. trials went "free-assigned" and
+    # the tab was repurposed — see the 2026-07 reformat). That is an upstream
+    # DATA change, not a build failure: the member and trials pages are already
+    # written, so we emit a graceful "inactive" signup.html (keeping the nav
+    # links valid) and still finish successfully. The real page returns the
+    # moment a parseable sign-up tab exists again. A network/HTTP RuntimeError
+    # still fails loudly, consistent with the fetches above.
+    plan = None
     try:
         picks = signup_model.parse_signup(signup_model.fetch_signup_csv())
+        optimal_total, optimal_summary = signup_model.optimal_from_week(week)
+        plan = signup_model.plan(sc.members, picks, optimal_total, optimal_summary)
     except SheetStructureError as exc:
-        print(f"ERROR: sheet structure mismatch (signup):\n{exc}", file=sys.stderr)
-        return 2
+        print(
+            "WARNING: Trial Signup tab structure mismatch; sign-up optimiser "
+            f"skipped, emitting inactive placeholder:\n{exc}",
+            file=sys.stderr,
+        )
+        (OUTPUT_DIR / "signup.html").write_text(
+            _render_signup_inactive_html(
+                str(exc), datetime.now(timezone.utc).isoformat()
+            ),
+            encoding="utf-8",
+        )
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    optimal_total, optimal_summary = signup_model.optimal_from_week(week)
-    plan = signup_model.plan(sc.members, picks, optimal_total, optimal_summary)
-    plan_dict = plan.to_dict()
-    (OUTPUT_DIR / "signup.json").write_text(
-        json.dumps(plan_dict, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    (OUTPUT_DIR / "signup.html").write_text(
-        _render_signup_html(plan_dict), encoding="utf-8"
-    )
+    if plan is not None:
+        plan_dict = plan.to_dict()
+        (OUTPUT_DIR / "signup.json").write_text(
+            json.dumps(plan_dict, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        (OUTPUT_DIR / "signup.html").write_text(
+            _render_signup_html(plan_dict), encoding="utf-8"
+        )
 
+    signup_note = (
+        f"{plan.signup_count} signed, enforced {plan.enforced_total} pts "
+        f"-> {plan.reachable_total} via {len(plan.swaps)} swap(s) "
+        f"(optimal {plan.optimal_total})"
+        if plan is not None
+        else "inactive (Trial Signup tab not in tick-box sign-up format)"
+    )
     print(
         f"Built _site/ with {data['member_count']} members "
         f"({len(data['skills'])} skills); trials: "
@@ -1049,9 +1144,8 @@ def main() -> int:
             f"{t.skill} T{t.tier_reached}/{t.points}pts" for t in week.trials
         )
         + f" (total {week.total_points} pts); signup: "
-        + f"{plan.signup_count} signed, enforced {plan.enforced_total} pts "
-        + f"-> {plan.reachable_total} via {len(plan.swaps)} swap(s) "
-        + f"(optimal {plan.optimal_total})."
+        + signup_note
+        + "."
     )
     return 0
 
