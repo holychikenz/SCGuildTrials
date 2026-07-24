@@ -258,9 +258,70 @@ def test_swaps_are_strictly_improving_and_consistent():
     p = _plan(members, picks, draw)
     for s in p.swaps:
         assert s.gain > 0
-        assert s.action in ("recruit", "bench", "move", "swap")
+        assert s.action in ("recruit", "bench", "move", "swap", "reshuffle")
+        # A reshuffle carries its component swaps; a single move never does.
+        if s.action == "reshuffle":
+            assert s.moves and all(
+                {"in", "out", "from_skill"} <= set(m) for m in s.moves
+            )
+        else:
+            assert not s.moves
     assert p.reachable_total == p.enforced_total + sum(s.gain for s in p.swaps)
     assert p.reachable_total >= p.enforced_total
+
+
+def test_compound_reshuffle_crosses_a_tier_plateau():
+    """A stalled single-move climb still closes a tier gap via a grouped reshuffle.
+
+    Points are a STEP function of tier, so it is normal for NO single swap to
+    change the score even when the party is one tier short — a strict single-move
+    climb then recommends nothing. This models that exactly: skill A crosses to
+    the higher tier only once its combined strength reaches 30, which needs TWO
+    swaps (each individually worth 0). The engine must record the pair as one
+    strictly-positive ``reshuffle`` and reach the optimal ceiling.
+    """
+    import types
+
+    from src import signup as signup_mod
+
+    draw = ["A", "B"]
+    # A-strength per member index; B's score ignores composition (donor trial).
+    str_a = {0: 9, 1: 8, 2: 8, 3: 12, 4: 11, 5: 10}
+    members = [types.SimpleNamespace(name=f"m{i}") for i in range(6)]
+
+    class FakeScorer:
+        skills = draw
+        def __init__(self):
+            self.members = members
+        def party_points(self, s, ids):
+            if self.skills[s] == "A":
+                return 200 if sum(str_a[i] for i in ids) >= 30 else 100
+            return 100  # skill B: fixed, so donor swaps never regress
+        def total_points(self, parties):
+            return sum(self.party_points(s, parties[s]) for s in range(len(parties)))
+
+    scorer = FakeScorer()
+    # φ (progress potential) reads member A-strength; tier arg is irrelevant here.
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(signup_mod, "rate", lambda m, skill, tier: str_a[int(m.name[1:])] if skill == "A" else 0.0)
+    try:
+        enforced = [{0, 1, 2}, {3, 4, 5}]  # A = 25 (< 30) -> 100 pts; total 200
+        assert scorer.total_points(enforced) == 200
+        swaps, reachable = signup_mod._improving_swaps(
+            enforced, scorer, cap=3, draw=draw, members=members,
+            optimal_points={"A": 200, "B": 100}, optimal_tier={"A": 5, "B": 5},
+        )
+    finally:
+        monkey.undo()
+
+    assert reachable == 300  # crossed to A's higher tier
+    assert reachable == 200 + sum(s.gain for s in swaps)
+    assert all(s.gain > 0 for s in swaps)
+    reshuffles = [s for s in swaps if s.action == "reshuffle"]
+    assert len(reshuffles) == 1
+    grp = reshuffles[0]
+    assert grp.gain == 100 and grp.to_skill == "A"
+    assert len(grp.moves) == 2  # two individually-break-even swaps, one crossing
 
 
 def test_plan_is_deterministic():

@@ -780,27 +780,43 @@ def _render_signup_html(p: dict) -> str:
     cards_html = "".join(cards)
 
     # --- Swaps to reach optimal --------------------------------------------
+    def _swap_detail(s: dict) -> str:
+        """Detail cell: the note, plus the component moves for a reshuffle."""
+        detail = html.escape(s["note"])
+        if s.get("moves"):
+            items = "".join(
+                f'<li>in <strong>{html.escape(m["in"])}</strong>, '
+                f'out {html.escape(m["out"])} '
+                f'<span class="meta">(from {html.escape(m["from_skill"])})</span></li>'
+                for m in s["moves"]
+            )
+            detail += f'<ul class="swap-moves">{items}</ul>'
+        return detail
+
     if p["swaps"]:
         swap_rows = "".join(
-            f'<tr><td><span class="chip swap">{html.escape(s["action"])}</span></td>'
-            f'<td>{html.escape(s["note"])}</td>'
+            f'<tr><td><span class="chip {html.escape(s["action"])}">'
+            f'{html.escape(s["action"])}</span></td>'
+            f'<td>{_swap_detail(s)}</td>'
             f'<td class=num>+{s["gain"]}</td></tr>'
             for s in p["swaps"]
         )
         gained = sum(s["gain"] for s in p["swaps"])
         if p["reachable_total"] >= p["optimal_total"]:
             swap_lead = (
-                f"These {len(p['swaps'])} swap(s) raise the likely "
+                f"These {len(p['swaps'])} move(s) raise the likely "
                 f"{p['enforced_total']} to {p['reachable_total']} points "
                 "&mdash; the optimal ceiling. Each is purely advisory and "
-                "overrides a sign-up."
+                "overrides a sign-up; a &ldquo;reshuffle&rdquo; is a small group "
+                "of swaps that together lift one trial a tier."
             )
         else:
             swap_lead = (
-                f"These {len(p['swaps'])} swap(s) raise the likely "
+                f"These {len(p['swaps'])} move(s) raise the likely "
                 f"{p['enforced_total']} to {p['reachable_total']} points "
                 f"(+{gained}); a further {p['optimal_total'] - p['reachable_total']} "
-                "would need a wider reshuffle. Each is advisory and overrides a "
+                "to the optimal ceiling is not reachable without a wider reshuffle "
+                "(see the comparison below). Each is advisory and overrides a "
                 "sign-up."
             )
         swaps_section = f"""
@@ -814,12 +830,22 @@ def _render_signup_html(p: dict) -> str:
       </table>
     </div>
   </section>"""
-    else:
+    elif p["enforced_total"] >= p["optimal_total"]:
         swaps_section = f"""
   <section class="card">
     <h2>Recommended swaps to reach optimal</h2>
     <p class="meta">None &mdash; the enforced sign-up plan ({p['enforced_total']} pts)
        already matches the optimal ceiling ({p['optimal_total']} pts). Nothing to change.</p>
+  </section>"""
+    else:
+        swaps_section = f"""
+  <section class="card">
+    <h2>Recommended swaps to reach optimal</h2>
+    <p class="meta">None found &mdash; the enforced sign-up plan ({p['enforced_total']} pts)
+       sits {p['optimal_total'] - p['enforced_total']} below the optimal ceiling
+       ({p['optimal_total']} pts), but no swap (single or grouped) closes the gap
+       without lowering another trial. Reaching the ceiling would need a wider
+       reshuffle &mdash; compare the two rosters below.</p>
   </section>"""
 
     # --- Optimal comparison table ------------------------------------------
@@ -908,6 +934,11 @@ def _render_signup_html(p: dict) -> str:
   .chip.filler {{ background: var(--off); color: #aab1c0; }}
   .chip.swap {{ background: rgba(224,179,65,.20); color: var(--warn);
                text-transform: capitalize; }}
+  .chip.reshuffle {{ background: rgba(110,168,254,.20); color: var(--accent);
+               text-transform: capitalize; }}
+  .swap-moves {{ margin: .35rem 0 0; padding-left: 1.1rem; font-size: .82rem;
+               color: #aab1c0; }}
+  .swap-moves li {{ margin: .1rem 0; }}
   .legend {{ display: flex; gap: 1.25rem; flex-wrap: wrap; margin: .5rem 0 0;
              font-size: .82rem; color: var(--muted); }}
   .legend span {{ display: inline-flex; align-items: center; gap: .4rem; }}
