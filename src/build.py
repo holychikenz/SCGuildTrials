@@ -1243,10 +1243,33 @@ def build_guild(site: "GuildSite") -> str:
             _render_signup_html(plan_dict, site), encoding="utf-8"
         )
 
+        # Data-quality signals from the sign-up name join. Case/space-only
+        # disagreements are matched automatically but reported so the sheet can
+        # be tidied; a sign-up that matches NO member is silently unusable, so it
+        # is a loud WARNING (it points either at a typo or a missing member row).
+        if plan.normalized_matches:
+            print(
+                f"NOTE ({site.key}): {len(plan.normalized_matches)} sign-up name(s) "
+                f"matched a member only after case/space normalisation "
+                f"(tidy the '{site.member_tab}' tab): "
+                + "; ".join(plan.normalized_matches),
+                file=sys.stderr,
+            )
+        if plan.unmatched_signups:
+            print(
+                f"WARNING ({site.key}): {len(plan.unmatched_signups)} sign-up "
+                f"name(s) match NO member on the '{site.member_tab}' tab and were "
+                f"IGNORED: {', '.join(plan.unmatched_signups)}. Fix the spelling "
+                f"in the sheet or add the member.",
+                file=sys.stderr,
+            )
+
     signup_note = (
         f"{plan.signup_count} signed, enforced {plan.enforced_total} pts "
         f"-> {plan.reachable_total} via {len(plan.swaps)} swap(s) "
-        f"(optimal {plan.optimal_total})"
+        f"(optimal {plan.optimal_total}); "
+        f"{len(plan.normalized_matches)} case-fixed, "
+        f"{len(plan.unmatched_signups)} unmatched"
         if plan is not None
         else f"inactive ({site.signup_tab} tab not in tick-box sign-up format)"
     )

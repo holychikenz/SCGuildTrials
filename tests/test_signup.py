@@ -354,6 +354,55 @@ def test_enforced_never_exceeds_real_optimum():
     assert p.reachable_total <= optimal_total
 
 
+def test_signup_matches_member_name_case_insensitively():
+    # The sign-up "User" cell is the raw in-game name; the member tab is
+    # hand-maintained and here disagrees only by capitalisation. The volunteer
+    # must still be locked in, and the fix-up reported in ``normalized_matches``.
+    draw = ["Foraging", "Woodcutting"]
+    members = [_member("dome", {"Foraging": 150})]  # member-tab casing
+    picks = {"Dome": {"Foraging"}}                   # sign-up (in-game) casing
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=3
+    )
+    forg = next(t for t in p.trials if t.skill == "Foraging")
+    assert any(r.name == "dome" and r.status == "assigned" for r in forg.roster)
+    assert p.signup_count == 1
+    assert p.unmatched_signups == []
+    assert p.normalized_matches == ["Dome ≈ dome"]
+
+
+def test_signup_unmatched_names_are_collected_and_ignored():
+    # A sign-up matching NO member is dropped (as before) but now REPORTED.
+    draw = ["Foraging", "Woodcutting"]
+    members = [_member("Real", {"Foraging": 150})]
+    picks = {"Real": {"Foraging"}, "Ghost": {"Woodcutting"}}
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=3
+    )
+    assert p.unmatched_signups == ["Ghost"]
+    names = {r.name for t in p.trials for r in t.roster}
+    assert "Ghost" not in names
+
+
+def test_ambiguous_normalized_name_is_matched_exactly_only():
+    # Two members that differ only by case make the normalised key ambiguous;
+    # a third-casing sign-up must NOT be force-merged into either — it is
+    # matched exactly only, and otherwise reported as unmatched.
+    draw = ["Foraging", "Woodcutting"]
+    members = [
+        _member("AB", {"Foraging": 150}),
+        _member("ab", {"Woodcutting": 150}),
+    ]
+    picks = {"AB": {"Foraging"}, "Ab": {"Woodcutting"}}
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=3
+    )
+    assert p.unmatched_signups == ["Ab"]      # ambiguous key -> not merged
+    assert p.normalized_matches == []
+    forg = next(t for t in p.trials if t.skill == "Foraging")
+    assert any(r.name == "AB" and r.status == "assigned" for r in forg.roster)
+
+
 def test_signup_conflict_is_recorded_and_resolved_to_first_choice():
     draw = ["Foraging", "Woodcutting"]
     members = [_member("Dupe", {"Foraging": 150, "Woodcutting": 150})]

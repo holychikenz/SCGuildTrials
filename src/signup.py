@@ -53,6 +53,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -117,6 +118,19 @@ def fetch_signup_csv(tab_name: str = SIGNUP_TAB) -> str:
 def _norm_header(text: str) -> str:
     """Normalise a header cell for matching: lowercase, alphanumerics only."""
     return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _norm_name(text: str) -> str:
+    """Normalise a member / sign-up name for JOINING the two sheets.
+
+    Collapses internal whitespace and casefolds — nothing more. The sign-up
+    "User" cell is the raw in-game name, while the member tab is hand-maintained,
+    so the two routinely differ only by capitalisation (e.g. sign-up ``Dome`` vs
+    member ``dome``); an exact-only join silently dropped such sign-ups. Unlike
+    :func:`_norm_header` this KEEPS digits and punctuation, so only case/spacing
+    differences fold together and two genuinely distinct handles never collide.
+    """
+    return " ".join(text.split()).casefold()
 
 
 # Normalised header token -> the ``config.SKILLS`` sheet-column name it denotes.
@@ -306,6 +320,13 @@ class SignupPlan:
     enforced_bench: list[str] = field(default_factory=list)
     optimal_summary: list[dict] = field(default_factory=list)
     swaps: list[Swap] = field(default_factory=list)
+    # Sign-up "User" names that matched NO member on the guild's member tab
+    # (after case/space-insensitive matching) and were therefore ignored — a
+    # data-quality signal the build surfaces loudly.
+    unmatched_signups: list[str] = field(default_factory=list)
+    # "<signup name> ≈ <member name>" for each sign-up matched only after
+    # case/space normalisation (i.e. the two sheets disagree on capitalisation).
+    normalized_matches: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -336,6 +357,8 @@ class SignupPlan:
             "enforced_bench": self.enforced_bench,
             "optimal_summary": self.optimal_summary,
             "swaps": [asdict(s) for s in self.swaps],
+            "unmatched_signups": self.unmatched_signups,
+            "normalized_matches": self.normalized_matches,
         }
 
 
@@ -701,12 +724,44 @@ def plan(
 
     name_to_idx = {m.name: i for i, m in enumerate(members)}
 
+    # --- Match sign-ups to members (exact, then case/space-insensitive) -----
+    # Match each member's picks by EXACT name first, then fall back to a
+    # normalised key (:func:`_norm_name` — casefold + collapsed whitespace) so a
+    # sign-up that differs from the member tab only by capitalisation is still
+    # honoured instead of silently dropped. A normalised key shared by two
+    # DISTINCT members is ambiguous and matched exactly only (never merged).
+    # Every sign-up whose name matches no member is collected for the build to
+    # surface loudly (:attr:`SignupPlan.unmatched_signups`).
+    member_names = {m.name for m in members}
+    member_norm = [_norm_name(m.name) for m in members]
+    ambiguous_keys = {k for k, c in Counter(member_norm).items() if c > 1}
+    picks_by_norm: dict[str, set[str]] = {}
+    picks_sources: dict[str, list[str]] = {}
+    for user, ticks in picks.items():
+        k = _norm_name(user)
+        picks_by_norm.setdefault(k, set()).update(ticks)
+        picks_sources.setdefault(k, []).append(user)
+
+    normalized_matches: list[str] = []
+
+    def _picks_for(idx: int, name: str) -> set[str]:
+        """This member's ticked skills, joined exactly then case-insensitively."""
+        if name in picks:  # exact match always wins
+            return picks[name]
+        k = member_norm[idx]
+        if k not in ambiguous_keys and k in picks_by_norm:
+            for src in picks_sources[k]:
+                if src != name:
+                    normalized_matches.append(f"{src} ≈ {name}")
+            return picks_by_norm[k]
+        return set()
+
     # --- Lock each volunteer into their chosen trial -----------------------
     locked: list[set[int]] = [set() for _ in draw]
     conflicts: list[str] = []
     signed_names: set[str] = set()
     for i, m in enumerate(members):
-        member_picks = picks.get(m.name, set())
+        member_picks = _picks_for(i, m.name)
         drawn_picks = [t for t in draw if _sheet_column_for(t) in member_picks]
         if not drawn_picks:
             continue
@@ -717,6 +772,18 @@ def plan(
             )
         locked[draw.index(drawn_picks[0])].add(i)
         signed_names.add(m.name)
+
+    # A sign-up is "matched" iff its name equals a member exactly OR its
+    # normalised key is an UNAMBIGUOUS member key. Anything else joins to no
+    # member and is reported (a typo, or a member missing from the roster tab).
+    nonambiguous_member_keys = {
+        k for k in set(member_norm) if k not in ambiguous_keys
+    }
+    unmatched_signups = sorted(
+        user for user in picks
+        if user not in member_names
+        and _norm_name(user) not in nonambiguous_member_keys
+    )
 
     non_signups = [m.name for m in members if m.name not in signed_names]
     free_pool = {name_to_idx[n] for n in non_signups}
@@ -812,6 +879,8 @@ def plan(
         enforced_bench=enforced_bench,
         optimal_summary=optimal_summary,
         swaps=swaps,
+        unmatched_signups=unmatched_signups,
+        normalized_matches=normalized_matches,
     )
 
 
