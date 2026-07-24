@@ -1,7 +1,7 @@
 """Sign-up-aware trial planning.
 
-The guild's "Trial Signup" sheet tab records who has *volunteered* for which of
-this week's four skilling trials. This module turns those real sign-ups into a
+The guild's "SC Trial Signup" sheet tab records who has *volunteered* for which
+of this week's four skilling trials. This module turns those real sign-ups into a
 plan the guild can actually run:
 
   1. **Enforce** the sign-ups — every volunteer is LOCKED into the exact trial
@@ -20,7 +20,7 @@ their inputs as plain data. Only :func:`fetch_signup_csv` touches the network
 (the anonymous gviz CSV export, exactly like :mod:`src.scraper`). HTML lives in
 ``build.py``.
 
-The Trial Signup tab layout (verified against the live sheet)::
+The SC Trial Signup tab layout (verified against the live sheet)::
 
     col 0            = "User"  (member name)
     cols 1..10       = TRUE/FALSE tick-boxes, one per skill in config.SKILLS
@@ -51,9 +51,16 @@ from .trials import RosterEntry, simulate_race
 
 
 # ---------------------------------------------------------------------------
-# Fetch + parse the "Trial Signup" tab
+# Fetch + parse the "SC Trial Signup" tab
 # ---------------------------------------------------------------------------
-SIGNUP_TAB = "Trial Signup"
+# SHEET CHANGE (2026-07): the sign-up tab was renamed from "Trial Signup" to
+# "SC Trial Signup" when the guild split sign-ups per sub-guild (SC / LI). The
+# tick-box LAYOUT is unchanged (col 0 = User, then one TRUE/FALSE column per
+# config.SKILLS). The optimiser is SC-only (it plans over the "SC Member Data"
+# tab), so it reads the SC sign-up tab. NOTE: gviz does NOT error on an unknown
+# tab name — it silently serves a *different* tab — so a stale name here does not
+# fail loudly at fetch; it is the "User" sentinel in parse_signup that catches it.
+SIGNUP_TAB = "SC Trial Signup"
 
 
 def fetch_signup_csv(tab_name: str = SIGNUP_TAB) -> str:
@@ -95,16 +102,16 @@ def parse_signup(csv_text: str) -> dict[str, set[str]]:
     rows = list(csv.reader(io.StringIO(csv_text)))
     if not rows:
         raise SheetStructureError(
-            "Trial Signup CSV was empty; cannot locate the header row."
+            "SC Trial Signup CSV was empty; cannot locate the header row."
         )
 
     header = rows[0]
     if "User" not in _cell(header, 0):
         raise SheetStructureError(
-            "Trial Signup header did not match: expected column 0 to contain "
+            "SC Trial Signup header did not match: expected column 0 to contain "
             f"'User', got {_cell(header, 0)!r}. The tab may not exist (gviz "
             "silently serves a different tab in that case) or the layout "
-            "changed. Inspect the 'Trial Signup' tab before this can run again."
+            "changed. Inspect the 'SC Trial Signup' tab before this can run again."
         )
 
     n_skills = len(config.SKILLS)

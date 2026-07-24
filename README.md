@@ -57,7 +57,7 @@ set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 
 ## Sign-up optimiser (real sign-ups)
 
-`src/signup.py` reads the sheet's **Trial Signup** tab — the guild's *actual*
+`src/signup.py` reads the sheet's **SC Trial Signup** tab — the guild's *actual*
 weekly volunteers — and builds `_site/signup.html` + `signup.json`:
 
 1. **Sign-ups are enforced.** Every member who ticked a trial is locked into it
@@ -72,7 +72,7 @@ weekly volunteers — and builds `_site/signup.html` + `signup.json`:
    optimum reuses the exact assignment `trials.html` already computes (no second
    optimizer run — the two pages never disagree on the ceiling).
 
-The Trial Signup tab is `col 0 = User`, then one TRUE/FALSE column per skill in
+The SC Trial Signup tab is `col 0 = User`, then one TRUE/FALSE column per skill in
 `config.SKILLS` order (col 9, "Bell Farming", is the Alchemy trial). Only this
 week's drawn skills carry ticks; parsing is positional and guarded by the "User"
 sentinel (gviz silently serves a different tab on a bad name).

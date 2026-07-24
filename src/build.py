@@ -955,7 +955,7 @@ def _render_signup_html(p: dict) -> str:
   <h3>How this page is built</h3>
   <ol>
     <li><strong>Sign-ups are enforced.</strong> Every member who ticked a trial on
-        the sheet's <em>Trial Signup</em> tab is locked into that trial and shown
+        the sheet's <em>SC Trial Signup</em> tab is locked into that trial and shown
         <span style="color:var(--on)">green</span>; they are never moved or benched
         in the plan.</li>
     <li><strong>Open seats are recommended fills.</strong> Remaining seats (up to the
@@ -984,7 +984,7 @@ def _render_signup_html(p: dict) -> str:
 def _render_signup_inactive_html(reason: str, generated_at: str) -> str:
     """Render a graceful placeholder for the sign-up optimiser page.
 
-    Emitted when the live "Trial Signup" tab no longer matches the expected
+    Emitted when the live "SC Trial Signup" tab no longer matches the expected
     tick-box layout (a :class:`SheetStructureError` from ``parse_signup``) — e.g.
     the guild switched to *free-assigned* trials and repurposed the tab. This is
     an upstream DATA change, not a build failure, so the build stays green and
@@ -1031,14 +1031,14 @@ def _render_signup_inactive_html(reason: str, generated_at: str) -> str:
   <section class="card">
     <h2>Sign-up optimiser is currently inactive</h2>
     <p>This page enforces the guild's per-member trial sign-ups (the tick-box
-       <em>Trial Signup</em> tab) and recommends fills for the open seats. It is
+       <em>SC Trial Signup</em> tab) and recommends fills for the open seats. It is
        paused because that sign-up table is not currently published in the
        expected format:</p>
     <p class="meta"><code>{html.escape(reason)}</code></p>
     <p>The guild sheet presently runs trials as <strong>free-assigned</strong>
        (members pick their own trial), so there is no tick-box sign-up table to
        enforce. This page repopulates automatically once a parseable
-       <em>Trial Signup</em> tab exists again.</p>
+       <em>SC Trial Signup</em> tab exists again.</p>
     <p>In the meantime, the <a href="trials.html">Guild Trials</a> page shows the
        full-roster optimal assignment.</p>
   </section>
@@ -1106,11 +1106,11 @@ def main() -> int:
     )
 
     # --- Sign-up Optimiser (OPTIONAL) ---------------------------------------
-    # Fetch the real "Trial Signup" tab, enforce those picks, recommend fills
+    # Fetch the real "SC Trial Signup" tab, enforce those picks, recommend fills
     # for the open seats, and diff against the (already-computed) optimum. Reuses
     # ``week`` as the optimal ceiling so the two pages never disagree.
     #
-    # A SheetStructureError here means the guild's "Trial Signup" tab no longer
+    # A SheetStructureError here means the guild's "SC Trial Signup" tab no longer
     # carries the tick-box sign-up table (e.g. trials went "free-assigned" and
     # the tab was repurposed — see the 2026-07 reformat). That is an upstream
     # DATA change, not a build failure: the member and trials pages are already
@@ -1128,7 +1128,7 @@ def main() -> int:
         )
     except SheetStructureError as exc:
         print(
-            "WARNING: Trial Signup tab structure mismatch; sign-up optimiser "
+            "WARNING: SC Trial Signup tab structure mismatch; sign-up optimiser "
             f"skipped, emitting inactive placeholder:\n{exc}",
             file=sys.stderr,
         )
@@ -1156,7 +1156,7 @@ def main() -> int:
         f"-> {plan.reachable_total} via {len(plan.swaps)} swap(s) "
         f"(optimal {plan.optimal_total})"
         if plan is not None
-        else "inactive (Trial Signup tab not in tick-box sign-up format)"
+        else "inactive (SC Trial Signup tab not in tick-box sign-up format)"
     )
     print(
         f"Built _site/ with {data['member_count']} members "
