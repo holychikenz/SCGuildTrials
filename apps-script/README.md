@@ -9,7 +9,7 @@ changing the sheet's public "anyone with the link can view" sharing.
 Game tab (Tampermonkey: guild-signup-sync)
    │  reads guild_characters_updated off the WebSocket
    │  builds { tab, header:["User", …drawn skills, …combat], rows:[[name, TRUE/FALSE …], …] }
-   │  tab is chosen from the CURRENT guild's id (multi-guild characters)
+   │  tab is chosen from the ROSTER's own guild id (guildCharacterMap[*].guildID)
    ▼  POST (GM_xmlhttpRequest, shared-secret auth)
 script.google.com/macros/s/<id>/exec   ← Code.gs, runs as the sheet OWNER
    ▼  writes (only tabs on the ALLOWED_TABS allowlist)
@@ -41,9 +41,9 @@ The module lives in the sibling repo:
    - **Apps Script /exec URL** → the URL from step 4
    - **Shared secret** → the exact string from step 3
    - **Force tab (testing)** → leave as `chikenz-test` for now
-   - **Guild id → tab map** → leave the default (`240 = LI Trial Signup`); add
-     `<Survey Corps id> = SC Trial Signup` once you know it (every sync logs the
-     current guild's id + name to the console)
+   - **Guild id → tab map** → leave the default (`4 = SC Trial Signup`,
+     `240 = LI Trial Signup`). The tab is chosen from the roster's own guild id
+     (logged on every sync); add a line for any further guild.
 
 ## Verify (before touching the real tab)
 
@@ -66,11 +66,11 @@ The module lives in the sibling repo:
 ## Going live
 
 Only after the round-trip looks right: **clear** the module's **Force tab
-(testing)** setting. Writes then route by the CURRENT guild's id via the
-**Guild id → tab map** (`240 → LI Trial Signup`; add Survey Corps's id →
-`SC Trial Signup` once the module has logged it). Both real tabs are already in
-`ALLOWED_TABS`, so there is no code change and no re-deploy. A roster from an
-**unmapped** guild is refused — so one guild can never overwrite another's tab.
+(testing)** setting. Writes then route by the **roster's own guild id** via the
+**Guild id → tab map** (default `4 → SC Trial Signup`, `240 → LI Trial Signup`).
+Both real tabs are already in `ALLOWED_TABS`, so there is no code change and no
+re-deploy. A roster from an **unmapped** guild is refused — so one guild can
+never overwrite another's tab.
 
 ## Re-deploying after an edit
 
