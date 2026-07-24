@@ -13,10 +13,11 @@ import pytest
 from src import config
 from src.reader import SheetStructureError, parse
 
-# Column layout (0-based), mirroring config.py:
-#   0 lead | 1 Member | 2 Main Classes | 3 Flex | 4-8 flex levels
-#   9+ skill blocks of [level, H (house), Tool, Top, Bot] x 10 skills (stride 5)
-# We build rows with the correct offsets. Skill block 1 (Milking) at col 9.
+# Column layout (0-based), mirroring config.py (post 2026-07-24 leading-column
+# deletion):
+#   0 Member | 1 Main Classes | 2 Flex | 3-7 flex levels
+#   8+ skill blocks of [level, H (house), Tool, Top, Bot] x 10 skills (stride 5)
+# We build rows with the correct offsets. Skill block 1 (Milking) at col 8.
 
 
 def _row(cells):
@@ -37,26 +38,25 @@ _GROUP_ROW = _row(_group_cells())  # row 1: skill-group names (validated)
 
 
 def _header_cells():
-    """Row 2 (the validated header): lead, Member, Main Classes, Flex. The
-    per-block H/Tool/Top/Bot sub-labels were removed in the 2026-07-19 reformat,
-    so they are absent here — only the data columns carry those values."""
-    cells = ["", "Member", "Main Classes ", "Flex"] + [""] * 55
+    """Row 2 (the validated header): Member, Main Classes, Flex. The per-block
+    H/Tool/Top/Bot sub-labels were removed in the 2026-07-19 reformat, so they
+    are absent here — only the data columns carry those values."""
+    cells = ["Member", "Main Classes ", "Flex"] + [""] * 56
     return cells
 
 
 _HEADER_ROW = _row(_header_cells())
 
 
-def _member_row(name, main, flex, flex_levels, skill_specs, lead="", houses=None):
+def _member_row(name, main, flex, flex_levels, skill_specs, houses=None):
     """Assemble a CSV data row.
 
-    flex_levels: 5 strings for cols 4-8.
+    flex_levels: 5 strings for cols 3-7.
     skill_specs: list of 10 tuples (level, tool, top, bot) as strings.
-    lead: the new leading column (col 0).
     houses: 10 house-level strings (one per skill); defaults to all blank.
     """
     houses = houses if houses is not None else [""] * 10
-    cells = [lead, name, main, flex] + list(flex_levels)  # cols 0..8
+    cells = [name, main, flex] + list(flex_levels)  # cols 0..7
     for (level, tool, top, bot), house in zip(skill_specs, houses):
         cells.extend([level, house, tool, top, bot])  # [level, H, Tool, Top, Bot]
     return _row(cells)

@@ -40,22 +40,25 @@ SKILLS = [
     "Enhancing",
 ]
 
-# Fixed-position columns (0-based). SHEET CHANGE (2026-07-17): the guild sheet
-# gained a new leading column at index 0, shifting Member/Main Classes/Flex and
-# the flex thresholds one place right; and each skill block gained an "H" (house
-# level) column between the level and the Tool checkbox, widening the block from
-# 4 to 5 columns. The maps below reflect the post-change layout.
-COL_NAME = 1
-COL_MAIN_CLASSES = 2
-COL_FLEX = 3
+# Fixed-position columns (0-based). SHEET CHANGE (2026-07-24): the leading column
+# that briefly sat at index 0 (added 2026-07-17, held only row numbers) was
+# DELETED, shifting Member/Main Classes/Flex and the flex thresholds one place
+# back LEFT. This also aligns SC with the "LI Member Data" tab, which never had a
+# leading column — so ONE column map now serves BOTH guilds (this is what fixed
+# the LI-page 404: LI failed the old SC-only map by exactly one column). Each
+# skill block still carries an "H" (house level) column between the level and the
+# Tool checkbox (stride 5). The maps below reflect the post-2026-07-24 layout.
+COL_NAME = 0
+COL_MAIN_CLASSES = 1
+COL_FLEX = 2
 
 # Five flex-related threshold level columns: 30+, 25+, 35+, 35+, 35+.
-FLEX_LEVEL_COLS = [4, 5, 6, 7, 8]
+FLEX_LEVEL_COLS = [3, 4, 5, 6, 7]
 FLEX_THRESHOLDS = ["30+", "25+", "35+", "35+", "35+"]
 
 # Each skill occupies a 5-column block: [level, H (house level), Tool, Top, Bot].
-# The first block (Milking) starts at column 9; blocks are contiguous.
-SKILL_BLOCK_START = 9
+# The first block (Milking) starts at column 8; blocks are contiguous.
+SKILL_BLOCK_START = 8
 SKILL_BLOCK_STRIDE = 5
 SKILL_LEVEL_OFFSET = 0
 SKILL_HOUSE_OFFSET = 1
@@ -79,9 +82,9 @@ SKILL_BOT_OFFSET = 4
 # which pins SKILL_BLOCK_START and SKILL_BLOCK_STRIDE for all ten blocks. See
 # reader._validate_header.
 SENTINEL_HEADERS = {
-    1: "Member",
-    2: "Main Classes",
-    3: "Flex",
+    0: "Member",
+    1: "Main Classes",
+    2: "Flex",
 }
 
 # Network timeout for the CSV fetch, in seconds.
@@ -109,11 +112,10 @@ TABS = {
 }
 
 # Rightmost real column of the member table; rows are sliced to 0..GVIZ_LAST_COL
-# inclusive to drop the trailing side-summary junk columns. The layout (leading
-# column, name, flex, and the 10 five-column skill blocks) is shared with the
-# export path above, so Enhancing's Bot cell now lands at column 58
-# (9 + 5*9 + 4).
-GVIZ_LAST_COL = 58
+# inclusive to drop the trailing side-summary junk columns. The layout (name,
+# flex, and the 10 five-column skill blocks) is shared with the export path
+# above, so Enhancing's Bot cell now lands at column 57 (8 + 5*9 + 4).
+GVIZ_LAST_COL = 57
 
 # gviz wrong-tab / structure guard. Because gviz prepends merged junk text and
 # leaves trailing spaces on some header cells, sentinels match by substring
@@ -121,11 +123,11 @@ GVIZ_LAST_COL = 58
 # tab likely does not exist, gviz served a different tab, or the layout changed.
 # 0-based col -> (mode, expected) where mode is "contains" or "equals".
 GVIZ_SENTINEL_HEADERS = {
-    1: ("contains", "Member"),
-    3: ("equals", "Flex"),
-    9: ("contains", "Milking"),
-    14: ("contains", "Foraging"),
-    54: ("contains", "Enhancing"),
+    0: ("contains", "Member"),
+    2: ("equals", "Flex"),
+    8: ("contains", "Milking"),
+    13: ("contains", "Foraging"),
+    53: ("contains", "Enhancing"),
 }
 
 # ===========================================================================

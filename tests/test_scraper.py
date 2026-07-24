@@ -5,7 +5,7 @@ export?format=csv shape covered by test_reader.py):
   - one merged, fully-quoted header row (row 1), with merged junk text
     prepended and trailing spaces on some cells;
   - member data from row 2 onward, terminated by a blank Member cell;
-  - trailing "summary" junk columns after the real 59-column table.
+  - trailing "summary" junk columns after the real 58-column table.
 """
 
 import json
@@ -17,22 +17,23 @@ from src.scraper import GuildData, parse_gviz
 
 # Skill-name header cells as gviz serves them: merged junk / trailing spaces.
 # 0-based col of each 5-column block's level cell -> observed header text.
-# (Post 2026-07-17 sheet change: leading column + per-skill "H" column, stride 5.)
+# (Post 2026-07-24 sheet change: leading column DELETED; per-skill "H" column
+# retained, stride 5. Blocks now start at col 8 instead of 9.)
 _SKILL_HEADER_TEXT = {
-    9: "Tool is for Celestial Milking ",
-    14: "Foraging ",
-    19: "Woodcutting ",
-    24: "C.Smithing ",
-    29: "Crafting ",
-    34: "Tailoring ",
-    39: "Cooking ",
-    44: "Brewing ",
-    49: "Bell Farming ",
-    54: "Enhancing ",
+    8: "Tool is for Celestial Milking ",
+    13: "Foraging ",
+    18: "Woodcutting ",
+    23: "C.Smithing ",
+    28: "Crafting ",
+    33: "Tailoring ",
+    38: "Cooking ",
+    43: "Brewing ",
+    48: "Bell Farming ",
+    53: "Enhancing ",
 }
 
-# Rightmost real column (Enhancing Bot) + 1: the member table is 59 cols wide.
-_N_COLS = 59
+# Rightmost real column (Enhancing Bot at 57) + 1: the member table is 58 cols wide.
+_N_COLS = 58
 
 
 def _quote_row(cells):
@@ -40,13 +41,14 @@ def _quote_row(cells):
     return ",".join('"' + str(c).replace('"', '""') + '"' for c in cells)
 
 
-def _gviz_header(col1="SURVEY CORPS Member", col3="Flex"):
-    """Build a 59-cell merged gviz header row mirroring the live sheet."""
+def _gviz_header(col_member="SURVEY CORPS Member", col_flex="Flex"):
+    """Build a 58-cell merged gviz header row mirroring the live sheet
+    (post 2026-07-24 leading-column deletion)."""
     cells = [""] * _N_COLS
-    cells[1] = col1  # Member (col 0 is the new leading column)
-    cells[2] = "Flex is for your alternate weapons ... Main Classes "
-    cells[3] = col3
-    cells[4], cells[5], cells[6], cells[7], cells[8] = (
+    cells[0] = col_member  # Member (was col 1 before the leading column was deleted)
+    cells[1] = "Flex is for your alternate weapons ... Main Classes "
+    cells[2] = col_flex
+    cells[3], cells[4], cells[5], cells[6], cells[7] = (
         "30+ ", "25+ ", "35+ ", "35+ ", "35+ ",
     )
     for base, text in _SKILL_HEADER_TEXT.items():
@@ -63,20 +65,19 @@ def _ten_skills(level="100"):
 
 
 def _data_cells(name, main, flex, flex_levels, skill_specs,
-                trailing_junk=None, lead="", houses=None):
-    """Assemble a data row's cells (cols 0..58) plus optional trailing junk.
+                trailing_junk=None, houses=None):
+    """Assemble a data row's cells (cols 0..57) plus optional trailing junk.
 
-    lead: the new leading column (col 0).
-    flex_levels: 5 strings for cols 4-8.
+    flex_levels: 5 strings for cols 3-7.
     skill_specs: 10 tuples (level, tool, top, bot) as strings.
     houses: 10 house-level strings (one per skill); defaults to all blank.
     """
     houses = houses if houses is not None else [""] * 10
-    cells = [lead, name, main, flex] + list(flex_levels)  # cols 0..8
+    cells = [name, main, flex] + list(flex_levels)  # cols 0..7
     for (level, tool, top, bot), house in zip(skill_specs, houses):
-        cells.extend([level, house, tool, top, bot])  # cols 9..58 (stride 5)
+        cells.extend([level, house, tool, top, bot])  # cols 8..57 (stride 5)
     if trailing_junk:
-        cells.extend(trailing_junk)  # cols 59+ (must be sliced away)
+        cells.extend(trailing_junk)  # cols 58+ (must be sliced away)
     return cells
 
 
@@ -125,7 +126,7 @@ def test_boolean_and_none_coercion():
 
 
 def test_trailing_junk_columns_are_sliced_off():
-    # Real gviz rows carry a side-summary after col 58; it must be ignored.
+    # Real gviz rows carry a side-summary after col 57; it must be ignored.
     junk = ["", "Average levels", "", "", "Milking", "117", "119", "TRUE"]
     row = _data_cells(
         "Feal", "Water", "Nature", ["", "", "", "", "47"],
@@ -136,7 +137,7 @@ def test_trailing_junk_columns_are_sliced_off():
     assert len(members) == 1
     m = members[0]
     assert m.name == "Feal"
-    # Enhancing (last block, Bot at col 58) parses cleanly despite the junk.
+    # Enhancing (last block, Bot at col 57) parses cleanly despite the junk.
     assert m.skills["Enhancing"].level == 113
     assert m.skills["Enhancing"].bot is False
 
