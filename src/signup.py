@@ -20,23 +20,38 @@ their inputs as plain data. Only :func:`fetch_signup_csv` touches the network
 (the anonymous gviz CSV export, exactly like :mod:`src.scraper`). HTML lives in
 ``build.py``.
 
-The SC Trial Signup tab layout (verified against the live sheet)::
+The SC Trial Signup tab layout (fixed skilling block since 2026-07-24)::
 
-    col 0            = "User"  (member name)
-    cols 1..10       = TRUE/FALSE tick-boxes, one per skill in config.SKILLS
-                       order (col 9 is "Bell Farming" = the Alchemy trial).
+    col 0     (A)    = "User"  (member name)
+    cols 1..4 (B–E)  = this week's FOUR skilling trials, one TRUE/FALSE tick-box
+                       each — ALWAYS in these four fixed positions.
+    cols 5..  (F..)  = the two combat trials (+ any stray columns) — IGNORED.
 
-Only the columns matching this week's draw carry any ticks. gviz collapses the
-header to a single row and only labels col 0; the skill columns are positional,
-so parsing is by position (config.SKILLS order) and guarded by the "User"
-sentinel — gviz silently serves a *different* tab on a bad name, so the guard is
-mandatory (mirrors the reasoning in :mod:`src.scraper`).
+The companion Tampermonkey writer (``guild-signup-sync``) emits exactly this
+compact layout — ``User | <4 skilling trials> | <2 combat trials>``, e.g.
+``User | Woodcutting | Crafting | Alchemy | Milking | Hedgehog | Jellyfish``.
+
+Only the four fixed skilling columns (B–E) are read; everything from column F on
+is ignored *by position*, so a combat column can never be mistaken for a sign-up
+(this replaced the earlier "scan every column / all-skills" parsing). The four
+skilling columns are NOT laid out in the officers' Trial 1..4 draw order — the
+game writes them in its own ``guildWeeklyTrialSet`` order — so each column's
+SKILL is resolved from its HEADER (via :data:`_HEADER_TO_SKILL`,
+case/punctuation-insensitive, with the trial-name aliases ``Alchemy`` →
+``Bell Farming`` and ``Cheesesmithing`` → ``C.Smithing``), NOT inferred from its
+position. A blind position→Trial-N map would scramble every sign-up whenever the
+two orders differ (they currently do: col B is Woodcutting while draw Trial 1 is
+Milking). Two guards fail loudly rather than emit garbage: the "User" sentinel in
+col 0 (gviz silently serves a *different* tab on a bad name — see
+:mod:`src.scraper`) and the requirement that each of columns B–E carry a
+recognised skill header.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -88,16 +103,57 @@ def fetch_signup_csv(tab_name: str = SIGNUP_TAB) -> str:
     return resp.text
 
 
+def _norm_header(text: str) -> str:
+    """Normalise a header cell for matching: lowercase, alphanumerics only."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+# Normalised header token -> the ``config.SKILLS`` sheet-column name it denotes.
+# Every skill matches its own name; plus the two trial-name aliases the game
+# writer uses: "Alchemy" -> "Bell Farming" (the joke column) and "Cheesesmithing"
+# -> "C.Smithing".
+_HEADER_TO_SKILL: dict[str, str] = {
+    _norm_header(sk): sk for sk in config.SKILLS
+}
+_HEADER_TO_SKILL[_norm_header("Alchemy")] = "Bell Farming"
+_HEADER_TO_SKILL[_norm_header("Cheesesmithing")] = "C.Smithing"
+
+# The four skilling-trial tick columns are ALWAYS spreadsheet columns B–E, i.e.
+# 0-based indices SKILLING_COL_START .. SKILLING_COL_START + SKILLING_COL_COUNT-1.
+# Everything from column F (index 5) on is combat/extra and ignored by position.
+# SKILLING_COL_COUNT mirrors draw.EXPECTED_TRIALS (the guild draws exactly four
+# skilling trials each cycle); kept as a local constant so signup.py need not
+# import draw.
+SKILLING_COL_START = 1
+SKILLING_COL_COUNT = 4
+
+
 def parse_signup(csv_text: str) -> dict[str, set[str]]:
     """Parse the sign-up CSV into ``{member_name: {sheet_skill_names_ticked}}``.
 
     Keys are member names in the "User" column; values are the set of
     ``config.SKILLS`` names the member ticked TRUE. Reads until the first blank
-    User cell. Guards against gviz serving the wrong tab (the "User" sentinel).
+    User cell.
 
-    Skill columns are positional: column ``i + 1`` is ``config.SKILLS[i]`` (the
-    9th, "Bell Farming", is the Alchemy trial — see
-    ``config.TRIAL_SKILL_TO_SHEET_COLUMN``).
+    Only the four FIXED skilling-trial columns — spreadsheet B–E (0-based indices
+    ``SKILLING_COL_START`` .. ``SKILLING_COL_START + SKILLING_COL_COUNT - 1``) —
+    are read; columns F onward (the two combat trials, blanks, stray helpers) are
+    ignored *by position*. Each of the four columns is mapped to its sheet-skill
+    name via its HEADER (:data:`_HEADER_TO_SKILL`), because the game writes the
+    four skilling columns in its own order rather than the officers' Trial 1..4
+    draw order — so a ticked column is resolved by *which skill that column is*,
+    not by where the trial sits in the draw. The Alchemy trial resolves to the
+    "Bell Farming" column, so the downstream planner (which maps trial skills onto
+    sheet columns via ``config.TRIAL_SKILL_TO_SHEET_COLUMN``) is unchanged.
+
+    Raises:
+        SheetStructureError: if the CSV is empty, column 0 is not "User" (gviz
+            silently serves a *different* tab on a bad name), there are fewer than
+            ``SKILLING_COL_START + SKILLING_COL_COUNT`` columns, or any of the four
+            skilling columns (B–E) carries a header that is not a recognised skill
+            (a layout change or the wrong tab). Failing loudly beats silently
+            mis-seating or dropping sign-ups; ``build.py`` catches it and emits an
+            inactive placeholder page.
     """
     rows = list(csv.reader(io.StringIO(csv_text)))
     if not rows:
@@ -114,18 +170,40 @@ def parse_signup(csv_text: str) -> dict[str, set[str]]:
             "changed. Inspect the 'SC Trial Signup' tab before this can run again."
         )
 
-    n_skills = len(config.SKILLS)
+    end = SKILLING_COL_START + SKILLING_COL_COUNT  # first column past the block
+    if len(header) < end:
+        raise SheetStructureError(
+            "SC Trial Signup has too few columns: expected 'User' plus the four "
+            f"skilling trials in columns B–E (>= {end} columns), got "
+            f"{len(header)}: {header!r}. The tab layout changed or gviz served a "
+            "different tab. Inspect the 'SC Trial Signup' tab before rerunning."
+        )
+
+    # The four skilling columns are ALWAYS B–E; resolve each to its sheet-skill
+    # via its header. Anything from column F on (combat trials, extras) is never
+    # looked at. A non-skill header inside B–E is a structural error (loud).
+    col_to_skill: dict[int, str] = {}
+    for idx in range(SKILLING_COL_START, end):
+        raw = _cell(header, idx)
+        skill = _HEADER_TO_SKILL.get(_norm_header(raw))
+        if skill is None:
+            raise SheetStructureError(
+                f"SC Trial Signup column {idx} (spreadsheet "
+                f"{chr(ord('A') + idx)}) has header {raw!r}, which is not a known "
+                "skilling trial; columns B–E must be this week's four skilling "
+                f"trials. Known skills: {sorted(set(_HEADER_TO_SKILL.values()))}. "
+                "The tab layout changed or gviz served a different tab."
+            )
+        col_to_skill[idx] = skill
+
     picks: dict[str, set[str]] = {}
     for row in rows[1:]:
         name = _cell(row, 0)
         if name == "":
             break  # first blank User cell ends the table
-        ticked = {
-            config.SKILLS[i]
-            for i in range(n_skills)
-            if _to_bool(_cell(row, i + 1))
+        picks[name] = {
+            skill for idx, skill in col_to_skill.items() if _to_bool(_cell(row, idx))
         }
-        picks[name] = ticked
     return picks
 
 

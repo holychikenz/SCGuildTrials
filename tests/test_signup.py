@@ -1,7 +1,9 @@
 """Unit tests for the sign-up-aware planner (src/signup.py). No network access.
 
-Covers the Trial Signup CSV parser (positional skill columns, the "User"
-wrong-tab guard, the Alchemy = "Bell Farming" mapping), and the enforced plan's
+Covers the Trial Signup CSV parser (the four fixed skilling columns B–E, combat
+columns after them ignored by position, the "User" wrong-tab guard, the
+Alchemy = "Bell Farming" mapping, and the loud structural guards), and the
+enforced plan's
 invariants: volunteers are locked into their chosen trial and never benched,
 open seats are filled only from the uncommitted pool and only where they do not
 lower a party's tier, and the advisory swaps are strictly improving and
@@ -44,37 +46,48 @@ def _member(name, levels=None):
 # ---------------------------------------------------------------------------
 # parse_signup
 # ---------------------------------------------------------------------------
-def _signup_csv(rows):
-    """Build a Trial Signup gviz-style CSV: header 'User' + booleans per skill."""
-    header = ["User"] + [""] * len(config.SKILLS)
+def _signup_csv(rows, columns=None, combat=("Hedgehog", "Jellyfish")):
+    """Build a Trial Signup gviz-style CSV in the LIVE compact layout.
+
+    ``columns`` is the ordered list of the FOUR skilling-trial header names
+    (spreadsheet cols B–E); defaults to the first four ``config.SKILLS``.
+    ``combat`` are the trailing combat columns (cols F+), which ``parse_signup``
+    must ignore by position. Each row's ``ticked`` set names the columns (skilling
+    OR combat) set TRUE, matched against the header names.
+    """
+    columns = list(columns if columns is not None else config.SKILLS[:4])
+    all_cols = columns + list(combat)
+    header = ["User"] + all_cols
     lines = [",".join(header)]
     for name, ticked in rows:
-        cells = [name] + [
-            "TRUE" if sk in ticked else "FALSE" for sk in config.SKILLS
-        ]
+        cells = [name] + ["TRUE" if col in ticked else "FALSE" for col in all_cols]
         lines.append(",".join(cells))
     return "\n".join(lines) + "\n"
 
 
-def test_parse_signup_reads_positional_columns():
+def test_parse_signup_reads_fixed_skilling_columns():
     csv_text = _signup_csv(
         [
             ("Alice", {"Foraging"}),
-            ("Bob", {"Woodcutting", "Enhancing"}),
+            ("Bob", {"Woodcutting"}),
             ("Cara", set()),
-        ]
+        ],
+        columns=["Milking", "Foraging", "Woodcutting", "C.Smithing"],
     )
     picks = signup.parse_signup(csv_text)
     assert picks == {
         "Alice": {"Foraging"},
-        "Bob": {"Woodcutting", "Enhancing"},
+        "Bob": {"Woodcutting"},
         "Cara": set(),
     }
 
 
 def test_parse_signup_alchemy_is_bell_farming_column():
-    # The 9th skill column is "Bell Farming" = the Alchemy trial.
-    csv_text = _signup_csv([("Al", {"Bell Farming"})])
+    # The "Alchemy" skilling column resolves to the sheet's "Bell Farming" name.
+    csv_text = _signup_csv(
+        [("Al", {"Alchemy"})],
+        columns=["Woodcutting", "Crafting", "Alchemy", "Milking"],
+    )
     picks = signup.parse_signup(csv_text)
     assert picks["Al"] == {"Bell Farming"}
     # And the planner maps the Alchemy trial onto that column.
@@ -82,9 +95,71 @@ def test_parse_signup_alchemy_is_bell_farming_column():
     assert signup._locked_skill_of({"Bell Farming"}, ["Alchemy"]) == "Alchemy"
 
 
+def test_parse_signup_cheesesmithing_alias():
+    # The game's "Cheesesmithing" label resolves to the "C.Smithing" sheet column.
+    csv_text = _signup_csv(
+        [("Al", {"Cheesesmithing"})],
+        columns=["Cheesesmithing", "Foraging", "Woodcutting", "Milking"],
+    )
+    assert signup.parse_signup(csv_text)["Al"] == {"C.Smithing"}
+
+
+def test_parse_signup_live_layout_with_aliases_and_combat():
+    # The live compact layout: User, four skilling trials in cols B–E (NOT in
+    # draw order), then two combat columns (cols F–G) that MUST be ignored by
+    # position. "Alchemy" resolves to the "Bell Farming" sheet column.
+    csv_text = (
+        "User,Woodcutting,Crafting,Alchemy,Milking,Hedgehog,Jellyfish\n"
+        "Alice,FALSE,TRUE,FALSE,FALSE,TRUE,FALSE\n"
+        "Bob,FALSE,FALSE,TRUE,FALSE,FALSE,TRUE\n"
+        "Cara,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE\n"
+    )
+    picks = signup.parse_signup(csv_text)
+    assert picks == {
+        "Alice": {"Crafting"},        # combat "Hedgehog" tick ignored
+        "Bob": {"Bell Farming"},      # "Alchemy" header -> Bell Farming column
+        "Cara": {"Woodcutting"},
+    }
+
+
+def test_parse_signup_ignores_columns_after_the_skilling_block():
+    # Anything from column F (index 5) on is combat/extra and ignored — even a
+    # tick. Only the four fixed skilling columns (B–E) count.
+    csv_text = _signup_csv(
+        [("Alice", {"Milking", "Hedgehog", "Jellyfish"})],
+        columns=["Milking", "Foraging", "Woodcutting", "C.Smithing"],
+        combat=("Hedgehog", "Jellyfish"),
+    )
+    picks = signup.parse_signup(csv_text)
+    assert picks["Alice"] == {"Milking"}  # both combat ticks dropped
+
+
+def test_parse_signup_requires_four_skilling_columns():
+    # Fewer than User + 4 skilling columns -> loud structural failure (a shrunk
+    # or wrong tab), rather than silently reading a truncated block.
+    bad = "User,Milking,Foraging\nAlice,TRUE,FALSE\n"
+    with pytest.raises(SheetStructureError):
+        signup.parse_signup(bad)
+
+
+def test_parse_signup_rejects_unknown_skilling_header():
+    # A non-skill header INSIDE the fixed skilling block (B–E) means a layout
+    # change or the wrong tab -> fail loudly rather than silently mis-seat.
+    bad = (
+        "User,Milking,Badger,Woodcutting,Crafting,Hedgehog\n"
+        "Alice,TRUE,FALSE,FALSE,FALSE,FALSE\n"
+    )
+    with pytest.raises(SheetStructureError):
+        signup.parse_signup(bad)
+
+
 def test_parse_signup_stops_at_blank_user():
-    csv_text = _signup_csv([("Alice", {"Foraging"})])
-    csv_text += "\n,FALSE\nGhost,TRUE\n"  # blank User row ends the table
+    csv_text = _signup_csv(
+        [("Alice", {"Foraging"})],
+        columns=["Milking", "Foraging", "Woodcutting", "C.Smithing"],
+    )
+    # A blank-User row ends the table; the ghost after it is never read.
+    csv_text += ",FALSE,FALSE,FALSE,FALSE,FALSE,FALSE\nGhost,TRUE,TRUE,TRUE,TRUE\n"
     picks = signup.parse_signup(csv_text)
     assert "Alice" in picks and "Ghost" not in picks
 
