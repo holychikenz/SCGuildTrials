@@ -1,7 +1,11 @@
-# SURVEY CORPS — Guild Skill Register
+# Guild Skill Register (Survey Corps + Lactose lntolerance)
 
 Static site that mirrors a public Google Sheet skill register for the
-Milky Way Idle guild **SURVEY CORPS**, and publishes it to GitHub Pages.
+Milky Way Idle sub-guilds **Survey Corps** and **Lactose lntolerance**, and
+publishes it to GitHub Pages. The build runs the whole pipeline once per guild:
+Survey Corps at the site root (`_site/`) and Lactose lntolerance under
+`_site/li/` — the two guilds share one spreadsheet (and one weekly trial draw)
+but have their own member and sign-up tabs. See `GUILD_SITES` in `src/build.py`.
 
 The pipeline is one-directional and credential-free:
 
@@ -21,7 +25,8 @@ shared as "anyone with the link".
 3. **Process** rows into a summary (`src/processor.py`) — *this is the seam for
    future custom logic*; today it computes member count and per-skill averages.
 4. **Build** `_site/index.html` (self-contained, inline CSS) and
-   `_site/data.json` (`src/build.py`).
+   `_site/data.json` (`src/build.py`) — once per guild (Survey Corps at the
+   root, other guilds under their own sub-directory, e.g. `_site/li/`).
 
 ## Run locally
 
@@ -57,8 +62,9 @@ set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 
 ## Sign-up optimiser (real sign-ups)
 
-`src/signup.py` reads the sheet's **SC Trial Signup** tab — the guild's *actual*
-weekly volunteers — and builds `_site/signup.html` + `signup.json`:
+`src/signup.py` reads each guild's sign-up tab (**SC Trial Signup** /
+**LI Trial Signup**, see `signup.SIGNUP_TABS`) — that guild's *actual* weekly
+volunteers — and builds its `signup.html` + `signup.json`:
 
 1. **Sign-ups are enforced.** Every member who ticked a trial is locked into it
    (shown green) and is never moved or benched.
@@ -72,10 +78,11 @@ weekly volunteers — and builds `_site/signup.html` + `signup.json`:
    optimum reuses the exact assignment `trials.html` already computes (no second
    optimizer run — the two pages never disagree on the ceiling).
 
-The SC Trial Signup tab is `col 0 = User`, then one TRUE/FALSE column per skill in
-`config.SKILLS` order (col 9, "Bell Farming", is the Alchemy trial). Only this
-week's drawn skills carry ticks; parsing is positional and guarded by the "User"
-sentinel (gviz silently serves a different tab on a bad name).
+Each sign-up tab is `col 0 = User`, then this week's four skilling trials in the
+fixed columns B–E (each resolved to its `config.SKILLS` column by header, so
+"Alchemy" reads the "Bell Farming" column); columns F onward (the two combat
+trials) are ignored by position. Parsing is guarded by the "User" sentinel
+(gviz silently serves a different tab on a bad name).
 
 ## Deploy (GitHub Actions)
 

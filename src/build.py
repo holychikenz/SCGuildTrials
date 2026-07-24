@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,13 +25,69 @@ from .scraper import scrape_member_tab
 OUTPUT_DIR = Path("_site")
 
 
+# ---------------------------------------------------------------------------
+# Per-guild site definitions
+# ---------------------------------------------------------------------------
+# The guild sheet hosts more than one sub-guild (Survey Corps, Lactose
+# lntolerance), each with its OWN member tab (``config.TABS``) and sign-up tab
+# (``signup.SIGNUP_TABS``). ``main`` builds the WHOLE pipeline once per guild:
+# Survey Corps into the site root (``_site/``, unchanged URLs) and every other
+# guild into its own sub-directory (``_site/li/``). Pages inside a guild's
+# directory link to each other with plain relative hrefs (``trials.html`` etc.),
+# which resolve within that directory; the only cross-directory link is the
+# sibling-guild jump in the nav (``sibling_home``). The trial *draw* is shared —
+# both guilds read the one "Trial Assignments" tab (``draw.load_draw``).
+@dataclass(frozen=True)
+class GuildSite:
+    """One guild's build: which tabs to read, where to write, how to label it."""
+
+    key: str            # config.TABS / signup.SIGNUP_TABS key: "sc" | "li"
+    title: str          # page <title> / <h1>, e.g. "SURVEY CORPS"
+    subdir: str         # output dir under _site ("" = root, "li" = _site/li)
+    # index.html source: True -> the gid=0 published register (reader.fetch_csv/
+    # parse), which exists only for Survey Corps; False -> the guild's gviz
+    # member tab (config.TABS[key]), used for every other guild.
+    use_register_csv: bool
+    required: bool      # True -> a build failure is fatal (non-zero exit, blocks
+                        # deploy); False -> failure is a warning, other guilds
+                        # still ship (the whole _site deploys atomically).
+    sibling_title: str  # the OTHER guild's title, for the cross-guild nav link
+    sibling_home: str   # relative href from THIS guild's pages to the other's index
+
+    @property
+    def member_tab(self) -> str:
+        return config.TABS[self.key]
+
+    @property
+    def signup_tab(self) -> str:
+        return signup_model.SIGNUP_TABS[self.key]
+
+    @property
+    def out_dir(self) -> Path:
+        return OUTPUT_DIR / self.subdir if self.subdir else OUTPUT_DIR
+
+
+GUILD_SITES = [
+    GuildSite(
+        key="sc", title="SURVEY CORPS", subdir="",
+        use_register_csv=True, required=True,
+        sibling_title="LACTOSE INTOLERANCE", sibling_home="li/index.html",
+    ),
+    GuildSite(
+        key="li", title="LACTOSE INTOLERANCE", subdir="li",
+        use_register_csv=False, required=False,
+        sibling_title="SURVEY CORPS", sibling_home="../index.html",
+    ),
+]
+
+
 def _badge(present: bool, label: str) -> str:
     """Render a small T/T/B style badge; filled when present, muted when not."""
     cls = "badge on" if present else "badge off"
     return f'<span class="{cls}" title="{html.escape(label)}">{label[0]}</span>'
 
 
-def _render_html(data: dict) -> str:
+def _render_html(data: dict, site: "GuildSite") -> str:
     skills = data["skills"]
 
     # Summary table header cells.
@@ -77,7 +134,7 @@ def _render_html(data: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SURVEY CORPS - Skill Register</title>
+<title>{html.escape(site.title)} - Skill Register</title>
 <style>
   :root {{
     --bg: #0f1115; --panel: #171a21; --line: #2a2f3a;
@@ -119,11 +176,12 @@ def _render_html(data: dict) -> str:
 </head>
 <body>
 <header>
-  <h1>SURVEY CORPS &mdash; Skill Register</h1>
+  <h1>{html.escape(site.title)} &mdash; Skill Register</h1>
   <p class="meta">Milky Way Idle guild &middot; {data['member_count']} members &middot;
      generated {html.escape(data['generated_at'])} (UTC)</p>
   <p class="nav"><a href="trials.html">Guild Trials &rarr;</a>
-     &nbsp;&middot;&nbsp; <a href="signup.html">Sign-up Optimiser &rarr;</a></p>
+     &nbsp;&middot;&nbsp; <a href="signup.html">Sign-up Optimiser &rarr;</a>
+     &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
   <h2>Per-skill summary</h2>
@@ -474,7 +532,7 @@ def _assignment_footnote(week: dict) -> str:
     )
 
 
-def _render_trials_html(week: dict) -> str:
+def _render_trials_html(week: dict, site: "GuildSite") -> str:
     """Render the full trials page from a ``WeekResult`` dict."""
     strip = "".join(
         "<div class=\"stat\">"
@@ -513,7 +571,7 @@ def _render_trials_html(week: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SURVEY CORPS - Guild Trials</title>
+<title>{html.escape(site.title)} - Guild Trials</title>
 <style>
   :root {{
     --bg: #0f1115; --panel: #171a21; --line: #2a2f3a;
@@ -609,11 +667,12 @@ def _render_trials_html(week: dict) -> str:
 <header>
   <h1>Guild Trials &mdash; Week of {html.escape(week['week_date'])}
       <span class="meta">({html.escape(_assignment_label(week))})</span></h1>
-  <p class="meta">SURVEY CORPS &middot; {week['member_count']} members &middot;
+  <p class="meta">{html.escape(site.title)} &middot; {week['member_count']} members &middot;
      {html.escape(_assignment_detail(week))} &middot;
      generated {html.escape(week['generated_at'])} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a>
-     &nbsp;&middot;&nbsp; <a href="signup.html">Sign-up Optimiser &rarr;</a></p>
+     &nbsp;&middot;&nbsp; <a href="signup.html">Sign-up Optimiser &rarr;</a>
+     &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
   <div class="strip">
@@ -706,7 +765,7 @@ def _render_trials_html(week: dict) -> str:
 """
 
 
-def _render_signup_html(p: dict) -> str:
+def _render_signup_html(p: dict, site: "GuildSite") -> str:
     """Render the sign-up optimiser page from a ``signup.SignupPlan`` dict.
 
     The enforced plan (real sign-ups locked, open seats filled from the
@@ -875,7 +934,7 @@ def _render_signup_html(p: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SURVEY CORPS - Sign-up Optimiser</title>
+<title>{html.escape(site.title)} - Sign-up Optimiser</title>
 <style>
   :root {{
     --bg: #0f1115; --panel: #171a21; --line: #2a2f3a;
@@ -952,10 +1011,11 @@ def _render_signup_html(p: dict) -> str:
 <header>
   <h1>Guild Trials &mdash; Sign-up Optimiser
       <span class="meta">(week of {html.escape(p['week_date'])})</span></h1>
-  <p class="meta">SURVEY CORPS &middot; {p['roster_count']} members &middot;
+  <p class="meta">{html.escape(site.title)} &middot; {p['roster_count']} members &middot;
      {p['signup_count']} signed up &middot; generated {html.escape(p['generated_at'])} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a>
-     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a></p>
+     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a>
+     &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
   <div class="strip">{strip}</div>
@@ -1012,7 +1072,7 @@ def _render_signup_html(p: dict) -> str:
 """
 
 
-def _render_signup_inactive_html(reason: str, generated_at: str) -> str:
+def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSite") -> str:
     """Render a graceful placeholder for the sign-up optimiser page.
 
     Emitted when the live "SC Trial Signup" tab no longer matches the expected
@@ -1028,7 +1088,7 @@ def _render_signup_inactive_html(reason: str, generated_at: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SURVEY CORPS - Sign-up Optimiser</title>
+<title>{html.escape(site.title)} - Sign-up Optimiser</title>
 <style>
   :root {{ --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --text:#e6e8ec;
     --muted:#99a0ad; --accent:#6ea8fe; --warn:#e0b341; }}
@@ -1054,9 +1114,10 @@ def _render_signup_inactive_html(reason: str, generated_at: str) -> str:
 <body>
 <header>
   <h1>Guild Trials &mdash; Sign-up Optimiser</h1>
-  <p class="meta">SURVEY CORPS &middot; generated {html.escape(generated_at)} (UTC)</p>
+  <p class="meta">{html.escape(site.title)} &middot; generated {html.escape(generated_at)} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a>
-     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a></p>
+     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a>
+     &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
   <section class="card">
@@ -1079,107 +1140,107 @@ def _render_signup_inactive_html(reason: str, generated_at: str) -> str:
 """
 
 
-def main() -> int:
-    try:
-        csv_text = fetch_csv()
-        members = parse(csv_text)
-    except SheetStructureError as exc:
-        print(f"ERROR: sheet structure mismatch:\n{exc}", file=sys.stderr)
-        return 2
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+def build_guild(site: "GuildSite") -> str:
+    """Build one guild's pages into ``site.out_dir``; return a one-line summary.
 
+    Runs the full pipeline for a single guild: the member skill register
+    (index.html + data.json), the trials optimiser (trials.html + trials.json),
+    and the sign-up optimiser (signup.html + signup.json). The trial *draw* is
+    the shared "Trial Assignments" tab (both guilds run the same weekly draw).
+
+    Raises:
+        SheetStructureError / RuntimeError: on a hard failure of the member tab,
+            register CSV, the trial draw, or a sign-up *fetch* (network). The
+            caller (``main``) maps these to an exit code — fatal for a
+            ``required`` guild, a warning otherwise. The sign-up *structure* step
+            degrades in place to an inactive placeholder page (exactly as the
+            single-guild build did), so a repurposed sign-up tab is never fatal.
+    """
+    out = site.out_dir
+    out.mkdir(parents=True, exist_ok=True)
+
+    # --- Member skill register (index.html + data.json) ---------------------
+    # Survey Corps reads the gid=0 published register; every other guild has no
+    # such gid export, so its register is built from the gviz member tab (which
+    # the trials step below reuses, so that tab is fetched only once per guild).
+    gd = None
+    if site.use_register_csv:
+        members = parse(fetch_csv())
+    else:
+        gd = scrape_member_tab(site.member_tab)
+        members = gd.members
     data = process(members)
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / "data.json").write_text(
+    (out / "data.json").write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    (OUTPUT_DIR / "index.html").write_text(_render_html(data), encoding="utf-8")
+    (out / "index.html").write_text(_render_html(data, site), encoding="utf-8")
 
     # --- Guild Trials (Phase 1) ---------------------------------------------
-    # Fetch SC member data LIVE via the named-tab scraper and simulate this
-    # week's four skilling trials, then emit trials.html + trials.json.
-    try:
-        sc = scrape_member_tab(config.TABS["sc"])
-    except SheetStructureError as exc:
-        print(f"ERROR: sheet structure mismatch (trials):\n{exc}", file=sys.stderr)
-        return 2
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+    # Fetch this guild's member data LIVE via the named-tab scraper and simulate
+    # this week's four skilling trials, then emit trials.html + trials.json.
+    if gd is None:
+        gd = scrape_member_tab(site.member_tab)
 
-    # This week's skilling-trial draw is read LIVE from the "Trial Assignments"
-    # tab (the officers reroll it each cycle). We do NOT fall back to the
-    # config default here: building the public site around a stale/guessed draw
-    # is exactly the failure this reads the sheet to avoid, so a mismatch fails
-    # loudly like the fetches above.
-    try:
-        week_draw = draw_model.load_draw()
-    except SheetStructureError as exc:
-        print(
-            f"ERROR: could not read this week's trial draw:\n{exc}",
-            file=sys.stderr,
-        )
-        return 2
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-    week = trials_model.run_week(sc.members, skills=week_draw.skills)
+    # This week's skilling-trial draw is read LIVE from the shared "Trial
+    # Assignments" tab (the officers reroll it each cycle). We do NOT fall back
+    # to the config default here: building the public site around a stale/guessed
+    # draw is exactly the failure this reads the sheet to avoid, so a mismatch
+    # fails loudly.
+    week_draw = draw_model.load_draw()
+    week = trials_model.run_week(gd.members, skills=week_draw.skills)
     week_dict = week.to_dict()
-    (OUTPUT_DIR / "trials.json").write_text(
+    (out / "trials.json").write_text(
         json.dumps(week_dict, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    (OUTPUT_DIR / "trials.html").write_text(
-        _render_trials_html(week_dict), encoding="utf-8"
+    (out / "trials.html").write_text(
+        _render_trials_html(week_dict, site), encoding="utf-8"
     )
 
     # --- Sign-up Optimiser (OPTIONAL) ---------------------------------------
-    # Fetch the real "SC Trial Signup" tab, enforce those picks, recommend fills
-    # for the open seats, and diff against the (already-computed) optimum. Reuses
+    # Fetch this guild's sign-up tab, enforce those picks, recommend fills for
+    # the open seats, and diff against the (already-computed) optimum. Reuses
     # ``week`` as the optimal ceiling so the two pages never disagree.
     #
-    # A SheetStructureError here means the guild's "SC Trial Signup" tab no longer
-    # carries the tick-box sign-up table (e.g. trials went "free-assigned" and
-    # the tab was repurposed — see the 2026-07 reformat). That is an upstream
-    # DATA change, not a build failure: the member and trials pages are already
+    # A SheetStructureError here means this guild's sign-up tab no longer carries
+    # the tick-box sign-up table (e.g. trials went "free-assigned" and the tab
+    # was repurposed — see the 2026-07 reformat). That is an upstream DATA
+    # change, not a build failure: the member and trials pages are already
     # written, so we emit a graceful "inactive" signup.html (keeping the nav
     # links valid) and still finish successfully. The real page returns the
     # moment a parseable sign-up tab exists again. A network/HTTP RuntimeError
-    # still fails loudly, consistent with the fetches above.
+    # still propagates and fails loudly, consistent with the fetches above.
     plan = None
     try:
-        picks = signup_model.parse_signup(signup_model.fetch_signup_csv())
+        picks = signup_model.parse_signup(
+            signup_model.fetch_signup_csv(site.signup_tab),
+            tab_label=site.signup_tab,
+        )
         optimal_total, optimal_summary = signup_model.optimal_from_week(week)
         plan = signup_model.plan(
-            sc.members, picks, optimal_total, optimal_summary,
+            gd.members, picks, optimal_total, optimal_summary,
             draw=week_draw.skills,
         )
     except SheetStructureError as exc:
         print(
-            "WARNING: SC Trial Signup tab structure mismatch; sign-up optimiser "
-            f"skipped, emitting inactive placeholder:\n{exc}",
+            f"WARNING: {site.signup_tab!r} tab structure mismatch; sign-up "
+            f"optimiser skipped for {site.key}, emitting inactive "
+            f"placeholder:\n{exc}",
             file=sys.stderr,
         )
-        (OUTPUT_DIR / "signup.html").write_text(
+        (out / "signup.html").write_text(
             _render_signup_inactive_html(
-                str(exc), datetime.now(timezone.utc).isoformat()
+                str(exc), datetime.now(timezone.utc).isoformat(), site
             ),
             encoding="utf-8",
         )
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
 
     if plan is not None:
         plan_dict = plan.to_dict()
-        (OUTPUT_DIR / "signup.json").write_text(
+        (out / "signup.json").write_text(
             json.dumps(plan_dict, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        (OUTPUT_DIR / "signup.html").write_text(
-            _render_signup_html(plan_dict), encoding="utf-8"
+        (out / "signup.html").write_text(
+            _render_signup_html(plan_dict, site), encoding="utf-8"
         )
 
     signup_note = (
@@ -1187,19 +1248,55 @@ def main() -> int:
         f"-> {plan.reachable_total} via {len(plan.swaps)} swap(s) "
         f"(optimal {plan.optimal_total})"
         if plan is not None
-        else "inactive (SC Trial Signup tab not in tick-box sign-up format)"
+        else f"inactive ({site.signup_tab} tab not in tick-box sign-up format)"
     )
-    print(
-        f"Built _site/ with {data['member_count']} members "
+    dest = f"_site/{site.subdir}/" if site.subdir else "_site/"
+    return (
+        f"[{site.key}] {dest} {data['member_count']} members "
         f"({len(data['skills'])} skills); draw {week_draw.date or '?'} "
-        f"[{', '.join(week_draw.skills)}]; trials: "
+        f"[{', '.join(week_draw.skills)}]; trials "
         + ", ".join(
             f"{t.skill} T{t.tier_reached}/{t.points}pts" for t in week.trials
         )
-        + f" (total {week.total_points} pts); signup: "
-        + signup_note
-        + "."
+        + f" (total {week.total_points} pts); signup: {signup_note}"
     )
+
+
+def main() -> int:
+    """Build every guild's site into ``_site`` (Survey Corps at the root, the
+    rest in sub-directories). A ``required`` guild's failure is fatal (non-zero
+    exit blocks the atomic Pages deploy); an optional guild's failure is a
+    warning so the others still ship.
+    """
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    notes: list[str] = []
+    for site in GUILD_SITES:
+        try:
+            notes.append(build_guild(site))
+        except SheetStructureError as exc:
+            if site.required:
+                print(
+                    f"ERROR: sheet structure mismatch ({site.key}):\n{exc}",
+                    file=sys.stderr,
+                )
+                return 2
+            print(
+                f"WARNING: {site.key} skipped (sheet structure mismatch); "
+                f"other guilds continue:\n{exc}",
+                file=sys.stderr,
+            )
+        except RuntimeError as exc:
+            if site.required:
+                print(f"ERROR ({site.key}): {exc}", file=sys.stderr)
+                return 1
+            print(
+                f"WARNING: {site.key} skipped ({exc}); other guilds continue.",
+                file=sys.stderr,
+            )
+
+    print("Built _site/:")
+    for note in notes:
+        print("  " + note)
     return 0
 
 

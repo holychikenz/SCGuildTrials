@@ -1,8 +1,9 @@
 """Sign-up-aware trial planning.
 
-The guild's "SC Trial Signup" sheet tab records who has *volunteered* for which
-of this week's four skilling trials. This module turns those real sign-ups into a
-plan the guild can actually run:
+Each guild's sign-up sheet tab ("SC Trial Signup" for Survey Corps, "LI Trial
+Signup" for Lactose lntolerance — see :data:`SIGNUP_TABS`) records who has
+*volunteered* for which of this week's four skilling trials. This module turns
+those real sign-ups into a plan the guild can actually run:
 
   1. **Enforce** the sign-ups — every volunteer is LOCKED into the exact trial
      they ticked; they are never moved or benched.
@@ -69,13 +70,23 @@ from .trials import RosterEntry, rate, simulate_race
 # Fetch + parse the "SC Trial Signup" tab
 # ---------------------------------------------------------------------------
 # SHEET CHANGE (2026-07): the sign-up tab was renamed from "Trial Signup" to
-# "SC Trial Signup" when the guild split sign-ups per sub-guild (SC / LI). The
-# tick-box LAYOUT is unchanged (col 0 = User, then one TRUE/FALSE column per
-# config.SKILLS). The optimiser is SC-only (it plans over the "SC Member Data"
-# tab), so it reads the SC sign-up tab. NOTE: gviz does NOT error on an unknown
-# tab name — it silently serves a *different* tab — so a stale name here does not
-# fail loudly at fetch; it is the "User" sentinel in parse_signup that catches it.
-SIGNUP_TAB = "SC Trial Signup"
+# "SC Trial Signup" when the guild split sign-ups per sub-guild (SC / LI), and a
+# matching "LI Trial Signup" tab was added. The tick-box LAYOUT is identical for
+# both (col 0 = User, then this week's four skilling trials in cols B–E). The
+# build now runs the whole pipeline once per guild (see build.py GUILD_SITES),
+# each guild reading its OWN sign-up tab against its OWN member tab. NOTE: gviz
+# does NOT error on an unknown tab name — it silently serves a *different* tab —
+# so a stale name here does not fail loudly at fetch; it is the "User" sentinel
+# in parse_signup that catches it.
+#
+# ``SIGNUP_TABS`` mirrors ``config.TABS`` (the per-guild member tabs); the two
+# keys must stay in lockstep so a guild's member tab and sign-up tab are paired.
+SIGNUP_TABS = {
+    "sc": "SC Trial Signup",
+    "li": "LI Trial Signup",
+}
+# Backward-compatible default: the SC sign-up tab (the original single-guild tab).
+SIGNUP_TAB = SIGNUP_TABS["sc"]
 
 
 def fetch_signup_csv(tab_name: str = SIGNUP_TAB) -> str:
@@ -128,8 +139,12 @@ SKILLING_COL_START = 1
 SKILLING_COL_COUNT = 4
 
 
-def parse_signup(csv_text: str) -> dict[str, set[str]]:
+def parse_signup(csv_text: str, tab_label: str = "sign-up") -> dict[str, set[str]]:
     """Parse the sign-up CSV into ``{member_name: {sheet_skill_names_ticked}}``.
+
+    ``tab_label`` names the tab in any :class:`SheetStructureError` so a failure
+    reads e.g. "SC Trial Signup tab ..." / "LI Trial Signup tab ..." — it has no
+    effect on parsing (the layout is identical for every guild).
 
     Keys are member names in the "User" column; values are the set of
     ``config.SKILLS`` names the member ticked TRUE. Reads until the first blank
@@ -158,25 +173,25 @@ def parse_signup(csv_text: str) -> dict[str, set[str]]:
     rows = list(csv.reader(io.StringIO(csv_text)))
     if not rows:
         raise SheetStructureError(
-            "SC Trial Signup CSV was empty; cannot locate the header row."
+            f"{tab_label} tab CSV was empty; cannot locate the header row."
         )
 
     header = rows[0]
     if "User" not in _cell(header, 0):
         raise SheetStructureError(
-            "SC Trial Signup header did not match: expected column 0 to contain "
+            f"{tab_label} tab header did not match: expected column 0 to contain "
             f"'User', got {_cell(header, 0)!r}. The tab may not exist (gviz "
             "silently serves a different tab in that case) or the layout "
-            "changed. Inspect the 'SC Trial Signup' tab before this can run again."
+            f"changed. Inspect the {tab_label!r} tab before this can run again."
         )
 
     end = SKILLING_COL_START + SKILLING_COL_COUNT  # first column past the block
     if len(header) < end:
         raise SheetStructureError(
-            "SC Trial Signup has too few columns: expected 'User' plus the four "
+            f"{tab_label} tab has too few columns: expected 'User' plus the four "
             f"skilling trials in columns B–E (>= {end} columns), got "
             f"{len(header)}: {header!r}. The tab layout changed or gviz served a "
-            "different tab. Inspect the 'SC Trial Signup' tab before rerunning."
+            f"different tab. Inspect the {tab_label!r} tab before rerunning."
         )
 
     # The four skilling columns are ALWAYS B–E; resolve each to its sheet-skill
@@ -188,7 +203,7 @@ def parse_signup(csv_text: str) -> dict[str, set[str]]:
         skill = _HEADER_TO_SKILL.get(_norm_header(raw))
         if skill is None:
             raise SheetStructureError(
-                f"SC Trial Signup column {idx} (spreadsheet "
+                f"{tab_label} tab column {idx} (spreadsheet "
                 f"{chr(ord('A') + idx)}) has header {raw!r}, which is not a known "
                 "skilling trial; columns B–E must be this week's four skilling "
                 f"trials. Known skills: {sorted(set(_HEADER_TO_SKILL.values()))}. "
