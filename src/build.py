@@ -929,6 +929,31 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         if p["enforced_bench"] else "(none — every uncommitted member found a seat)"
     )
 
+    # --- Missing players: signed up but absent from the member roster -------
+    # These ticked a trial but have no row on the member tab, so their skills
+    # are unknown and they could not be placed. Surface them loudly (red) at the
+    # top so officers immediately see who still needs to enter their data.
+    missing = p.get("unmatched_signups") or []
+    missing_html = ""
+    missing_meta = ""
+    if missing:
+        chips = "".join(
+            f'<span class="chip missing">{html.escape(n)}</span>' for n in missing
+        )
+        missing_html = f"""
+  <section class="card danger" id="missing-data">
+    <h2>&#9888; Signed up but missing from the roster ({len(missing)})</h2>
+    <p class="meta">These player(s) ticked a trial on the
+       <em>{html.escape(site.signup_tab)}</em> tab but have <strong>no row on the
+       <em>{html.escape(site.member_tab)}</em> tab</strong>, so their skills are
+       unknown and they could not be placed or benched. They need to add their
+       data to the sheet before they can be assigned this week.</p>
+    <p class="chips">{chips}</p>
+  </section>"""
+        missing_meta = (
+            f' &middot; <span class="danger-text">{len(missing)} missing data</span>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -939,7 +964,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   :root {{
     --bg: #0f1115; --panel: #171a21; --line: #2a2f3a;
     --text: #e6e8ec; --muted: #99a0ad; --accent: #6ea8fe;
-    --on: #3ecf8e; --off: #3a3f4b; --warn: #e0b341;
+    --on: #3ecf8e; --off: #3a3f4b; --warn: #e0b341; --danger: #f5645a;
     --assigned: #3ecf8e; --rec: #6ea8fe;
   }}
   * {{ box-sizing: border-box; }}
@@ -995,6 +1020,12 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
                text-transform: capitalize; }}
   .chip.reshuffle {{ background: rgba(110,168,254,.20); color: var(--accent);
                text-transform: capitalize; }}
+  .chip.missing {{ background: rgba(245,100,90,.18); color: var(--danger);
+               border: 1px solid rgba(245,100,90,.55); }}
+  .card.danger {{ border-color: var(--danger); background: #241618; }}
+  .card.danger h2 {{ color: var(--danger); }}
+  .danger-text {{ color: var(--danger); font-weight: 700; }}
+  .chips {{ display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 0; }}
   .swap-moves {{ margin: .35rem 0 0; padding-left: 1.1rem; font-size: .82rem;
                color: #aab1c0; }}
   .swap-moves li {{ margin: .1rem 0; }}
@@ -1012,7 +1043,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   <h1>Guild Trials &mdash; Sign-up Optimiser
       <span class="meta">(week of {html.escape(p['week_date'])})</span></h1>
   <p class="meta">{html.escape(site.title)} &middot; {p['roster_count']} members &middot;
-     {p['signup_count']} signed up &middot; generated {html.escape(p['generated_at'])} (UTC)</p>
+     {p['signup_count']} signed up{missing_meta} &middot; generated {html.escape(p['generated_at'])} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a>
      &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a>
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
@@ -1024,6 +1055,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     <span><span class="sw" style="background:var(--rec)"></span> Recommended fill (from the uncommitted pool)</span>
     <span><span class="sw" style="background:var(--warn)"></span> Swap (advisory)</span>
   </p>
+  {missing_html}
   {cards_html}
   {swaps_section}
 
@@ -1064,6 +1096,9 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         two never disagree. The scoring model, tiers and equipment assumptions are
         documented there.</li>
   </ol>
+  <p>Any player who signed up but is <span class="danger-text">missing from the
+     roster</span> is flagged in red near the top &mdash; they must add their data to
+     the member tab before they can be assigned.</p>
   <p>Machine-readable copy of this page's data: <code>signup.json</code>.
      Static build from the public guild sheet; no credentials, read-only.</p>
 </footer>

@@ -403,6 +403,32 @@ def test_ambiguous_normalized_name_is_matched_exactly_only():
     assert any(r.name == "AB" and r.status == "assigned" for r in forg.roster)
 
 
+def test_signup_html_flags_missing_players_in_red():
+    # A sign-up with no member row must be surfaced in the red "missing-data"
+    # card so officers can see who still needs to enter their data; when every
+    # sign-up matches a member the card is absent.
+    from src import build
+
+    draw = ["Foraging", "Woodcutting"]
+    members = [_member("Real", {"Foraging": 150})]
+    site = build.GUILD_SITES[0]  # any real GuildSite (provides the tab names)
+
+    with_missing = signup.plan(
+        members, {"Real": {"Foraging"}, "Ghosty": {"Woodcutting"}},
+        optimal_total=0, optimal_summary=[], draw=draw, cap=3,
+    ).to_dict()
+    html_text = build._render_signup_html(with_missing, site)
+    assert 'id="missing-data"' in html_text
+    assert "Ghosty" in html_text
+    assert "missing data" in html_text  # header count
+
+    none_missing = signup.plan(
+        members, {"Real": {"Foraging"}},
+        optimal_total=0, optimal_summary=[], draw=draw, cap=3,
+    ).to_dict()
+    assert 'id="missing-data"' not in build._render_signup_html(none_missing, site)
+
+
 def test_signup_conflict_is_recorded_and_resolved_to_first_choice():
     draw = ["Foraging", "Woodcutting"]
     members = [_member("Dupe", {"Foraging": 150, "Woodcutting": 150})]
