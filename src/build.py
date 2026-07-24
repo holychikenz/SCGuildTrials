@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
+from . import draw as draw_model
 from . import signup as signup_model
 from . import trials as trials_model
 from .processor import process
@@ -1078,7 +1079,24 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    week = trials_model.run_week(sc.members)
+    # This week's skilling-trial draw is read LIVE from the "Trial Assignments"
+    # tab (the officers reroll it each cycle). We do NOT fall back to the
+    # config default here: building the public site around a stale/guessed draw
+    # is exactly the failure this reads the sheet to avoid, so a mismatch fails
+    # loudly like the fetches above.
+    try:
+        week_draw = draw_model.load_draw()
+    except SheetStructureError as exc:
+        print(
+            f"ERROR: could not read this week's trial draw:\n{exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    week = trials_model.run_week(sc.members, skills=week_draw.skills)
     week_dict = week.to_dict()
     (OUTPUT_DIR / "trials.json").write_text(
         json.dumps(week_dict, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -1104,7 +1122,10 @@ def main() -> int:
     try:
         picks = signup_model.parse_signup(signup_model.fetch_signup_csv())
         optimal_total, optimal_summary = signup_model.optimal_from_week(week)
-        plan = signup_model.plan(sc.members, picks, optimal_total, optimal_summary)
+        plan = signup_model.plan(
+            sc.members, picks, optimal_total, optimal_summary,
+            draw=week_draw.skills,
+        )
     except SheetStructureError as exc:
         print(
             "WARNING: Trial Signup tab structure mismatch; sign-up optimiser "
@@ -1139,7 +1160,8 @@ def main() -> int:
     )
     print(
         f"Built _site/ with {data['member_count']} members "
-        f"({len(data['skills'])} skills); trials: "
+        f"({len(data['skills'])} skills); draw {week_draw.date or '?'} "
+        f"[{', '.join(week_draw.skills)}]; trials: "
         + ", ".join(
             f"{t.skill} T{t.tier_reached}/{t.points}pts" for t in week.trials
         )

@@ -160,12 +160,16 @@ TRIAL_SKILL_TO_SHEET_COLUMN = {
     "Enhancing": "Enhancing",
 }
 
-# --- This week's skilling trial draw (Trial Assignments tab, Date 7/17) -----
-# research/trial-tabs.md §2.2: Foraging, Woodcutting, Alchemy, Enhancing.
-# Change this list for a different weekly draw; everything downstream keys off
-# it. Names use the trial's own skill labels; "Alchemy" resolves to the "Bell
-# Farming" sheet column via TRIAL_SKILL_TO_SHEET_COLUMN above.
-TRIAL_SKILLS_CURRENT = ["Foraging", "Woodcutting", "Alchemy", "Enhancing"]
+# --- This week's skilling trial draw (OFFLINE FALLBACK DEFAULT) -------------
+# The live build reads the CURRENT draw from the "Trial Assignments" tab at
+# build time (src/draw.py -> build.main), so this constant is NO LONGER the
+# source of truth — the officers reroll the draw each cycle and a hand-edited
+# list here goes stale immediately. It remains only as the default for tests
+# and direct library calls to trials.run_week / signup.plan that pass no draw.
+# Kept current-ish for convenience (Trial Assignments tab, Date 7/24). Names use
+# the trial's own skill labels; "Alchemy" resolves to the "Bell Farming" sheet
+# column via TRIAL_SKILL_TO_SHEET_COLUMN above.
+TRIAL_SKILLS_CURRENT = ["Milking", "Woodcutting", "Crafting", "Alchemy"]
 
 # --- Random assignment (Phase 1: NO optimizer) ------------------------------
 # Fixed seed for reproducibility. NEVER use unseeded randomness.
