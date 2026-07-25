@@ -46,7 +46,12 @@ from typing import Callable, Optional
 
 from . import config
 from .reader import MemberRow
-from .trials import Assignment, rate, simulate_race
+from .trials import (
+    Assignment,
+    guild_building_skill_levels,
+    rate,
+    simulate_race,
+)
 
 # Internal representation during search:
 #   * members are referred to by their INDEX into the input ``members`` list;
@@ -115,9 +120,16 @@ def _rate_matrix(
     Evaluated at a representative low tier; a fast, linear stand-in for a
     member's affinity to a skill. Used only to order/seed strategies — the real
     objective is always ``AssignmentScorer``.
+
+    The guild-building contribution is resolved once per skill rather than once
+    per (member, skill) — same values, one lookup instead of ``len(members)``.
     """
+    building = [guild_building_skill_levels(s) for s in skills]
     return [
-        [rate(members[m], skills[s], tier) for s in range(len(skills))]
+        [
+            rate(members[m], skills[s], tier, building[s])
+            for s in range(len(skills))
+        ]
         for m in range(len(members))
     ]
 
@@ -637,8 +649,13 @@ def _run_pipeline(
 def _run_ensemble(scorer: AssignmentScorer, seed: int) -> Parties:
     """Run every pipeline in ``config.OPT_ENSEMBLE_PIPELINES``; return the best.
 
-    Each pipeline gets its own derived seed for determinism; ties are broken by a
-    canonical party key so the winner is stable run-to-run.
+    Each entry gets its own derived seed (``seed + 1 + i``) for determinism, which
+    means a REPEATED pipeline is a genuine random restart rather than a duplicate
+    of the same search — the shipped list is exactly that, ``OPT_RESTARTS`` copies
+    of the strongest pipeline (see the live-data results in config: the variance
+    that matters is between seeds, not between methods).
+
+    Ties are broken by a canonical party key so the winner is stable run-to-run.
     """
     best_parties: Optional[Parties] = None
     best = -1

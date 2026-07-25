@@ -341,6 +341,49 @@ def action_seconds(skill: str, speed: float) -> float:
     return base / (1 + speed)
 
 
+def _prepare_member(
+    member: MemberRow, skill: str, building_levels: int
+) -> Optional[tuple[int, float, int, float, int, float]]:
+    """Precompute everything about member+skill that does NOT depend on the tier.
+
+    Returns ``(level, success_bonus, building_levels, double_factor, work_power,
+    action_seconds)`` — every input :func:`rate` needs except the tier. The
+    per-tier rate is then
+    ``success(level, tier, success_bonus, building) * double_factor * work_power
+    / action_seconds``.
+
+    Returns None for a member with no usable level in the skill (they contribute
+    nothing, so callers drop them from the party loop entirely).
+
+    WHY THIS EXISTS: the optimizer evaluates ~87k races per pipeline, each racing
+    ~13 tiers, which called :func:`rate` — and through it the whole equipment
+    bonus assembly — 22.3 MILLION times to compute about 1,200 distinct values.
+    Hoisting the tier-independent part out of the loop is worth several minutes of
+    build time (see the PERFORMANCE note in simulate_race). A plain tuple rather
+    than a dataclass because the caller unpacks it in the hottest loop in the
+    project, where attribute lookups are measurable.
+
+    BIT-EXACTNESS: the three factors are returned SEPARATELY, not pre-multiplied
+    into a single throughput, so callers can evaluate them in the original
+    ``success * double * workPower / actionSeconds`` order. Folding them into one
+    constant re-associates the arithmetic, and a resulting one-ULP difference in a
+    party rate is enough to send the search down a different path — observed
+    live: SC kept its 4800 points but reshuffled every party for no gain. Same
+    values in the same order means the optimizer's trajectory is untouched.
+    """
+    b = member_bonuses(member, skill, building_levels)
+    if not b.level or b.level <= 0:
+        return None
+    return (
+        b.level,
+        b.success_bonus,
+        b.building_levels,
+        1 + double_chance(skill),
+        math.floor(work_power(b.level, b.efficiency)),
+        action_seconds(skill, b.speed),
+    )
+
+
 def rate(
     member: MemberRow,
     skill: str,
@@ -358,14 +401,20 @@ def rate(
     cannot conjure a party from members who have not trained the skill.
 
     ``building_levels`` (granted skill levels) overrides the guild-building term;
-    None uses the guild's actual building.
+    None uses the guild's actual building — resolve it ONCE in the caller and
+    pass it in when calling this in a loop.
+
+    This is the per-member convenience form. Race simulation goes through
+    :func:`_prepare_member` instead, which hoists everything tier-independent out
+    of the loop.
     """
-    b = member_bonuses(member, skill, building_levels)
-    if not b.level or b.level <= 0:
+    if building_levels is None:
+        building_levels = guild_building_skill_levels(skill)
+    prepared = _prepare_member(member, skill, building_levels)
+    if prepared is None:
         return 0.0
-    s = success(b.level, tier, b.success_bonus, b.building_levels)
-    wp = math.floor(work_power(b.level, b.efficiency))
-    return s * (1 + double_chance(skill)) * wp / action_seconds(skill, b.speed)
+    level, success_bonus, building, double, wp, asec = prepared
+    return success(level, tier, success_bonus, building) * double * wp / asec
 
 
 def points_for_tier(tier_reached: int) -> int:
@@ -446,9 +495,21 @@ def simulate_race(
     ``building_levels`` (granted skill levels) overrides the guild-building term
     for the whole party — the mechanism behind
     :func:`probe_building_upgrade`. None uses the guild's actual building.
+
+    PERFORMANCE: this is the optimizer's oracle, called ~87k times per pipeline,
+    so everything that does not vary with the tier is hoisted out of the tier loop
+    — the guild-building lookup once per race, and each member's equipment bonuses
+    once per race (:func:`_prepare_member`) rather than once per member per tier.
+    The tier loop is then one :func:`success` call and three float operations per
+    member.
+    Members with no usable level are dropped from the loop entirely: they
+    contribute exactly 0, but they still count toward the headcount penalty ``n``,
+    so the length of ``party`` — not of the prepared list — sets the work target.
     """
     if target_scale is None:
         target_scale = config.TARGET_SCALE
+    if building_levels is None:
+        building_levels = guild_building_skill_levels(skill)
 
     n = len(party)
     budget = config.TRIAL_TIME_BUDGET_SECONDS
@@ -456,9 +517,26 @@ def simulate_race(
     cumulative = 0.0
     tier_reached = 0
 
+    # Tier-independent per-member factors, computed once for the whole race.
+    prepared = [
+        p
+        for p in (_prepare_member(m, skill, building_levels) for m in party)
+        if p is not None
+    ]
+
     tier = 1
     while tier <= _MAX_TIER:
-        party_rate = sum(rate(m, skill, tier, building_levels) for m in party)
+        # Same factor order as rate(), and summed with sum() rather than a manual
+        # accumulator — BOTH deliberate. Re-associating the factors shifts the
+        # last bit, and since CPython 3.12 sum() applies Neumaier compensation to
+        # float sequences, a hand-rolled `+=` loop is a *different* (naive) sum.
+        # Either change perturbs the party rate by ~1 ULP, which is enough to send
+        # the optimizer down a different path: observed live, SC kept its 4800
+        # points but reshuffled every party for no gain. See _prepare_member.
+        party_rate = sum(
+            success(level, tier, success_bonus, building) * double * wp / asec
+            for level, success_bonus, building, double, wp, asec in prepared
+        )
         eff_target = effective_target(tier, n, target_scale)
 
         if party_rate <= 0:
@@ -497,18 +575,36 @@ def simulate_race(
         tier += 1
 
     final_tier = tier_reached if tier_reached >= 1 else 1
-    roster = [
-        RosterEntry(
-            name=m.name,
-            level=member_bonuses(m, skill, building_levels).level,
-            tool=member_bonuses(m, skill, building_levels).tool,
-            top=member_bonuses(m, skill, building_levels).top,
-            bot=member_bonuses(m, skill, building_levels).bot,
-            rate_tier1=rate(m, skill, 1, building_levels),
-            rate_final=rate(m, skill, final_tier, building_levels),
+    # One member_bonuses per member (it used to be called four times each), and
+    # the two reported rates reuse the prepared factors.
+    roster = []
+    for m in party:
+        b = member_bonuses(m, skill, building_levels)
+        p = _prepare_member(m, skill, building_levels)
+        if p is None:
+            rate_tier1 = rate_final = 0.0
+        else:
+            level, success_bonus, building, double, wp, asec = p
+            rate_tier1 = (
+                success(level, 1, success_bonus, building) * double * wp / asec
+            )
+            rate_final = (
+                success(level, final_tier, success_bonus, building)
+                * double
+                * wp
+                / asec
+            )
+        roster.append(
+            RosterEntry(
+                name=m.name,
+                level=b.level,
+                tool=b.tool,
+                top=b.top,
+                bot=b.bot,
+                rate_tier1=rate_tier1,
+                rate_final=rate_final,
+            )
         )
-        for m in party
-    ]
 
     return TrialResult(
         skill=skill,

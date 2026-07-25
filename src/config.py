@@ -218,15 +218,31 @@ TRIAL_OPTIMIZER_STRATEGY = "best"
 # Fixed seed for the optimizer's internal randomness. NEVER use unseeded RNG.
 TRIAL_OPTIMIZER_SEED = 1234
 
-# The ensemble run by strategy "best"/"ensemble": diverse strong pipelines whose
-# maximum is returned. Beam seeds the genetic algorithm (a strong founder
-# converges better); every pipeline ends in hill_climb to lock in a local
-# optimum (never worsens the result).
-OPT_ENSEMBLE_PIPELINES = [
-    "beam+genetic+hill_climb",
-    "proxy_greedy+sa+hill_climb",
-    "marginal_greedy+sa+hill_climb",
-]
+# The ensemble run by strategy "best"/"ensemble": entries are run independently
+# and the maximum is returned. ``optimizer._run_ensemble`` gives entry ``i`` the
+# derived seed ``TRIAL_OPTIMIZER_SEED + 1 + i``, so REPEATING a pipeline is not
+# redundant — it is a genuine random restart.
+#
+# REVISED 2026-07-25 after measuring on LIVE rosters (the synthetic bake-off
+# roster hid this). The old three-method ensemble
+# [beam+genetic+hill_climb, proxy_greedy+sa+hill_climb, marginal_greedy+sa+hill_climb]
+# was NOT buying method diversity:
+#   * At the SAME seed all three return 4400 on LI (SC: all three 4800).
+#   * The ensemble's apparent +100 on LI came entirely from the derived seeds:
+#     beam+genetic+hill_climb finds 4500 by itself at seed 1235, while the two SA
+#     pipelines spent ~2/3 of the runtime returning 4400s that were discarded.
+#   * A seed sweep confirms the variance is in the SEED, not the method: SC scores
+#     4800 on all 8 seeds tried; LI scores 4500 on seed 1235 and 4400 on the other
+#     seven. The GA also beat both SA pipelines in the synthetic bake-off below.
+# So the ensemble was an accidental multi-start. Making that explicit — N restarts
+# of the one method that wins everywhere — is cheaper AND more robust, because it
+# spends the budget on the axis that actually varies.
+# Cost per restart on live data (post-optimisation): ~10.5s SC, ~9.0s LI, against
+# 48.9s / 43.0s for the old three-method ensemble.
+# Set OPT_RESTARTS = 1 for the cheapest useful run; raising it can only improve
+# the result (the maximum is kept), at a linear cost.
+OPT_RESTARTS = 4
+OPT_ENSEMBLE_PIPELINES = ["beam+genetic+hill_climb"] * OPT_RESTARTS
 
 # --- BAKE-OFF RESULTS -------------------------------------------------------
 # `python -m src.optimize_bakeoff` — synthetic roster n=86, seeds 1-3, at the
@@ -236,8 +252,8 @@ OPT_ENSEMBLE_PIPELINES = [
 #   strategy                        mean_pts  min_pts   time
 #   ---------------------------------------------------------
 #   genetic (beam-seeded)             5400     5400      20s
-#   beam+genetic+hill_climb           5400     5400      21s
-#   best (ensemble)                   5400     5400     101s   <-- SHIPPED
+#   beam+genetic+hill_climb           5400     5400      21s   <-- now SHIPPED, x4 restarts
+#   best (3-method ensemble)          5400     5400     101s   (retired 2026-07-25)
 #   proxy_greedy                      5300     5300      ~0s
 #   scipy_lap (dev-only, Hungarian)   5300     5300      ~0s
 #   proxy_greedy+sa+hill_climb        5300     5300      40s
@@ -245,6 +261,26 @@ OPT_ENSEMBLE_PIPELINES = [
 #   beam                              5000     5000      <1s
 #   marginal_greedy                   5000     5000      <1s
 #   random                            4667     4600      ~0s
+#
+# --- LIVE-DATA RESULTS (2026-07-25, both guilds, post hot-path optimisation) --
+# Measured against the real SC (91 members) and LI (78) rosters on draw 7/24
+# [Milking, Woodcutting, Crafting, Alchemy]. Points PRIMARY.
+#
+#   strategy                                 SC pts   LI pts   time (SC/LI)
+#   -------------------------------------------------------------------------
+#   beam+genetic+hill_climb  @seed 1235       4800     4500     10.5s / 9.0s
+#   beam+genetic+hill_climb  @7 other seeds   4800     4400     10.5s / 9.0s
+#   proxy_greedy+sa+hill_climb @seed 1234     4800     4400      ~19s / ~17s
+#   marginal_greedy+sa+hill_climb @seed 1234  4800     4400      ~19s / ~17s
+#   old 3-method ensemble                     4800     4500     48.9s / 43.0s
+#   4 restarts of beam+genetic+hill_climb     4800     4500     42.0s / 36.0s  <-- SHIPPED
+#
+# WHY THE SYNTHETIC TABLE ABOVE MISLED US: on a synthetic roster every method
+# landed on the same 5400, which read as "the methods agree, so the ensemble is
+# cheap insurance". On live data they also agree — and that is precisely the
+# point: the disagreement is between SEEDS, not methods. The old ensemble scored
+# its extra tier on LI only because entry 0 drew seed 1235. Spending the same
+# budget on restarts of the winning method dominates it.
 #
 # Takeaways:
 #  * The beam-seeded GA (your suggestion) reaches the optimum robustly (min ==
