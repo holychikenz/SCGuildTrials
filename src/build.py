@@ -532,6 +532,117 @@ def _assignment_footnote(week: dict) -> str:
     )
 
 
+def _guild_buildings_footnote(week: dict) -> str:
+    """Footer line stating this week's guild-building skill-level contributions.
+
+    Guild buildings are guild-wide (+2 skill levels per building level to every
+    member), quite unlike the per-member house rooms. Rendered from the live
+    ``guild_building_levels`` map so an unbuilt guild reads as an explicit zero
+    rather than a silent omission.
+    """
+    granted = week.get("guild_building_levels") or {}
+    active = {sk: lv for sk, lv in granted.items() if lv}
+    if not active:
+        return (
+            "no skilling guild building is built, so BuildingSkillLevels = 0 for "
+            "every trial this week"
+        )
+    return "this week " + ", ".join(
+        f"<strong>{html.escape(sk)} +{lv}</strong>" for sk, lv in active.items()
+    )
+
+
+def _gp_per_point(upgrade: dict) -> str:
+    """Guild points spent per trial point gained, or an em dash if unpriceable."""
+    cost, gained = upgrade.get("cost"), upgrade.get("points_gained") or 0
+    if cost is None or gained <= 0:
+        return "&mdash;"
+    return f"{round(cost / gained):,}"
+
+
+def _render_upgrades_section(week: dict) -> str:
+    """Bottom-of-page section: which +1 guild-building upgrade buys a tier.
+
+    Reads the ``building_upgrades`` probes computed by
+    ``trials.probe_building_upgrade`` — one per drawn skill. Upgrades that bump a
+    tier are listed cheapest first (all of them, if several do); the rest are
+    summarised in one line so the reader can see they were checked and rejected
+    rather than omitted.
+    """
+    upgrades = week.get("building_upgrades") or []
+    if not upgrades:
+        return ""
+
+    bumps = sorted(
+        (u for u in upgrades if u.get("bumps")),
+        key=lambda u: (u.get("cost") or 0, -u["points_gained"]),
+    )
+    duds = [u for u in upgrades if not u.get("bumps")]
+
+    if bumps:
+        rows = "".join(
+            "<tr>"
+            f"<th>{html.escape(u['building'])}</th>"
+            f"<td>{html.escape(u['skill'])}</td>"
+            f"<td class=num>{u['from_level']} &rarr; {u['to_level']}</td>"
+            f"<td class=num>+{u['skill_levels_after'] - u['skill_levels_now']} lv</td>"
+            f"<td class=num>{u['tier_now']} &rarr; <strong>{u['tier_after']}</strong></td>"
+            f"<td class=num>+{u['points_gained']}</td>"
+            f"<td class=num>{u['cost']:,}</td>"
+            # points_gained is always > 0 when bumps is True (a higher tier is
+            # worth +100), but never divide in a template without a guard.
+            f"<td class=num>{_gp_per_point(u)}</td>"
+            "</tr>"
+            for u in bumps
+        )
+        body = f"""
+    <p class="meta">{len(bumps)} of {len(upgrades)} upgrade(s) would raise a tier
+       this week, cheapest first. Cost is the single next level, from the game's
+       own <code>guildPointCosts</code>.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Building</th><th>Trial</th><th class=num>Level</th>
+          <th class=num>Grants</th><th class=num>Tier</th>
+          <th class=num>Points</th><th class=num>Cost (gp)</th>
+          <th class=num>gp / point</th>
+        </tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+    else:
+        body = """
+    <p><strong>No single +1 upgrade would bump a tier this week.</strong>
+       Every drawn trial clears the same tier with one more building level, so
+       the guild points are better banked (or spent on a building whose skill is
+       drawn in a later week).</p>"""
+
+    if duds:
+        dud_list = ", ".join(
+            f"{html.escape(u['building'])} "
+            + (
+                "(at level cap)"
+                if u.get("at_cap")
+                else f"({u['from_level']}&rarr;{u['to_level']}, "
+                f"{(u['cost'] or 0):,} gp, still tier {u['tier_now']})"
+            )
+            for u in duds
+        )
+        body += f'\n    <p class="meta">Checked and rejected: {dud_list}.</p>'
+
+    return f"""
+  <section class="card" id="upgrades-section">
+    <h2>Guild building upgrades &mdash; would +1 level bump a tier?</h2>
+    <p class="meta">Each of this week's four trials is re-raced with its own guild
+       building one level higher (<code>+2</code> skill levels for every member of
+       that party). Parties are held fixed, so a bump shown here is a
+       <em>lower bound</em>: re-optimising the assignment afterwards could do
+       better, never worse. Buildings whose skill is not drawn this week cannot
+       affect these numbers at all.</p>{body}
+  </section>
+"""
+
+
 def _render_trials_html(week: dict, site: "GuildSite") -> str:
     """Render the full trials page from a ``WeekResult`` dict."""
     strip = "".join(
@@ -565,6 +676,8 @@ def _render_trials_html(week: dict, site: "GuildSite") -> str:
     assign_json = json.dumps(assign_index, ensure_ascii=False).replace(
         "<", "\\u003c"
     )
+
+    upgrades_section = _render_upgrades_section(week)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -698,7 +811,7 @@ def _render_trials_html(week: dict, site: "GuildSite") -> str:
        (beyond {len(week['skills'])} &times; {week['cap']}).</p>
     <p>{bench_html}</p>
   </section>
-</main>
+{upgrades_section}</main>
 <footer>
   <h3>Assumptions &amp; caveats</h3>
   <p>This page is a <strong>model</strong>, not live game data. Every number
@@ -717,8 +830,8 @@ def _render_trials_html(week: dict, site: "GuildSite") -> str:
         <code>&Delta; = SkillLevel + BuildingSkillLevels &minus; DifficultyLevel</code>,
         the slope <code>s</code> is <code>+0.005</code> at or above the difficulty
         and <code>&minus;0.01</code> below it, and success is floored at
-        <code>0.05</code>. <em>BuildingSkillLevels = 0</em>: houses grant
-        efficiency/speed, not skill levels. For Enhancing the <code>bonus</code>
+        <code>0.05</code>. <em>BuildingSkillLevels</em> comes from the guild's
+        buildings (see below). For Enhancing the <code>bonus</code>
         is the EnhancingSuccessRate (enhancer tool success; the Observatory's
         enhancing-success buff is 0 in the live data).</li>
     <li><strong>Points formula (ASSUMPTION).</strong>
@@ -753,6 +866,20 @@ def _render_trials_html(week: dict, site: "GuildSite") -> str:
         (Observatory) grants <code>+0.010</code> action-speed per level rather
         than efficiency. A blank H cell falls back to the assumed default of
         <code>level&nbsp;4</code>; levels are clamped to the in-game max of 8.</li>
+    <li><strong>Guild buildings (guild-wide, CONFIRMED game data).</strong>
+        Quite separate from the personal houses above: each of the ten skilling
+        <em>guild</em> buildings grants <code>+2 levels</code> in its own skill to
+        <em>every</em> member of the guild, per building level &mdash; Guild
+        Brewery&rarr;Brewing, Guild Laboratory&rarr;Alchemy, Guild
+        Observatory&rarr;Enhancing and so on &mdash; up to <code>+40</code> at the
+        building cap of level&nbsp;20. Those levels are added to each member's own
+        level in the success calc above (the <em>BuildingSkillLevels</em> term)
+        but deliberately <em>not</em> to work power, which no capture has yet
+        confirmed. Building levels are entered by hand in
+        <code>config.GUILD_BUILDING_LEVELS</code> for now, not read from the
+        sheet: {_guild_buildings_footnote(week)}. The
+        <a href="#upgrades-section">upgrade section</a> above prices the next
+        level of each building against this week's draw.</li>
     <li><strong>{html.escape(_assignment_footnote(week))}</strong></li>
   </ol>
   <p>Machine-readable copy of this page's data: <code>trials.json</code>.

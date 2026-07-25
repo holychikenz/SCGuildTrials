@@ -322,11 +322,14 @@ SUCCESS_FLOOR = 0.05           # MAX(0.05, ...): success never drops below 5%
 LEVEL_BONUS_POS = 0.005        # per-level bonus when effective level >= difficulty
 LEVEL_BONUS_NEG = 0.01         # per-level penalty when effective level <  difficulty
 # BuildingSkillLevels: skill levels contributed by buildings, added to the
-# member's own level in the success calc. Houses grant EFFICIENCY / action-speed
-# (fed to work-power / action-seconds), NOT skill levels, per the live
-# houseRoomDetailMap — so no building currently grants trial skill levels. Kept
-# as a tunable placeholder (0) for a future guild-building that does.
-BUILDING_SKILL_LEVELS = 0
+# member's own level in the success calc. TWO DISTINCT SYSTEMS feed this, and an
+# earlier revision of this comment conflated them:
+#   * per-member HOUSE ROOMS (houseRoomDetailMap) grant EFFICIENCY / action-speed,
+#     never skill levels — see the "Houses" section below; and
+#   * guild-wide GUILD BUILDINGS (guildBuildingDetailMap) DO grant skill levels,
+#     +2 per building level to every member — see GUILD_BUILDING_LEVELS below.
+# The per-skill guild-building term is resolved by
+# trials.guild_building_skill_levels(); there is no flat scalar any more.
 # Headcount penalty: each participant raises the work target by 1% (the (1+N/100)
 # term in TotalWork).
 HEADCOUNT_PENALTY_PER_MEMBER = 0.01
@@ -379,6 +382,98 @@ HOUSE_ENHANCING_SPEED_PER_LEVEL = 0.010   # Observatory (enhancing house)
 # Default (blank-cell) contributions, retained for reference/tests.
 HOUSE_EFFICIENCY = HOUSE_EFFICIENCY_PER_LEVEL * DEFAULT_HOUSE_LEVEL           # 0.06 at L4
 HOUSE_ENHANCING_SPEED = HOUSE_ENHANCING_SPEED_PER_LEVEL * DEFAULT_HOUSE_LEVEL  # 0.04 at L4
+
+# --- Guild buildings (guild-wide SKILL-LEVEL buffs) --------------------------
+# NOT the same thing as the per-member house rooms above, and the difference is
+# the whole point: a house room buffs its owner's efficiency, whereas a GUILD
+# building raises the SKILL LEVEL of every guild member in that skill.
+#
+# Authoritative game data (cowstuff milkyway_client_info.json ->
+# guildBuildingDetailMap, game version v1.20260715.0): each of the ten skilling
+# guild buildings carries exactly one buff of type "/buff_types/<skill>_level"
+# with flatBoost == flatBoostLevelBonus == 2, so by the in-game rule
+# `flatBoost + (level-1)*flatBoostLevelBonus` the granted levels are simply
+#     skillLevels = GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL * buildingLevel
+# i.e. +2 levels per building level, to a maximum of +40 at building level 20.
+# Verbatim example:
+#     {"hrid": "/guild_buildings/brewery", "name": "Guild Brewery",
+#      "maxLevel": 20, "skillHrid": "/skills/brewing",
+#      "buffs": [{"typeHrid": "/buff_types/brewing_level",
+#                 "flatBoost": 2, "flatBoostLevelBonus": 2, "ratioBoost": 0}]}
+# Building -> trial skill (all ten follow the identical +2/level pattern):
+#   dairy_barn -> Milking        forge      -> C.Smithing   kitchen    -> Cooking
+#   garden     -> Foraging       workshop   -> Crafting     brewery    -> Brewing
+#   log_shed   -> Woodcutting    sewing_parlor -> Tailoring laboratory -> Alchemy
+#   observatory -> Enhancing  (the GUILD Observatory grants enhancing LEVELS —
+#                              distinct from the personal Observatory's speed)
+#
+# WHERE IT APPLIES: the success calc only. Orvel's confirmed formula names
+# BuildingSkillLevels in the success delta (`delta = SkillLevel +
+# BuildingSkillLevels - DifficultyLevel`) and nothing yet confirms whether the
+# level buff also raises workPower, so trials.work_power still uses the raw
+# sheet level. If a capture later shows progressPerAction rising with a guild
+# building, work_power must take the effective level too — see trials.work_power.
+GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL = 2   # +2 skill levels per building level
+GUILD_BUILDING_MAX_LEVEL = 20               # in-game guild buildings cap at 20
+# Live building levels, keyed by TRIAL skill name (the model's own labels, so
+# "Alchemy" is the Guild Laboratory — the "Bell Farming" joke does not reach
+# here). A skill omitted, None, or 0 grants nothing. Values are clamped to
+# 0..GUILD_BUILDING_MAX_LEVEL by trials.guild_building_skill_levels.
+#
+# CURRENT DATA (guild_updated capture 2026-07-22, Survey Corps id 4): NO
+# skilling guild building is built. The guild's live guildBuildingLevelMap holds
+# only builders_hall 3, guild_hall 4, skilling_encampment 1, combat_encampment 1,
+# dojo 1, plus the force/tempo shrines — none of which grants a skill level.
+# Lactose lntolerance has no capture, so ONE map serves both guilds for now (the
+# same pragmatic choice the column map makes above). SPLIT THIS PER GUILD the
+# moment real levels arrive and the two guilds diverge: build.build_guild runs
+# the whole pipeline once per guild and would need to thread its key through
+# trials.run_week -> simulate_race/optimize -> rate.
+# Setting every value to 0 restores the pre-2026-07-25 behaviour (the model is
+# then identical to the retired BUILDING_SKILL_LEVELS = 0) — one-line rollback.
+GUILD_BUILDING_LEVELS = {
+    "Milking": 0,       # /guild_buildings/dairy_barn
+    "Foraging": 0,      # /guild_buildings/garden
+    "Woodcutting": 0,   # /guild_buildings/log_shed
+    "C.Smithing": 0,    # /guild_buildings/forge
+    "Crafting": 0,      # /guild_buildings/workshop
+    "Tailoring": 0,     # /guild_buildings/sewing_parlor
+    "Cooking": 0,       # /guild_buildings/kitchen
+    "Brewing": 0,       # /guild_buildings/brewery
+    "Alchemy": 0,       # /guild_buildings/laboratory
+    "Enhancing": 0,     # /guild_buildings/observatory
+}
+
+# In-game display names, for the upgrade table on the trials page.
+GUILD_BUILDING_NAMES = {
+    "Milking": "Guild Dairy Barn",
+    "Foraging": "Guild Garden",
+    "Woodcutting": "Guild Log Shed",
+    "C.Smithing": "Guild Forge",
+    "Crafting": "Guild Workshop",
+    "Tailoring": "Guild Sewing Parlor",
+    "Cooking": "Guild Kitchen",
+    "Brewing": "Guild Brewery",
+    "Alchemy": "Guild Laboratory",
+    "Enhancing": "Guild Observatory",
+}
+
+# Guild-point cost to REACH each building level (guildBuildingDetailMap
+# guildPointCosts, verbatim). The cost of a +1 upgrade from level L is therefore
+# GUILD_BUILDING_POINT_COSTS[L+1]; a level-0 (unbuilt) building costs 500 to
+# raise to level 1. Cumulative cost to reach L is the running sum, which is why
+# the model quotes the marginal step rather than a total.
+# ALL TEN skilling buildings share this one curve (as do the seven combat
+# buildings and the two encampments — verified: 19 buildings, one identical
+# cost map). The four utility buildings (Guild Hall, Archives, Builder's Hall,
+# Treasury) sit on a curve of exactly DOUBLE these numbers, and are not modelled
+# here because they grant no skill levels.
+GUILD_BUILDING_POINT_COSTS = {
+    1: 500,      2: 675,      3: 900,      4: 1225,     5: 1650,
+    6: 2250,     7: 3025,     8: 4075,     9: 5525,    10: 7450,
+    11: 10050,  12: 13575,   13: 18325,   14: 24725,   15: 33400,
+    16: 45075,  17: 60850,   18: 82150,   19: 110900,  20: 149725,
+}
 
 # --- TARGET_SCALE (neutral: the confirmed TotalWork formula carries no scale) -
 # Superseded 2026-07-17. The old lab-mirror targets were single-player-scaled

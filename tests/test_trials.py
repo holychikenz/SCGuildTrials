@@ -179,13 +179,206 @@ def test_success_matches_formula_midrange():
     assert s == pytest.approx(0.8 * (1 + 20 * 0.005))
 
 
-def test_building_skill_levels_added_to_effective_level(monkeypatch):
+def test_building_skill_levels_added_to_effective_level():
     # BuildingSkillLevels is added to the member's own level before comparing
     # to the difficulty level: level 90 + 10 building levels behaves like a bare
     # level 100 (both give effective level 100 -> delta 0 -> 0.8).
-    baseline_100 = trials.success(100, 1, 0.0)  # default BUILDING_SKILL_LEVELS = 0
-    monkeypatch.setattr(config, "BUILDING_SKILL_LEVELS", 10)
-    assert trials.success(90, 1, 0.0) == pytest.approx(baseline_100)
+    baseline_100 = trials.success(100, 1, 0.0)  # no building term by default
+    assert trials.success(90, 1, 0.0, building_levels=10) == pytest.approx(
+        baseline_100
+    )
+
+
+# ---------------------------------------------------------------------------
+# guild buildings (guild-wide +2 skill levels per building level)
+# ---------------------------------------------------------------------------
+def test_guild_building_levels_all_zero_in_shipped_config():
+    # Live data (guild_updated capture 2026-07-22): no skilling guild building is
+    # built, so the model must add nothing today.
+    for skill in config.GUILD_BUILDING_LEVELS:
+        assert trials.guild_building_skill_levels(skill) == 0
+
+
+def test_guild_building_grants_two_levels_per_building_level(monkeypatch):
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 7)
+    # +2 per building level: a level-7 Guild Brewery is worth +14 brewing levels.
+    assert trials.guild_building_skill_levels("Brewing") == 14
+    # ...and only that skill: its neighbours are untouched.
+    assert trials.guild_building_skill_levels("Cooking") == 0
+
+
+def test_guild_building_level_clamped_to_max(monkeypatch):
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 999)
+    assert trials.guild_building_skill_levels("Brewing") == (
+        config.GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL * config.GUILD_BUILDING_MAX_LEVEL
+    )
+
+
+def test_guild_building_unknown_or_none_skill_grants_nothing(monkeypatch):
+    assert trials.guild_building_skill_levels("Bell Farming") == 0  # not a trial skill
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", None)
+    assert trials.guild_building_skill_levels("Brewing") == 0
+
+
+def test_member_bonuses_carries_guild_building_levels(monkeypatch):
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 10)
+    m = _member("B", {"Brewing": 100, "Cooking": 100})
+    assert trials.member_bonuses(m, "Brewing").building_levels == 20
+    assert trials.member_bonuses(m, "Cooking").building_levels == 0
+
+
+def test_guild_building_raises_rate_via_success_only(monkeypatch):
+    # A level-10 Guild Brewery (+20 levels) must raise the success term and
+    # nothing else: work power and action time are unchanged, so the rate rises
+    # by exactly the success ratio.
+    m = _member("B", {"Brewing": 100})
+    before = trials.rate(m, "Brewing", 1)
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 10)
+    after = trials.rate(m, "Brewing", 1)
+    expected_ratio = trials.success(100, 1, 0.0, 20) / trials.success(100, 1, 0.0)
+    assert after == pytest.approx(before * expected_ratio)
+    assert after > before
+
+
+def test_guild_building_does_not_change_work_power(monkeypatch):
+    # UNCONFIRMED in game data, so deliberately excluded: work power reads the
+    # member's own sheet level only.
+    m = _member("B", {"Brewing": 100})
+    b_before = trials.member_bonuses(m, "Brewing")
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 20)
+    b_after = trials.member_bonuses(m, "Brewing")
+    assert trials.work_power(b_after.level, b_after.efficiency) == pytest.approx(
+        trials.work_power(b_before.level, b_before.efficiency)
+    )
+
+
+def test_guild_building_can_lift_the_tier_reached(monkeypatch):
+    # The point of the whole exercise: more effective level -> higher success at
+    # the hard tiers -> a better tier within the same 1-hour budget.
+    party = [_member(f"M{i}", {"Brewing": 110}) for i in range(10)]
+    before = trials.simulate_race(party, "Brewing")
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 20)  # +40 levels
+    after = trials.simulate_race(party, "Brewing")
+    assert after.tier_reached > before.tier_reached
+    assert after.points > before.points
+
+
+def test_run_week_records_guild_building_levels():
+    # The assumption is published, not hidden: trials.json carries the granted
+    # levels for every drawn skill.
+    members = [_member(f"M{i}", {sk: 110 for sk in config.SKILLS}) for i in range(8)]
+    wk = trials.run_week(members, skills=["Brewing", "Milking"], strategy="random")
+    assert wk.to_dict()["guild_building_levels"] == {"Brewing": 0, "Milking": 0}
+
+
+# ---------------------------------------------------------------------------
+# guild-building upgrade probe ("would +1 level bump a tier?")
+# ---------------------------------------------------------------------------
+def test_building_level_and_granted_levels_are_distinct_and_clamped(monkeypatch):
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 3)
+    assert trials.guild_building_level("Brewing") == 3         # building level
+    assert trials.guild_building_skill_levels("Brewing") == 6  # granted levels
+    assert trials.building_skill_levels(0) == 0
+    assert trials.building_skill_levels(999) == 40             # clamped at L20
+
+
+def test_upgrade_cost_comes_from_the_game_cost_curve():
+    # guildPointCosts: an unbuilt building's first level is 500; the cap is 20.
+    assert trials.guild_building_upgrade_cost(1) == 500
+    assert trials.guild_building_upgrade_cost(2) == 675
+    assert trials.guild_building_upgrade_cost(20) == 149725
+    assert trials.guild_building_upgrade_cost(21) is None
+
+
+def test_simulate_race_override_does_not_touch_config():
+    # The probe must price a hypothetical without mutating global state.
+    party = [_member(f"M{i}", {"Brewing": 113}) for i in range(10)]
+    before = trials.simulate_race(party, "Brewing").tier_reached
+    hypothetical = trials.simulate_race(
+        party, "Brewing", None, trials.building_skill_levels(1)
+    ).tier_reached
+    assert hypothetical > before
+    assert config.GUILD_BUILDING_LEVELS["Brewing"] == 0        # untouched
+    assert trials.simulate_race(party, "Brewing").tier_reached == before
+
+
+def test_probe_reports_a_bump_with_cost_and_points():
+    # Ten members at level 113 sit exactly on the tier-8/9 edge: the first Guild
+    # Brewery level (+2 levels, 500 gp) buys tier 9 and its 100 points.
+    party = [_member(f"M{i}", {"Brewing": 113}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    assert u.bumps is True
+    assert (u.from_level, u.to_level) == (0, 1)
+    assert (u.skill_levels_now, u.skill_levels_after) == (0, 2)
+    assert u.cost == 500
+    assert u.tier_after == u.tier_now + 1
+    assert u.points_gained == 100
+    assert u.building == "Guild Brewery"
+    assert u.at_cap is False
+
+
+def test_probe_reports_no_bump_mid_tier():
+    # A party comfortably inside a tier band gains no tier from +2 levels.
+    party = [_member(f"M{i}", {"Brewing": 108}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    assert u.bumps is False
+    assert u.tier_after == u.tier_now
+    assert u.points_gained == 0
+    assert u.cost == 500          # the cost is still reported, for the officers
+
+
+def test_probe_at_level_cap_offers_no_upgrade(monkeypatch):
+    monkeypatch.setitem(
+        config.GUILD_BUILDING_LEVELS, "Brewing", config.GUILD_BUILDING_MAX_LEVEL
+    )
+    party = [_member(f"M{i}", {"Brewing": 113}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    assert u.at_cap is True
+    assert u.from_level == u.to_level == config.GUILD_BUILDING_MAX_LEVEL
+    assert u.cost is None
+    assert u.bumps is False
+    assert u.points_gained == 0
+
+
+def test_probe_respects_an_already_built_building(monkeypatch):
+    # From level 6 the next step costs 3025 (the cost to REACH level 7).
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 6)
+    party = [_member(f"M{i}", {"Brewing": 100}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    assert (u.from_level, u.to_level) == (6, 7)
+    assert (u.skill_levels_now, u.skill_levels_after) == (12, 14)
+    assert u.cost == 3025
+
+
+def test_probe_current_result_reuse_matches_a_fresh_simulation():
+    party = [_member(f"M{i}", {"Brewing": 113}) for i in range(10)]
+    fresh = trials.probe_building_upgrade(party, "Brewing")
+    reused = trials.probe_building_upgrade(
+        party, "Brewing", None, current=trials.simulate_race(party, "Brewing")
+    )
+    assert fresh.to_dict() == reused.to_dict()
+
+
+def test_run_week_probes_every_drawn_skill():
+    members = [_member(f"M{i}", {sk: 113 for sk in config.SKILLS}) for i in range(20)]
+    wk = trials.run_week(members, skills=["Brewing", "Milking"], strategy="random")
+    d = wk.to_dict()["building_upgrades"]
+    assert [u["skill"] for u in d] == ["Brewing", "Milking"]
+    assert [u["building"] for u in d] == ["Guild Brewery", "Guild Dairy Barn"]
+    # Each probe must agree with the trial it belongs to.
+    for u, t in zip(d, wk.to_dict()["trials"]):
+        assert u["tier_now"] == t["tier_reached"]
+        assert u["points_now"] == t["points"]
+        assert u["cost"] == 500  # every building unbuilt today
+
+
+def test_no_member_no_party_even_with_a_guild_building(monkeypatch):
+    # A guild building buffs members; it cannot manufacture a level for someone
+    # who has none, so an unlevelled member still contributes nothing.
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 20)
+    m = _member("Z", {"Brewing": 100})
+    m.skills["Brewing"] = SkillEntry(level=None, tool=False, top=False, bot=False)
+    assert trials.rate(m, "Brewing", 1) == 0.0
 
 
 # ---------------------------------------------------------------------------

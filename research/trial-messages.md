@@ -100,6 +100,70 @@ as the same message with different `type` labels across game versions.
 }
 ```
 
+### Guild buildings — `guildBuildingDetailMap` (CONFIRMED game data, +2 skill levels/level)
+
+The `guildBuildingLevelMap` above gives the guild's *levels*; the client's
+`guildBuildingDetailMap` (`cowstuff/milkyway_client_info.json`, game version
+v1.20260715.0) gives what a level is worth. **Each of the ten skilling guild
+buildings grants SKILL LEVELS to every guild member in its skill** — this is a
+different mechanic from the per-member house rooms (`houseRoomDetailMap`), which
+grant efficiency/action-speed and no levels at all. Conflating the two is what
+kept `BuildingSkillLevels` pinned at 0 in the model until 2026-07-25.
+
+```jsonc
+{
+  "hrid": "/guild_buildings/brewery", "name": "Guild Brewery",
+  "maxLevel": 20, "skillHrid": "/skills/brewing",
+  "guildPointCosts": { "1": 500, "2": 675, ..., "20": 149725 },
+  "buffs": [{
+    "uniqueHrid": "/buff_uniques/guild_building_brewing_level",
+    "typeHrid": "/buff_types/brewing_level",
+    "flatBoost": 2, "flatBoostLevelBonus": 2,
+    "ratioBoost": 0, "ratioBoostLevelBonus": 0
+  }]
+}
+```
+
+`flatBoost == flatBoostLevelBonus == 2`, so by the in-game rule
+`flatBoost + (level-1)*flatBoostLevelBonus` the grant is exactly
+**`2 * buildingLevel` skill levels**, i.e. +2 per building level up to +40 at
+the level-20 cap. All ten skilling buildings follow the identical pattern:
+
+| building | skill | | building | skill |
+|---|---|---|---|---|
+| `dairy_barn` | milking | | `sewing_parlor` | tailoring |
+| `garden` | foraging | | `kitchen` | cooking |
+| `log_shed` | woodcutting | | `brewery` | brewing |
+| `forge` | cheesesmithing | | `laboratory` | alchemy |
+| `workshop` | crafting | | `observatory` | enhancing |
+
+(The combat buildings — dojo, gym, armory, archery range, mystical study,
+dining room, library — grant attack/melee/defense/ranged/magic/stamina/
+intelligence levels on the same +2/level curve, and matter only to the two
+combat trials, which this model does not simulate. `guild_hall`, `archives`,
+`builders_hall`, `treasury`, and the two encampments carry no buffs.)
+
+**Where it enters the model.** Orvel's confirmed success formula names the term
+directly — `delta = SkillLevel + BuildingSkillLevels - DifficultyLevel` — so
+these levels are added to each member's own level in `trials.success` and are
+read from `config.GUILD_BUILDING_LEVELS` (entered by hand; the guild sheet does
+not yet record them). **Not** applied to `workPower`: nothing in the captures
+confirms that a level buff raises `progressPerAction`, and the model prefers to
+understate an unconfirmed gain. See the TODO.
+
+**Live levels (SC, `guild_updated` capture 2026-07-22, guild id 4):**
+
+```jsonc
+{ "/guild_buildings/builders_hall": 3, "/guild_buildings/guild_hall": 4,
+  "/guild_buildings/skilling_encampment": 1, "/guild_buildings/combat_encampment": 1,
+  "/guild_buildings/dojo": 1, "/guild_shrines/force": 1, "/guild_shrines/tempo": 1 }
+```
+
+No skilling building is built, so the model's contribution is presently 0 for
+every trial — correct today, and now correct by *data* rather than by accident.
+The first Guild Brewery costs 500 guild points; SC held 2,764 at capture time,
+so this can change without warning.
+
 ### `guild_trial_signup_updated` — this character's weekly picks
 ```jsonc
 {
@@ -273,3 +337,16 @@ assumed to mirror the labyrinth model:
       (skill, tier, targetWorkValue) pair and every (tier, points) pair from
       `guild_updated.currentTrialsData`; fit the curve and REPLACE the working
       assumption above. Known points so far: milking tier1→200pts, tier2→300pts.
+- [ ] **Does a guild-building level buff also raise `progressPerAction`?** The
+      model applies `BuildingSkillLevels` to the success term only (see the guild
+      buildings section above). Settling this needs a capture from a guild that
+      HAS a skilling building: compare `progressPerAction` against
+      `floor(level * (1 + efficiency))` for a known member. If the buffed level
+      is used, `trials.work_power` must take the effective level too — worth a
+      further ~20-35% rate at a mid-level building, so it is not a footnote.
+- [ ] **Source the guild building levels automatically.** They are hand-entered
+      in `config.GUILD_BUILDING_LEVELS` and will go stale silently the moment the
+      officers spend points. Either a new row/tab on the guild sheet (officer-
+      maintained, read like the draw) or a harvested `guildBuildingLevelMap` from
+      the capture pipeline. NB both guilds share one map today; SC and LI need
+      separate maps as soon as their buildings diverge.

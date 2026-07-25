@@ -12,12 +12,12 @@ constant lives in :mod:`src.config` with an in-line citation.
 Model summary (per member ``m``, trial skill ``s``, tier ``t``)::
 
     tierLevel(t)        = 100 + 10*(t-1)
-    baseTarget(t)       = tierLevel(t) * 10
+    baseTarget(t)       = tierLevel(t) * 400
     effectiveTarget(t,N)= baseTarget(t) * (1 + 0.01*N) * TARGET_SCALE
-    delta(m,t)          = level_m - tierLevel(t)
+    delta(m,s,t)        = level_m + guildBuildingLevels(s) - tierLevel(t)
     levelBonus          = delta*0.005 if delta >= 0 else delta*0.01
     success(m,t)        = clamp(0.8 * (1 + levelBonus + successBonus_m), 0, 1)
-    workPower(m)        = level_m * (1 + efficiency_m)
+    workPower(m)        = level_m * (1 + efficiency_m)   # own level only
     actionSeconds(m)    = baseActionSeconds / (1 + speed_m)
     rate(m,t)           = success(m,t) * floor(workPower(m)) / actionSeconds(m)
     timeToClear(t)      = effectiveTarget(t,N) / sum_m rate(m,t)
@@ -53,6 +53,11 @@ class MemberBonuses:
     tool: bool                  # celestial tool checkbox (else holy baseline)
     top: bool
     bot: bool
+    # Guild-wide, NOT per-member: skill levels granted by the guild's building
+    # for this skill (+2 per building level). Resolved here so that
+    # member_bonuses stays the single place where a member+skill's bonuses are
+    # assembled; see guild_building_skill_levels.
+    building_levels: int = 0
 
 
 def _is_enhancing(skill: str) -> bool:
@@ -117,7 +122,56 @@ def _house_level(house: Optional[int]) -> int:
     return max(0, min(config.HOUSE_MAX_LEVEL, house))
 
 
-def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
+def guild_building_level(skill: str) -> int:
+    """The guild's BUILDING level (0..20) for ``skill``'s building.
+
+    Read from ``config.GUILD_BUILDING_LEVELS`` and clamped to
+    0..``GUILD_BUILDING_MAX_LEVEL``, so a typo'd or stale entry can never inflate
+    the model without bound. Unknown / omitted / None skills read as 0.
+    """
+    level = config.GUILD_BUILDING_LEVELS.get(skill) or 0
+    return max(0, min(config.GUILD_BUILDING_MAX_LEVEL, level))
+
+
+def building_skill_levels(building_level: int) -> int:
+    """SKILL levels granted by a building at ``building_level``.
+
+    ``+2 per building level`` (``flatBoost == flatBoostLevelBonus == 2`` in
+    ``guildBuildingDetailMap``), i.e. up to +40 at the level-20 cap. Takes the
+    building level explicitly so hypothetical upgrades can be priced without
+    touching the config — see :func:`probe_building_upgrade`.
+    """
+    level = max(0, min(config.GUILD_BUILDING_MAX_LEVEL, building_level))
+    return config.GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL * level
+
+
+def guild_building_skill_levels(skill: str) -> int:
+    """Skill levels the guild's building for ``skill`` grants to EVERY member.
+
+    Guild buildings (game data ``guildBuildingDetailMap``) are distinct from the
+    per-member house rooms: each of the ten skilling buildings carries a
+    ``/buff_types/<skill>_level`` buff worth ``+2 levels per building level``, so
+    this is simply :func:`building_skill_levels` of the guild's current
+    :func:`guild_building_level` (0 for every skill today — no skilling guild
+    building is built).
+    """
+    return building_skill_levels(guild_building_level(skill))
+
+
+def guild_building_upgrade_cost(to_level: int) -> Optional[int]:
+    """Guild points to raise a skilling building TO ``to_level`` (one step).
+
+    Straight from ``config.GUILD_BUILDING_POINT_COSTS`` (the game's
+    ``guildPointCosts``), so upgrading from level L costs
+    ``guild_building_upgrade_cost(L + 1)`` — 500 for an unbuilt building's first
+    level. Returns None beyond the level-20 cap.
+    """
+    return config.GUILD_BUILDING_POINT_COSTS.get(to_level)
+
+
+def member_bonuses(
+    member: MemberRow, skill: str, building_levels: Optional[int] = None
+) -> MemberBonuses:
     """Compute the summed speed/efficiency/success bonuses for member+skill.
 
     Equipment baseline (research/trial-tabs.md + item-stats.md):
@@ -133,9 +187,19 @@ def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
       - House (per-skill "H" level from the sheet): +0.015 efficiency/level for
         gathering + production; the enhancing house grants +0.010 speed/level
         instead. Blank -> DEFAULT_HOUSE_LEVEL (4), clamped to 0..8.
+      - Guild building (guild-wide, not per-member): +2 SKILL LEVELS per building
+        level, carried on ``building_levels`` and added to the member's own level
+        in :func:`success` (see :func:`guild_building_skill_levels`).
+
+    ``building_levels`` overrides the guild-building contribution (in granted
+    SKILL levels, not building levels) instead of reading it from the config —
+    used to price a hypothetical upgrade without mutating global state. None
+    means "use the guild's actual building".
     """
     level, tool, top, bot, house = _resolve_level_and_checks(member, skill)
     house_level = _house_level(house)
+    if building_levels is None:
+        building_levels = guild_building_skill_levels(skill)
 
     speed = config.CAPE_SPEED_PLUS3  # +3 cape speed, everyone, every skill
     efficiency = 0.0
@@ -191,6 +255,7 @@ def member_bonuses(member: MemberRow, skill: str) -> MemberBonuses:
         tool=tool,
         top=top,
         bot=bot,
+        building_levels=building_levels,
     )
 
 
@@ -222,7 +287,9 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def success(level: int, tier: int, success_bonus: float) -> float:
+def success(
+    level: int, tier: int, success_bonus: float, building_levels: int = 0
+) -> float:
     """Per-action success rate, per Orvel's confirmed formula.
 
     ``delta = SkillLevel + BuildingSkillLevels - DifficultyLevel`` (the tier
@@ -231,8 +298,15 @@ def success(level: int, tier: int, success_bonus: float) -> float:
     For Enhancing, ``success_bonus`` carries the EnhancingSuccessRate (enhancer
     tool success + Observatory enhancing-success (0 in live data) + achievement
     bonus). Floored at 0.05 (MAX(0.05, ...)) and capped at 1.0.
+
+    ``building_levels`` is the BuildingSkillLevels term: the levels the guild's
+    building for this skill grants every member (+2 per building level). It is
+    an explicit argument rather than a config lookup because this function is
+    deliberately skill-agnostic; :func:`rate` supplies it from
+    :func:`member_bonuses`. It defaults to 0 so direct callers keep the bare
+    "own level only" behaviour.
     """
-    effective_level = level + config.BUILDING_SKILL_LEVELS
+    effective_level = level + building_levels
     delta = effective_level - tier_level(tier)
     if delta >= 0:
         level_bonus = delta * config.LEVEL_BONUS_POS
@@ -246,7 +320,14 @@ def success(level: int, tier: int, success_bonus: float) -> float:
 
 
 def work_power(level: int, efficiency: float) -> float:
-    """workPower(m) = level * (1 + efficiency)."""
+    """workPower(m) = level * (1 + efficiency).
+
+    NB: ``level`` is the member's OWN sheet level — guild-building skill levels
+    are deliberately NOT included. Orvel's confirmed formula names
+    BuildingSkillLevels only in the success delta, and no capture yet shows
+    ``progressPerAction`` rising with a guild building. If one does, pass the
+    effective level here too (see config's guild-buildings section).
+    """
     return level * (1 + efficiency)
 
 
@@ -260,19 +341,29 @@ def action_seconds(skill: str, speed: float) -> float:
     return base / (1 + speed)
 
 
-def rate(member: MemberRow, skill: str, tier: int) -> float:
+def rate(
+    member: MemberRow,
+    skill: str,
+    tier: int,
+    building_levels: Optional[int] = None,
+) -> float:
     """Work per second contributed by ``member`` to ``skill`` at ``tier``.
 
     Follows the lab-sim formula
     ``rate = success * (1 + doubleChance) * floor(workPower) / actionSeconds``.
     The doubling chance is non-zero only for gathering skills while the
-    community gathering buff is live (see :func:`double_chance`). A member with
-    no usable level in the skill contributes 0.
+    community gathering buff is live (see :func:`double_chance`). The guild
+    building's skill levels raise the success term only, never work power. A
+    member with no usable level in the skill contributes 0 — a guild building
+    cannot conjure a party from members who have not trained the skill.
+
+    ``building_levels`` (granted skill levels) overrides the guild-building term;
+    None uses the guild's actual building.
     """
-    b = member_bonuses(member, skill)
+    b = member_bonuses(member, skill, building_levels)
     if not b.level or b.level <= 0:
         return 0.0
-    s = success(b.level, tier, b.success_bonus)
+    s = success(b.level, tier, b.success_bonus, b.building_levels)
     wp = math.floor(work_power(b.level, b.efficiency))
     return s * (1 + double_chance(skill)) * wp / action_seconds(skill, b.speed)
 
@@ -339,7 +430,10 @@ _MAX_TIER = 100
 
 
 def simulate_race(
-    party: list[MemberRow], skill: str, target_scale: Optional[float] = None
+    party: list[MemberRow],
+    skill: str,
+    target_scale: Optional[float] = None,
+    building_levels: Optional[int] = None,
 ) -> TrialResult:
     """Simulate the 1-hour cumulative tier race for ``party`` in ``skill``.
 
@@ -348,6 +442,10 @@ def simulate_race(
     tier fully cleared within budget. The returned timeline runs up to and
     including the first tier NOT cleared (the failed tier), so the page can show
     where the party ran out of time.
+
+    ``building_levels`` (granted skill levels) overrides the guild-building term
+    for the whole party — the mechanism behind
+    :func:`probe_building_upgrade`. None uses the guild's actual building.
     """
     if target_scale is None:
         target_scale = config.TARGET_SCALE
@@ -360,7 +458,7 @@ def simulate_race(
 
     tier = 1
     while tier <= _MAX_TIER:
-        party_rate = sum(rate(m, skill, tier) for m in party)
+        party_rate = sum(rate(m, skill, tier, building_levels) for m in party)
         eff_target = effective_target(tier, n, target_scale)
 
         if party_rate <= 0:
@@ -402,12 +500,12 @@ def simulate_race(
     roster = [
         RosterEntry(
             name=m.name,
-            level=member_bonuses(m, skill).level,
-            tool=member_bonuses(m, skill).tool,
-            top=member_bonuses(m, skill).top,
-            bot=member_bonuses(m, skill).bot,
-            rate_tier1=rate(m, skill, 1),
-            rate_final=rate(m, skill, final_tier),
+            level=member_bonuses(m, skill, building_levels).level,
+            tool=member_bonuses(m, skill, building_levels).tool,
+            top=member_bonuses(m, skill, building_levels).top,
+            bot=member_bonuses(m, skill, building_levels).bot,
+            rate_tier1=rate(m, skill, 1, building_levels),
+            rate_final=rate(m, skill, final_tier, building_levels),
         )
         for m in party
     ]
@@ -419,6 +517,88 @@ def simulate_race(
         points=points_for_tier(tier_reached),
         roster=roster,
         timeline=timeline,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Guild-building upgrade probe ("would +1 level bump a tier?")
+# ---------------------------------------------------------------------------
+@dataclass
+class BuildingUpgrade:
+    """What one +1 guild-building level would do to one trial's tier race."""
+
+    skill: str
+    building: str            # in-game display name, e.g. "Guild Brewery"
+    from_level: int          # the guild's current building level (0..20)
+    to_level: int            # from_level + 1 (== from_level when at the cap)
+    skill_levels_now: int    # levels the building grants today (+2 per level)
+    skill_levels_after: int  # levels it would grant after the upgrade
+    cost: Optional[int]      # guild points for this single step (None at cap)
+    tier_now: int
+    tier_after: int
+    points_now: int
+    points_after: int
+    points_gained: int
+    bumps: bool              # True iff the upgrade raises the tier reached
+    at_cap: bool             # True iff the building is already at level 20
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def probe_building_upgrade(
+    party: list[MemberRow],
+    skill: str,
+    target_scale: Optional[float] = None,
+    current: Optional[TrialResult] = None,
+) -> BuildingUpgrade:
+    """Would one more level of ``skill``'s guild building bump this trial's tier?
+
+    Re-runs the tier race for the SAME party with the building one level higher
+    (+2 skill levels for everyone) and reports whether the higher success rate
+    buys another tier inside the 1-hour budget, together with the guild-point
+    cost of that step from the game's own cost curve.
+
+    The party is held FIXED, which makes the answer a LOWER BOUND: with a
+    stronger building the optimizer might also reshuffle members between trials
+    and do better still. Re-optimising per candidate upgrade would cost minutes
+    of CI time for a speculative number, so it is deliberately not done.
+
+    ``current`` may be passed to reuse an already-simulated result for the
+    unupgraded case (identical inputs give an identical race, so this is purely
+    to save the duplicate simulation).
+    """
+    from_level = guild_building_level(skill)
+    at_cap = from_level >= config.GUILD_BUILDING_MAX_LEVEL
+    to_level = from_level if at_cap else from_level + 1
+
+    now = (
+        current
+        if current is not None
+        else simulate_race(party, skill, target_scale)
+    )
+    if at_cap:
+        after = now
+    else:
+        after = simulate_race(
+            party, skill, target_scale, building_skill_levels(to_level)
+        )
+
+    return BuildingUpgrade(
+        skill=skill,
+        building=config.GUILD_BUILDING_NAMES.get(skill, f"{skill} building"),
+        from_level=from_level,
+        to_level=to_level,
+        skill_levels_now=building_skill_levels(from_level),
+        skill_levels_after=building_skill_levels(to_level),
+        cost=None if at_cap else guild_building_upgrade_cost(to_level),
+        tier_now=now.tier_reached,
+        tier_after=after.tier_reached,
+        points_now=now.points,
+        points_after=after.points,
+        points_gained=after.points - now.points,
+        bumps=after.tier_reached > now.tier_reached,
+        at_cap=at_cap,
     )
 
 
@@ -478,6 +658,13 @@ class WeekResult:
     strategy: str = "random"
     trials: list[TrialResult] = field(default_factory=list)
     bench: list[str] = field(default_factory=list)
+    # Per drawn skill, the SKILL LEVELS the guild's building grants every member
+    # (+2 per building level; 0 when that building is unbuilt). Recorded so the
+    # page and trials.json state the assumption rather than hiding it.
+    guild_building_levels: dict[str, int] = field(default_factory=dict)
+    # One entry per drawn skill: what a +1 level of that skill's guild building
+    # would do to this week's tier race, and what it would cost.
+    building_upgrades: list[BuildingUpgrade] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -492,6 +679,8 @@ class WeekResult:
             "strategy": self.strategy,
             "trials": [t.to_dict() for t in self.trials],
             "bench": self.bench,
+            "guild_building_levels": self.guild_building_levels,
+            "building_upgrades": [u.to_dict() for u in self.building_upgrades],
         }
 
 
@@ -536,6 +725,15 @@ def run_week(
         simulate_race(assignment.parties[skill], skill, target_scale)
         for skill in skills
     ]
+    # Would one more level of each trial's guild building buy another tier? The
+    # parties above are held fixed, so each answer is a lower bound (see
+    # probe_building_upgrade).
+    upgrades = [
+        probe_building_upgrade(
+            assignment.parties[skill], skill, target_scale, current=result
+        )
+        for skill, result in zip(skills, trials)
+    ]
     now = datetime.now(timezone.utc)
     return WeekResult(
         generated_at=now.isoformat(),
@@ -549,4 +747,8 @@ def run_week(
         strategy=strategy,
         trials=trials,
         bench=[m.name for m in assignment.bench],
+        guild_building_levels={
+            skill: guild_building_skill_levels(skill) for skill in skills
+        },
+        building_upgrades=upgrades,
     )
