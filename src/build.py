@@ -643,8 +643,15 @@ def _render_upgrades_section(week: dict) -> str:
 """
 
 
-def _render_trials_html(week: dict, site: "GuildSite") -> str:
-    """Render the full trials page from a ``WeekResult`` dict."""
+def _render_trials_html(
+    week: dict, site: "GuildSite", draw_warning: str = ""
+) -> str:
+    """Render the full trials page from a ``WeekResult`` dict.
+
+    ``draw_warning``, when set, is shown as a banner at the top of the page: the
+    live draw could not be read and the skills below are the last known ones (see
+    ``build_guild``). Empty means the draw came from the sheet as normal.
+    """
     strip = "".join(
         "<div class=\"stat\">"
         f"<div class=stat-skill>{html.escape(t['skill'])}</div>"
@@ -678,6 +685,15 @@ def _render_trials_html(week: dict, site: "GuildSite") -> str:
     )
 
     upgrades_section = _render_upgrades_section(week)
+
+    # Stale-draw banner: deliberately the first thing on the page, so a fallback
+    # draw can never be mistaken for a live one.
+    alert_html = (
+        '<div class="alert" role="alert"><strong>Draw may be stale.</strong> '
+        f"{html.escape(draw_warning)}</div>"
+        if draw_warning
+        else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -731,6 +747,9 @@ def _render_trials_html(week: dict, site: "GuildSite") -> str:
             border-radius: 3px; font-size: 10px; font-weight: 700; margin: 0 1px; }}
   .badge.on {{ background: var(--on); color: #06231a; }}
   .badge.off {{ background: var(--off); color: #6b7180; }}
+  .alert {{ background: #2a1f10; border: 1px solid var(--warn); color: #f2dca6;
+            border-radius: 8px; padding: .8rem 1rem; margin: 0 0 1.25rem;
+            font-size: .9rem; }}
   tr.failed td {{ color: var(--warn); }}
   tbody tr:hover {{ background: #1b2029; }}
   /* --- Player search --------------------------------------------------- */
@@ -788,6 +807,7 @@ def _render_trials_html(week: dict, site: "GuildSite") -> str:
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
+  {alert_html}
   <div class="strip">
     {strip}
     <div class="total">
@@ -1344,18 +1364,44 @@ def build_guild(site: "GuildSite") -> str:
         gd = scrape_member_tab(site.member_tab)
 
     # This week's skilling-trial draw is read LIVE from the shared "Trial
-    # Assignments" tab (the officers reroll it each cycle). We do NOT fall back
-    # to the config default here: building the public site around a stale/guessed
-    # draw is exactly the failure this reads the sheet to avoid, so a mismatch
-    # fails loudly.
-    week_draw = draw_model.load_draw()
+    # Assignments" tab (the officers reroll it each cycle).
+    #
+    # A STRUCTURE failure here used to be fatal, on the reasoning that a stale
+    # draw is worse than no page. INCIDENT 2026-07-25 showed the cost of that
+    # trade: the officers added a notice above the table, gviz swallowed the draw
+    # rows into its header row (fixed at source — see
+    # config.GVIZ_NO_HEADER_COLLAPSE), and because SC is `required` the whole
+    # deploy stopped — every page, both guilds, register and sign-up included.
+    # So it now degrades exactly as the sign-up tab does: fall back to the
+    # last-known draw and say so LOUDLY at the top of the page, which keeps the
+    # staleness visible instead of silent while the rest of the site ships. A
+    # network/HTTP RuntimeError still propagates and fails the build.
+    draw_warning = ""
+    try:
+        week_draw = draw_model.load_draw()
+    except SheetStructureError as exc:
+        week_draw = draw_model.TrialDraw(
+            skills=list(config.TRIAL_SKILLS_CURRENT), date="unknown"
+        )
+        draw_warning = (
+            f"This week's draw could not be read from the "
+            f"{draw_model.ASSIGNMENTS_TAB!r} tab, so the last known draw "
+            f"({', '.join(week_draw.skills)}) is shown instead and MAY BE "
+            f"STALE. Reason: {exc}"
+        )
+        print(
+            f"WARNING ({site.key}): trial draw unreadable, falling back to "
+            f"config.TRIAL_SKILLS_CURRENT:\n{exc}",
+            file=sys.stderr,
+        )
+
     week = trials_model.run_week(gd.members, skills=week_draw.skills)
     week_dict = week.to_dict()
     (out / "trials.json").write_text(
         json.dumps(week_dict, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (out / "trials.html").write_text(
-        _render_trials_html(week_dict, site), encoding="utf-8"
+        _render_trials_html(week_dict, site, draw_warning), encoding="utf-8"
     )
 
     # --- Sign-up Optimiser (OPTIONAL) ---------------------------------------

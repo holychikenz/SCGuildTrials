@@ -105,6 +105,22 @@ GVIZ_URL = (
     f"{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={{sheet}}"
 )
 
+# gviz HEADER-COLLAPSE OVERRIDE (append to GVIZ_URL).
+# gviz does not merely merge a FIXED number of leading rows into its header row —
+# it GUESSES how many leading rows are labels, and the guess depends on the
+# content above the table. A purely cosmetic edit can therefore swallow real data
+# rows into the header, where no parser can see them.
+# INCIDENT 2026-07-25: the officers added a 16-row "ALL TRIALS ARE FREE ASSIGNED"
+# notice to the top of the "Trial Assignments" tab. gviz absorbed all 17 leading
+# rows — the "Skilling Trial Info" banner and the four "Trial N" draw rows with
+# them — so draw.parse_draw could no longer find the banner and the whole deploy
+# failed (SC is `required`, so every page of every guild stopped shipping).
+# Appending "&headers=0" turns the guess OFF: gviz returns every row as data.
+# NB: used ONLY by draw.py. The member-tab and sign-up parsers are written
+# against the COLLAPSED form (see the note above) and must NOT be given this
+# parameter without rewriting them.
+GVIZ_NO_HEADER_COLLAPSE = "&headers=0"
+
 # Member tabs known to share the SC layout (verified empirically).
 TABS = {
     "sc": "SC Member Data",

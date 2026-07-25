@@ -26,6 +26,12 @@ Skill labels in the sheet use the trial's own names (``Alchemy``, ``Milking``,
 anchored on the ``Skilling Trial Info`` sentinel — gviz silently serves a
 *different* tab on a bad name, so an unrecognised layout must fail loudly rather
 than emit a stale/guessed draw (the whole point of reading it live).
+
+The tab is fetched with gviz's header-collapsing turned OFF
+(``config.GVIZ_NO_HEADER_COLLAPSE``); see :func:`fetch_assignments_csv` for why
+that is not optional. ``build.build_guild`` catches a structure failure here and
+degrades to the last-known draw behind a loud on-page warning rather than felling
+the whole deploy — loud, but no longer fatal.
 """
 
 from __future__ import annotations
@@ -108,10 +114,20 @@ def _normalise_skill(raw: str) -> str:
 def fetch_assignments_csv(tab_name: str = ASSIGNMENTS_TAB) -> str:
     """Fetch the Trial Assignments tab's gviz CSV export, addressed by name.
 
+    Requests ``&headers=0`` (``config.GVIZ_NO_HEADER_COLLAPSE``) so gviz returns
+    every row as DATA instead of guessing how many leading rows are header
+    labels. That guess grows with whatever the officers write above the table:
+    on 2026-07-25 a new 16-row notice pushed the ``Skilling Trial Info`` banner
+    and all four draw rows inside gviz's header row, where the parser could not
+    see them, and the deploy died. With the override the parser reads the sheet's
+    true row layout and is immune to text added above it.
+
     Raises:
         RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name))
+    url = config.GVIZ_URL.format(sheet=quote(tab_name)) + (
+        config.GVIZ_NO_HEADER_COLLAPSE
+    )
     try:
         resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
     except requests.RequestException as exc:  # network-level failure
