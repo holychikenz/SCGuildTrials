@@ -89,6 +89,19 @@ assignment grid. Top-of-tab banner:
 > "ALL TRIALS ARE FREE ASSIGNED. You are free to decide which Trial you want to join, however
 > do follow the requirements below."
 
+Since 2026-07-25 the notice block also carries a pointer to this project's own output:
+"REFER TO THE NEW TRIAL ASSIGNMENTS SHEET — https://holychikenz.github.io/SC".
+
+> **⚠ gviz hazard (cost one day of deploys, 2026-07-25).** This tab is read through the gviz
+> CSV endpoint, which *guesses* how many leading rows are header labels and merges them all
+> into one row — and the guess grows with whatever text sits above the table. When the notice
+> block reached 16 rows, gviz swallowed 17 leading rows, taking the `Skilling Trial Info`
+> banner and all four `Trial N` draw rows with it; `draw.parse_draw` then failed, and because
+> Survey Corps is a `required` guild the whole site stopped deploying. The fix is to append
+> **`&headers=0`** (`config.GVIZ_NO_HEADER_COLLAPSE`) so gviz returns every row as data — see
+> `src/draw.py`. Anything parsed out of *this* tab must use that override; the member and
+> sign-up parsers are instead written against the collapsed form.
+
 ### 2.1 Skill cut-offs
 
 Two columns of per-skill numbers, headed:
