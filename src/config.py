@@ -373,6 +373,14 @@ SUCCESS_BASE = 0.8             # base success rate
 SUCCESS_FLOOR = 0.05           # MAX(0.05, ...): success never drops below 5%
 LEVEL_BONUS_POS = 0.005        # per-level bonus when effective level >= difficulty
 LEVEL_BONUS_NEG = 0.01         # per-level penalty when effective level <  difficulty
+# Guild points awarded for a completed trial: points(T) = 100 + 100*T for the
+# tier T reached (trials.points_for_tier; ASSUMPTION, matching the only observed
+# messages — milking tier1 -> 200, tier2 -> 300, research/trial-messages.md).
+# The STEP is what a building upgrade buys: one extra tier is worth
+# TRIAL_POINTS_PER_TIER guild points EVERY time that trial is run, which is what
+# makes an upgrade's payback computable (see TRIAL_WEEKS_BETWEEN_DRAWS).
+TRIAL_POINTS_BASE = 100        # points(T) intercept: awarded for finishing at all
+TRIAL_POINTS_PER_TIER = 100    # points(T) slope: what one extra tier is worth
 # BuildingSkillLevels: skill levels contributed by buildings, added to the
 # member's own level in the success calc. TWO DISTINCT SYSTEMS feed this, and an
 # earlier revision of this comment conflated them:
@@ -526,6 +534,22 @@ GUILD_BUILDING_POINT_COSTS = {
     11: 10050,  12: 13575,   13: 18325,   14: 24725,   15: 33400,
     16: 45075,  17: 60850,   18: 82150,   19: 110900,  20: 149725,
 }
+
+# --- Upgrade payback ("weeks to return") -------------------------------------
+# A building upgrade is a ONE-OFF spend of guild points that only earns anything
+# back in the weeks its own skill is drawn. The weekly draw picks 4 of the 10
+# skilling trials, so any one skill comes up in 4/10 of weeks — once every 2.5
+# weeks on average. That converts a lump-sum cost into a payback period:
+#     draws_to_return = total_cost / points_gained_per_draw
+#     weeks_to_return = draws_to_return * TRIAL_WEEKS_BETWEEN_DRAWS
+# See trials.upgrade_payback_weeks and the trials page's upgrade section.
+TRIAL_SKILLS_PER_WEEK = 4      # the weekly draw picks four of the ten skills
+TRIAL_WEEKS_BETWEEN_DRAWS = len(SKILLS) / TRIAL_SKILLS_PER_WEEK   # 10/4 = 2.5
+# WORKING ASSUMPTION (optimistic, and deliberately so — flagged on the page): the
+# bought tier is assumed to hold EVERY time the skill is drawn, so every draw is
+# worth the full points_gained. In reality the roster, the sign-ups and the
+# community buffs all move week to week, and the party that earns the bump may not
+# turn out. Treat the payback as the BEST case, not a promise.
 
 # --- TARGET_SCALE (neutral: the confirmed TotalWork formula carries no scale) -
 # Superseded 2026-07-17. The old lab-mirror targets were single-player-scaled
