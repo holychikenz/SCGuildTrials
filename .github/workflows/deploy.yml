@@ -7,7 +7,15 @@ on:
     # Daily. The Phase 2 trials optimizer takes ~2-3 min per run; hourly would
     # burn ~2000+ Actions minutes/month. The weekly draw + slow-moving member
     # data do not need hourly rebuilds. Adjust if you split cheap/expensive steps.
-    - cron: "0 6 * * *"
+    #
+    # 01:00 UTC is chosen for the LAG, not the hour: GitHub queues scheduled
+    # workflows best-effort and defers them under load, and this repo's runs have
+    # started 2h13m-4h00m late every day on record (06:00 UTC cron -> 08:13-10:00
+    # UTC actual). Asking for 01:00 therefore lands the rebuild around 03:00-05:00
+    # UTC, i.e. before the guild stirs, instead of mid-morning. Do NOT read the
+    # cron as a promise of when the site refreshes; a push to main rebuilds
+    # immediately and is the reliable path when a refresh is actually needed.
+    - cron: "0 1 * * *"
   workflow_dispatch: {}
 
 permissions:
