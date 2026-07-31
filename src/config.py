@@ -330,6 +330,48 @@ OPT_SLACK_PASS = True
 # this caps worst-case build time rather than guaranteeing correctness.
 OPT_SLACK_MAX_ITERS = 100
 
+# --- Reporting the margin (sign-up page bands) -------------------------------
+# The safety pass above only reaches the UNCONSTRAINED optimum. The sign-up plan
+# is built under locked volunteer picks (src.signup.plan), so its margin is
+# whatever the real sign-ups happen to leave — it can be knife-thin without
+# anything in the pipeline noticing. The sign-up page therefore REPORTS the margin
+# per trial, banded by these thresholds so a thin lineup is visible at a glance:
+#
+#   margin <  SLACK_THIN -> red     ("held by seconds; one absence loses the tier")
+#   margin <  SLACK_OK   -> amber   (holds, but with less room than the model's own error)
+#   margin >= SLACK_OK   -> green   (comfortable)
+#
+# THIN is set just above the 2.8% knife-edge measured on the live SC roster and the
+# 0.26% (9.3s) seen on Lactose lntolerance; OK is set at the ~16-18% the safety
+# pass actually achieves on both rosters, so "green" means "as safe as the
+# optimizer knows how to be". Display only — nothing optimises against these.
+SLACK_THIN = 0.05
+SLACK_OK = 0.15
+
+# --- Safety swaps on the sign-up page ---------------------------------------
+# The advisory, POINTS-PRESERVING counterpart to the sign-up page's existing points
+# swaps (signup._safety_swaps). It admits a move only when the total points are
+# EXACTLY unchanged and the thinnest margin STRICTLY rises — note both, because
+# optimizer._refine_slack's points-first ranking is weaker on each count: it permits a
+# points GAIN (which belongs to the points swaps, and which a live probe found paired
+# with a margin collapse to 0.23%) and it permits a move that improves only the margin
+# SUM, leaving the thin trial exactly where it was.
+#
+# The pass stops as soon as the thinnest banking trial clears SIGNUP_SAFETY_TARGET
+# — it exists to get a lineup off the buzzer, not to gold-plate a healthy one, and
+# stopping there keeps the advisory list short enough that officers read it.
+SIGNUP_SAFETY_TARGET = SLACK_OK
+# Hard bound on the number of recommended moves. A list nobody will carry out is
+# worse than a short one; anything needing more than this is a sign-up problem,
+# not a fill problem, and the page says so.
+SIGNUP_SAFETY_MAX_MOVES = 8
+# Whether the pass may fall back to moving a VOLUNTEER once the uncommitted members
+# alone cannot lift the thinnest trial. It is the SC case that makes this necessary:
+# the thin trial's party was entirely volunteers, so phase 1 had nothing to work with
+# and without this the page could only shrug. Every such move is flagged on the page.
+# Set False for a guild that would rather never see a sign-up questioned.
+SIGNUP_SAFETY_ALLOW_OVERRIDES = True
+
 # --- Beam search (beam) -----------------------------------------------------
 OPT_BEAM_WIDTH = 16
 

@@ -417,6 +417,26 @@ def rate(
     return success(level, tier, success_bonus, building) * double * wp / asec
 
 
+def tier_clear_seconds(result: "TrialResult") -> Optional[float]:
+    """Elapsed seconds at which the party finished its LAST completed tier.
+
+    The cumulative time of the highest tier actually cleared — i.e. the clock
+    reading when the recorded score was banked, out of
+    ``config.TRIAL_TIME_BUDGET_SECONDS``. ``None`` when no tier was cleared at all
+    (nothing was banked, so there is no time to report).
+
+    This is the absolute form of :func:`time_slack_fraction`, which is the same
+    number expressed as the fraction of the budget left over. Both are derived
+    here so the page and the optimizer can never disagree about the margin.
+    """
+    if result.tier_reached < 1:
+        return None
+    for step in reversed(result.timeline):
+        if step.cleared and step.cumulative_time is not None:
+            return step.cumulative_time
+    return None
+
+
 def time_slack_fraction(result: "TrialResult") -> float:
     """How much of the 1-hour budget the party had left over, as a fraction.
 
@@ -437,12 +457,10 @@ def time_slack_fraction(result: "TrialResult") -> float:
     no margin to protect, and must never look "safe" by virtue of an empty
     timeline.
     """
-    if result.tier_reached < 1:
+    seconds = tier_clear_seconds(result)
+    if seconds is None:
         return 0.0
-    for step in reversed(result.timeline):
-        if step.cleared and step.cumulative_time is not None:
-            return 1.0 - step.cumulative_time / config.TRIAL_TIME_BUDGET_SECONDS
-    return 0.0
+    return 1.0 - seconds / config.TRIAL_TIME_BUDGET_SECONDS
 
 
 def points_for_tier(tier_reached: int) -> int:

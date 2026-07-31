@@ -73,6 +73,11 @@ nine seconds — → 16.41% (LI), for no change in points. `OPT_SLACK_PASS = Fal
 the one-line rollback; see `research/risk-aware-objective.md` for the measurements
 and for the probabilistic models this deliberately stops short of.
 
+The pass applies to the **unconstrained optimum only** (`optimizer.optimize`, i.e.
+`trials.html`). The sign-up plan locks real volunteers into the trials they ticked,
+so its margin is not the optimizer's to choose — whatever the sign-ups leave is what
+ships. `signup.html` therefore **reports** the margin instead (see below).
+
 ## Sign-up optimiser (real sign-ups)
 
 `src/signup.py` reads each guild's sign-up tab (**SC Trial Signup** /
@@ -90,6 +95,34 @@ volunteers — and builds its `signup.html` + `signup.json`:
    full-roster optimum, each annotated with the guild points it gains. The
    optimum reuses the exact assignment `trials.html` already computes (no second
    optimizer run — the two pages never disagree on the ceiling).
+4. **How safe the lineup is.** Each trial reports when its last tier was *banked*
+   (`clear_seconds`) out of the 3600-second budget, and the share of the budget left
+   over (`slack_fraction`); the summary strip leads with the **thinnest** of them and
+   the comparison table shows the same figures for the optimum, whose margin the
+   safety pass maximised. Bands are `config.SLACK_THIN` / `SLACK_OK` (red < 5% ≤
+   amber < 15% ≤ green) — display only, nothing optimises against them. A trial that
+   banks *no* tier reads "no tier banked" and is excluded from the thinnest-margin
+   headline, so "scores nothing" is never mistaken for "held by a hair".
+5. **Safety swaps** (`signup._safety_swaps`) — the margin counterpart to step 3.
+   A best-improvement search over the same neighbourhood, admitting a move only when
+   the points are **exactly** equal *and* the thinnest margin **strictly rises**.
+   Both conditions were learned the hard way: ranking points-first merely stops a move
+   *costing* a tier (a live probe found one that *gained* one while crashing that
+   trial's margin to 0.23%), and accepting any lexicographic gain lets moves through
+   on total margin alone (five such moves on SC, every one leaving the thin trial
+   untouched). Phase 1 moves only uncommitted members; if that cannot reach
+   `SIGNUP_SAFETY_TARGET` — the SC case, where the thin trial was all volunteers —
+   phase 2 opens the roster and flags each move as *overrides sign-up*.
+   `SIGNUP_SAFETY_ALLOW_OVERRIDES = False` stops after phase 1;
+   `SIGNUP_SAFETY_MAX_MOVES` bounds the list. Entries are cumulative and each
+   strictly improves on the last, so applying any prefix is valid.
+
+   Measured on the live rosters (2026-07-31), at unchanged points:
+
+   | guild | points | thinnest before | after | moves |
+   |---|---|---|---|---|
+   | Survey Corps | 4900 (= ceiling) | 1.81% (65s) | 11.56% | 8 (all phase 2) |
+   | Lactose lnt. | 4500 | 5.76% (207s) | 15.78% | 5 (3 phase 1) |
 
 Each sign-up tab is `col 0 = User`, then this week's four skilling trials in the
 fixed columns B–E (each resolved to its `config.SKILLS` column by header, so

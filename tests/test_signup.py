@@ -354,6 +354,395 @@ def test_enforced_never_exceeds_real_optimum():
     assert p.reachable_total <= optimal_total
 
 
+# ---------------------------------------------------------------------------
+# Reported time margin (how "safe" the shipped lineup is)
+# ---------------------------------------------------------------------------
+def test_trial_margin_matches_a_fresh_simulation_of_the_shipped_roster():
+    # The page's safety numbers must describe the roster it actually shows, so
+    # re-simulate each trial's rendered party and expect the same margin back.
+    from src.trials import simulate_race, tier_clear_seconds, time_slack_fraction
+
+    members, picks, draw = _scenario()
+    by_name = {m.name: m for m in members}
+    p = _plan(members, picks, draw)
+
+    for t in p.trials:
+        party = [by_name[r.name] for r in t.roster]
+        result = simulate_race(party, t.skill, p.target_scale)
+        assert t.clear_seconds == tier_clear_seconds(result)
+        assert t.slack_fraction == time_slack_fraction(result)
+        # The two forms are the same fact: seconds banked, and budget left over.
+        if t.clear_seconds is not None:
+            assert t.slack_fraction == pytest.approx(
+                1.0 - t.clear_seconds / config.TRIAL_TIME_BUDGET_SECONDS
+            )
+            assert 0.0 <= t.slack_fraction < 1.0
+
+
+def test_trial_that_banks_no_tier_reports_no_margin_and_is_left_out_of_the_min():
+    # A party too weak to clear tier 1 has banked nothing, so it has no margin to
+    # report — and must not drag the "thinnest margin" headline to 0%, which would
+    # read as "we are one second from losing a tier" when the truth is "that trial
+    # scores nothing at all". The two failures need different fixes, so the page
+    # must not conflate them.
+    draw = ["Foraging", "Woodcutting"]
+    members = [
+        _member("Strong", {"Foraging": 200}),
+        _member("Feeble", {sk: 1 for sk in config.SKILLS}),
+    ]
+    picks = {"Strong": {"Foraging"}, "Feeble": {"Woodcutting"}}
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=1
+    )
+
+    forg = next(t for t in p.trials if t.skill == "Foraging")
+    wood = next(t for t in p.trials if t.skill == "Woodcutting")
+    assert forg.tier_reached >= 1 and forg.clear_seconds is not None
+    assert wood.tier_reached == 0
+    assert wood.clear_seconds is None and wood.slack_fraction == 0.0
+    # Only the trial that banked a tier sets the headline margin.
+    assert p.min_slack_fraction == forg.slack_fraction
+
+
+def test_min_slack_is_none_when_nothing_banks_a_tier():
+    draw = ["Foraging"]
+    members = [_member("Feeble", {sk: 1 for sk in config.SKILLS})]
+    p = signup.plan(
+        members, {"Feeble": {"Foraging"}}, optimal_total=0,
+        optimal_summary=[], draw=draw, cap=1,
+    )
+    assert p.trials[0].tier_reached == 0
+    assert p.min_slack_fraction is None
+
+
+def test_slack_band_colours_by_the_config_thresholds():
+    from src import build
+
+    assert build._slack_band(None) == "danger-text"          # nothing banked
+    assert build._slack_band(0.0) == "danger-text"           # held by a hair
+    assert build._slack_band(config.SLACK_THIN - 1e-9) == "danger-text"
+    assert build._slack_band(config.SLACK_THIN) == "warn-text"
+    assert build._slack_band(config.SLACK_OK - 1e-9) == "warn-text"
+    assert build._slack_band(config.SLACK_OK) == "ok-text"
+    assert build._slack_band(0.9) == "ok-text"
+
+
+def test_signup_html_reports_the_margin_per_trial_and_in_the_strip():
+    from src import build
+
+    members, picks, draw = _scenario()
+    site = build.GUILD_SITES[0]
+    plan_dict = _plan(members, picks, draw).to_dict()
+    page = build._render_signup_html(plan_dict, site)
+
+    assert "Thinnest margin" in page
+    # Every trial that banked a tier states when it banked it, out of the budget.
+    banked = [t for t in plan_dict["trials"] if t["tier_reached"] >= 1]
+    assert banked, "fixture should bank at least one tier"
+    assert page.count("banked at") >= len(banked)
+    for t in banked:
+        assert f"{t['clear_seconds']:,.0f}s of 3,600s" in page
+
+
+def test_points_equal_ceiling_still_warns_when_a_trial_is_on_the_buzzer():
+    # The swap list only knows about points, so a plan that ties the ceiling used to
+    # render as "nothing to change" even with a tier hanging on seconds. Live on SC
+    # (2026-07-31) that was exactly the case: 4900 = ceiling, Foraging holding tier
+    # 12 by 65 seconds. The page must not read as all-clear.
+    from src import build
+
+    members, picks, draw = _scenario()
+    site = build.GUILD_SITES[0]
+    base = _plan(members, picks, draw).to_dict()
+    base["optimal_total"] = base["enforced_total"]
+    base["reachable_total"] = base["enforced_total"]
+    base["swaps"] = []
+    base["optimal_summary"] = [
+        {"skill": t["skill"], "party_size": t["party_size"],
+         "tier_reached": t["tier_reached"], "points": t["points"],
+         "clear_seconds": 0.20 * 3600, "slack_fraction": 0.80}
+        for t in base["trials"]
+    ]
+
+    def _flat(page: str) -> str:
+        """Collapse the rendered whitespace so wrapped prose can be matched."""
+        return " ".join(page.split())
+
+    # Knife-edge: one trial banks its tier with 1% of the hour to spare.
+    thin = dict(base, trials=[dict(t) for t in base["trials"]])
+    thin["trials"][0]["slack_fraction"] = 0.01
+    thin["trials"][0]["clear_seconds"] = 0.99 * 3600
+    page = _flat(build._render_signup_html(thin, site))
+    assert "is not the same as being safe" in page
+    assert "with only 1.0% of the hour spare" in page
+    assert "against 80.0% for the unconstrained optimum" in page
+    assert "Nothing to change" not in page
+
+    # Comfortable everywhere: no caveat, and the points statement stands alone.
+    safe = dict(base, trials=[dict(t) for t in base["trials"]])
+    for t in safe["trials"]:
+        t["slack_fraction"] = 0.40
+        t["clear_seconds"] = 0.60 * 3600
+    assert "is not the same as being safe" not in _flat(
+        build._render_signup_html(safe, site)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Safety swaps (_safety_swaps): margin-only advisory moves
+# ---------------------------------------------------------------------------
+def _thin_scenario():
+    """A draw whose Foraging trial banks its tier with 0.63% of the hour to spare.
+
+    The levels were FOUND BY SEARCH, not guessed, to reproduce the live shape (LI,
+    2026-07-31): an uncommitted member helps once, phase 1 then runs dry, and only a
+    volunteer swap lifts Foraging the rest of the way. A fixture where one phase does
+    all the work would leave the phase-ordering test asserting nothing.
+
+    Foraging's volunteers are deliberately mediocre (122) beside Woodcutting's strong
+    pair, and the two trials are balanced so the points stay equal across the swap —
+    were they not, the pass would (correctly) refuse it and prove nothing here.
+    """
+    draw = ["Foraging", "Woodcutting"]
+    members = [
+        _member("Vol1", {"Foraging": 122}),
+        _member("Vol2", {"Foraging": 122}),
+        _member("Vol3", {"Woodcutting": 150, "Foraging": 150}),
+        _member("Vol4", {"Woodcutting": 150, "Foraging": 148}),
+        _member("Vol5", {"Woodcutting": 150}),
+        _member("FreeA", {"Foraging": 130, "Woodcutting": 130}),
+        _member("FreeB", {"Foraging": 122, "Woodcutting": 136}),
+        _member("FreeWeak", {sk: 40 for sk in config.SKILLS}),
+    ]
+    picks = {
+        "Vol1": {"Foraging"}, "Vol2": {"Foraging"},
+        "Vol3": {"Woodcutting"}, "Vol4": {"Woodcutting"}, "Vol5": {"Woodcutting"},
+    }
+    return members, picks, draw
+
+
+def _run_safety(members, picks, draw, cap=4, **kw):
+    """Build the enforced plan, then run the safety pass over it directly."""
+    from src.optimizer import AssignmentScorer
+
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=cap
+    )
+    name_to_idx = {m.name: i for i, m in enumerate(members)}
+    parties = [
+        {name_to_idx[r.name] for r in t.roster} for t in p.trials
+    ]
+    free_pool = {name_to_idx[n] for n in p.non_signups}
+    scorer = AssignmentScorer(members, draw, p.target_scale, cap)
+    return p, scorer, parties, signup._safety_swaps(
+        parties, scorer, cap, draw, members, free_pool, **kw
+    )
+
+
+def test_safety_swaps_never_change_the_points():
+    # The card is captioned "same points, more margin"; that must be a guarantee, not
+    # an aspiration. A live probe (2026-07-31) initially produced a move that GAINED
+    # a tier on LI while crashing that trial's margin 25.96% -> 0.23% — a points win
+    # smuggled into a safety list. Points gains belong to the points swaps.
+    members, picks, draw = _thin_scenario()
+    p, scorer, parties, (moves, _after) = _run_safety(members, picks, draw)
+
+    before = scorer.total_points(parties)
+    replay = [set(q) for q in parties]
+    name_to_idx = {m.name: i for i, m in enumerate(members)}
+    for mv in moves:
+        s_from = draw.index(mv.from_skill) if mv.from_skill else -1
+        s_to = draw.index(mv.to_skill) if mv.to_skill else -1
+        if mv.action == "swap":
+            a, b = s_from, s_to
+            m1, m2 = name_to_idx[mv.member], name_to_idx[mv.partner]
+            replay[a].discard(m1); replay[a].add(m2)
+            replay[b].discard(m2); replay[b].add(m1)
+        else:
+            m = name_to_idx[mv.member]
+            if s_from >= 0:
+                replay[s_from].discard(m)
+            if s_to >= 0:
+                replay[s_to].add(m)
+        # Every prefix of the list is a valid plan worth the same points, which is
+        # what lets the page tell officers to apply as many as they like, in order.
+        assert scorer.total_points(replay) == before
+
+
+def test_safety_swaps_each_strictly_raise_the_thinnest_margin():
+    # Ranking on (points, min, sum) alone lets a move through on `sum` while the
+    # thinnest trial stays put: on SC that produced five moves, all leaving Foraging
+    # at 1.81% — advice that fixed nothing. Each entry must earn its place.
+    members, picks, draw = _thin_scenario()
+    _p, _scorer, _parties, (moves, _after) = _run_safety(members, picks, draw)
+    for mv in moves:
+        assert mv.min_after > mv.min_before, mv.note
+    # The list is a ladder: each move's "after" is the next one's "before".
+    for prev, nxt in zip(moves, moves[1:]):
+        assert nxt.min_before == prev.min_after
+
+
+def test_safety_swaps_report_the_margin_they_end_on():
+    members, picks, draw = _thin_scenario()
+    _p, _scorer, _parties, (moves, after) = _run_safety(members, picks, draw)
+    if moves:
+        assert after == pytest.approx(moves[-1].min_after)
+
+
+def test_safety_swaps_stop_once_the_lineup_is_comfortable():
+    # The pass exists to get off the buzzer, not to gold-plate: a target of 0 means
+    # "already comfortable", so it must propose nothing at all.
+    members, picks, draw = _thin_scenario()
+    _p, _scorer, _parties, (moves, _after) = _run_safety(
+        members, picks, draw, target=0.0
+    )
+    assert moves == []
+
+
+def test_safety_swaps_respect_the_move_limit():
+    members, picks, draw = _thin_scenario()
+    _p, _scorer, _parties, (moves, _after) = _run_safety(
+        members, picks, draw, target=1.0, max_moves=2  # target 1.0 = never satisfied
+    )
+    assert len(moves) <= 2
+
+
+def test_safety_swaps_exhaust_the_free_pool_before_overriding_a_signup():
+    # Phase 1 (uncommitted members only) is played out in full before any volunteer is
+    # questioned, so the override-free run is exactly the leading stretch of the full
+    # one. NB the flags are NOT sorted in general: phase 2's pool is a SUPERSET, so a
+    # free-pool move can legitimately follow an override once the plan has changed
+    # under it — asserting False-then-True would be asserting a falsehood.
+    members, picks, draw = _thin_scenario()
+    _p, _s, _parties, (full, _a) = _run_safety(members, picks, draw, target=1.0)
+    _p, _s, _parties, (free_only, _b) = _run_safety(
+        members, picks, draw, target=1.0, allow_overrides=False
+    )
+
+    assert not any(m.overrides_signup for m in free_only)
+    assert [m.note for m in full[: len(free_only)]] == [m.note for m in free_only]
+    # The fixture must actually exercise BOTH phases, or the prefix check above is
+    # comparing two empty lists and the test proves nothing.
+    assert len(free_only) >= 1
+    assert any(m.overrides_signup for m in full)
+    assert len(full) > len(free_only)
+
+
+def test_safety_overrides_can_be_switched_off_entirely():
+    members, picks, draw = _thin_scenario()
+    _p, _s, _parties, (moves, _after) = _run_safety(
+        members, picks, draw, target=1.0, allow_overrides=False
+    )
+    for mv in moves:
+        assert not mv.overrides_signup
+
+
+def test_safety_swaps_leave_the_shipped_plan_untouched():
+    # The list is advisory: the rosters the page shows must be the enforced plan, not
+    # a silently improved one.
+    members, picks, draw = _thin_scenario()
+    _p, _scorer, parties, _ = _run_safety(members, picks, draw, target=1.0)
+    before = [set(q) for q in parties]
+    signup._safety_swaps(
+        parties, _scorer, 4, draw, members,
+        {i for i, m in enumerate(members) if m.name.startswith("Free")},
+        target=1.0,
+    )
+    assert parties == before
+
+
+def test_plan_exposes_safety_swaps_and_is_still_deterministic():
+    members, picks, draw = _thin_scenario()
+    a = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4
+    ).to_dict()
+    b = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4
+    ).to_dict()
+    for k in ("generated_at", "week_date"):
+        a.pop(k), b.pop(k)
+    assert a == b
+    assert "safety_swaps" in a and "safety_min_slack" in a
+    # The safety pass can only improve on what ships (or leave it alone).
+    if a["min_slack_fraction"] is not None:
+        assert a["safety_min_slack"] >= a["min_slack_fraction"]
+
+
+def test_safety_section_renders_the_ladder_and_flags_overrides():
+    from src import build
+
+    members, picks, draw = _thin_scenario()
+    site = build.GUILD_SITES[0]
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4
+    ).to_dict()
+    page = " ".join(build._render_signup_html(p, site).split())
+    assert "Safety swaps" in page
+
+    # A hand-built pair of moves, one of which overrides a sign-up, must render both
+    # the margin ladder and the override flag.
+    doctored = dict(p)
+    doctored["min_slack_fraction"] = 0.02
+    doctored["safety_min_slack"] = 0.17
+    doctored["safety_swaps"] = [
+        {"member": "FreeMid", "action": "move", "from_skill": "Foraging",
+         "to_skill": "Woodcutting", "note": "Move FreeMid.", "partner": None,
+         "min_before": 0.02, "min_after": 0.09, "overrides_signup": False,
+         "trial_changes": [{"skill": "Foraging", "before": 0.02, "after": 0.09}]},
+        {"member": "Vol1", "action": "swap", "from_skill": "Foraging",
+         "to_skill": "Woodcutting", "note": "Swap Vol1 with Vol3.", "partner": "Vol3",
+         "min_before": 0.09, "min_after": 0.17, "overrides_signup": True,
+         "trial_changes": []},
+    ]
+    page = " ".join(build._render_signup_html(doctored, site).split())
+    assert "These 2 move(s) lift the thinnest margin from" in page
+    assert "2.0%" in page and "17.0%" in page
+    assert "overrides sign-up" in page
+    assert "comfortable." in page  # 17% >= the 15% target
+
+
+def test_safety_section_says_so_when_nothing_helps():
+    from src import build
+
+    members, picks, draw = _thin_scenario()
+    site = build.GUILD_SITES[0]
+    base = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4
+    ).to_dict()
+
+    # Thin, but no move found: the page must NOT imply the risk is fixable.
+    stuck = dict(base, safety_swaps=[], min_slack_fraction=0.02, safety_min_slack=0.02)
+    page = " ".join(build._render_signup_html(stuck, site).split())
+    assert "None found" in page and "would cost points" in page
+
+    # Comfortable: reassure, do not invent work.
+    fine = dict(base, safety_swaps=[], min_slack_fraction=0.40, safety_min_slack=0.40)
+    page = " ".join(build._render_signup_html(fine, site).split())
+    assert "None needed" in page
+
+
+def test_optimal_summary_carries_the_optimums_own_margin():
+    # The comparison table shows what the safety pass achieves on the
+    # unconstrained optimum, which is the standard the sign-up plan is read
+    # against. Without it the page can say "you are 300 points short" but not
+    # "and the assignment you could have had was far safer".
+    from src.trials import run_week
+
+    members, _picks, draw = _scenario()
+    week = run_week(members, skills=draw, cap=3)
+    total, summary = signup.optimal_from_week(week)
+
+    assert total == week.total_points
+    for o, t in zip(summary, week.trials):
+        assert o["skill"] == t.skill
+        assert ("clear_seconds" in o) and ("slack_fraction" in o)
+        if t.tier_reached >= 1:
+            assert o["clear_seconds"] is not None
+            assert 0.0 <= o["slack_fraction"] < 1.0
+        else:
+            assert o["clear_seconds"] is None and o["slack_fraction"] == 0.0
+
+
 def test_signup_matches_member_name_case_insensitively():
     # The sign-up "User" cell is the raw in-game name; the member tab is
     # hand-maintained and here disagrees only by capitalisation. The volunteer

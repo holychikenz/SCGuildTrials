@@ -658,6 +658,41 @@ def test_empty_party_reaches_tier_zero_no_points():
 
 
 # ---------------------------------------------------------------------------
+# tier_clear_seconds / time_slack_fraction (the safety margin, both forms)
+# ---------------------------------------------------------------------------
+def test_tier_clear_seconds_is_the_last_cleared_tiers_cumulative_time():
+    party = [_member(f"m{i}", {"Foraging": 120}) for i in range(10)]
+    res = trials.simulate_race(party, "Foraging")
+    assert res.tier_reached >= 1
+
+    cleared = [s for s in res.timeline if s.cleared]
+    assert trials.tier_clear_seconds(res) == cleared[-1].cumulative_time
+    # It is within budget by definition — that is what "cleared" means — and the
+    # tier that ran out of time is NOT what gets reported.
+    assert trials.tier_clear_seconds(res) <= config.TRIAL_TIME_BUDGET_SECONDS
+    assert cleared[-1].tier == res.tier_reached
+
+
+def test_slack_fraction_is_the_clear_time_expressed_against_the_budget():
+    party = [_member(f"m{i}", {"Foraging": 120}) for i in range(10)]
+    res = trials.simulate_race(party, "Foraging")
+    secs = trials.tier_clear_seconds(res)
+    assert trials.time_slack_fraction(res) == pytest.approx(
+        1.0 - secs / config.TRIAL_TIME_BUDGET_SECONDS
+    )
+    assert 0.0 <= trials.time_slack_fraction(res) < 1.0
+
+
+def test_no_tier_banked_has_no_clear_time_and_zero_slack():
+    # A party that banks nothing must never look "safe" by virtue of an empty
+    # timeline: slack stays 0.0 (the optimizer's tie-break contract) and the
+    # absolute form is None (there is no moment to report).
+    res = trials.simulate_race([], "Foraging")
+    assert trials.tier_clear_seconds(res) is None
+    assert trials.time_slack_fraction(res) == 0.0
+
+
+# ---------------------------------------------------------------------------
 # random_assignment: determinism
 # ---------------------------------------------------------------------------
 def test_assignment_deterministic_with_fixed_seed():

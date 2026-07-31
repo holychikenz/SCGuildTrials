@@ -64,7 +64,13 @@ import requests
 from . import config
 from .reader import MemberRow, SheetStructureError, _cell, _to_bool
 from .optimizer import AssignmentScorer
-from .trials import RosterEntry, rate, simulate_race
+from .trials import (
+    RosterEntry,
+    rate,
+    simulate_race,
+    tier_clear_seconds,
+    time_slack_fraction,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +262,17 @@ class SignupRosterEntry:
 
 @dataclass
 class SignupTrial:
-    """One trial in the enforced plan: locked volunteers + recommended fills."""
+    """One trial in the enforced plan: locked volunteers + recommended fills.
+
+    ``clear_seconds`` / ``slack_fraction`` record HOW NARROWLY this lineup banked
+    its score: the clock reading when the last completed tier finished, and the
+    fraction of the 3600-second budget still unspent at that moment. Points alone
+    cannot show this — they are a step function of the tier — so a trial holding a
+    tier by nine seconds looks identical to one holding it by ten minutes. The
+    optimizer's safety pass maximises this margin on the UNCONSTRAINED optimum
+    (:func:`src.optimizer._refine_slack`); the enforced sign-up plan cannot, since
+    the volunteers are locked, so here it is reported instead of optimised.
+    """
 
     skill: str
     party_size: int
@@ -264,6 +280,10 @@ class SignupTrial:
     points: int
     open_seats: int  # seats still empty after fills (cap - party_size)
     roster: list[SignupRosterEntry] = field(default_factory=list)
+    # Seconds elapsed when the last cleared tier finished; None if no tier held.
+    clear_seconds: Optional[float] = None
+    # Unspent share of the budget at that moment, in [0, 1); 0.0 when no tier held.
+    slack_fraction: float = 0.0
 
 
 @dataclass
@@ -300,6 +320,38 @@ class Swap:
 
 
 @dataclass
+class SafetySwap:
+    """One advisory, POINTS-PRESERVING move that widens the thinnest time margin.
+
+    The counterpart to :class:`Swap`: where a ``Swap`` buys points, a ``SafetySwap``
+    buys *room*. Every entry leaves the score exactly as it was and strictly lifts the
+    thinnest trial — both enforced by construction, see :func:`_safety_swaps`.
+    Uncommitted members are spent first; an entry that has to move a volunteer sets
+    ``overrides_signup`` so the page can flag it rather than slip it past the reader.
+    ``min_before`` / ``min_after`` are the thinnest margin across the banking trials
+    before and after this move, and ``trial_changes`` names the trials whose margin
+    actually moved.
+    """
+
+    member: str
+    action: str  # "move" | "bench" | "seat" | "swap"
+    from_skill: Optional[str]
+    to_skill: Optional[str]
+    note: str
+    partner: Optional[str] = None  # the other member, for ``action == "swap"``
+    min_before: float = 0.0
+    min_after: float = 0.0
+    # [{"skill": str, "before": float, "after": float}] for each trial that changed.
+    trial_changes: list[dict] = field(default_factory=list)
+    # True when the move relocates a VOLUNTEER out of the trial they ticked. The
+    # search only resorts to these once the uncommitted members alone cannot lift the
+    # thinnest trial to the target, and the page flags them distinctly: they are the
+    # same kind of override the points swaps already make, but they must be a
+    # deliberate choice rather than a surprise.
+    overrides_signup: bool = False
+
+
+@dataclass
 class SignupPlan:
     """Everything the sign-up page needs for one week's real sign-ups."""
 
@@ -316,10 +368,25 @@ class SignupPlan:
     optimal_total: int
     gap: int
     reachable_total: int  # score after applying the listed swaps
+    # Thinnest time margin across the trials that actually banked a tier (the
+    # weakest link in the lineup's safety), or None when no trial banked one.
+    # Trials that reached no tier are EXCLUDED rather than counted as 0.0, so
+    # "scored nothing" is never mistaken for "held a tier by a hair".
+    min_slack_fraction: Optional[float] = None
+    # The per-trial clock these margins are measured against (3600s), carried so
+    # signup.json is self-describing.
+    budget_seconds: float = config.TRIAL_TIME_BUDGET_SECONDS
+    # Thinnest margin once the advisory safety swaps below are applied (None when no
+    # trial banks a tier). Equals ``min_slack_fraction`` when there is nothing to do.
+    safety_min_slack: Optional[float] = None
     trials: list[SignupTrial] = field(default_factory=list)
     enforced_bench: list[str] = field(default_factory=list)
     optimal_summary: list[dict] = field(default_factory=list)
     swaps: list[Swap] = field(default_factory=list)
+    # Advisory POINTS-PRESERVING moves that widen the thinnest margin, uncommitted
+    # members first (see :func:`_safety_swaps`). Empty when the lineup is already
+    # comfortable or when no admissible move helps.
+    safety_swaps: list[SafetySwap] = field(default_factory=list)
     # Sign-up "User" names that matched NO member on the guild's member tab
     # (after case/space-insensitive matching) and were therefore ignored — a
     # data-quality signal the build surfaces loudly.
@@ -343,6 +410,9 @@ class SignupPlan:
             "optimal_total": self.optimal_total,
             "gap": self.gap,
             "reachable_total": self.reachable_total,
+            "min_slack_fraction": self.min_slack_fraction,
+            "budget_seconds": self.budget_seconds,
+            "safety_min_slack": self.safety_min_slack,
             "trials": [
                 {
                     "skill": t.skill,
@@ -350,6 +420,8 @@ class SignupPlan:
                     "tier_reached": t.tier_reached,
                     "points": t.points,
                     "open_seats": t.open_seats,
+                    "clear_seconds": t.clear_seconds,
+                    "slack_fraction": t.slack_fraction,
                     "roster": [asdict(r) for r in t.roster],
                 }
                 for t in self.trials
@@ -357,6 +429,7 @@ class SignupPlan:
             "enforced_bench": self.enforced_bench,
             "optimal_summary": self.optimal_summary,
             "swaps": [asdict(s) for s in self.swaps],
+            "safety_swaps": [asdict(s) for s in self.safety_swaps],
             "unmatched_signups": self.unmatched_signups,
             "normalized_matches": self.normalized_matches,
         }
@@ -694,6 +767,252 @@ def _improving_swaps(
     return swaps, total
 
 
+def _slack_key(pts: list[int], slack: list[float]) -> tuple[int, float, float]:
+    """Lexicographic rank ``(total_points, min_margin, sum_margin)``.
+
+    The same key :func:`src.optimizer._refine_slack` maximises, with ONE deliberate
+    difference: the minimum is taken over the trials that actually BANK a tier. A
+    trial scoring nothing has no margin to protect, and including its 0.0 would peg
+    the minimum there and blind the max-min to every real improvement elsewhere.
+
+    ``total_points`` comes first and is summed as the exact ``int`` it always was, so
+    no candidate that costs a tier can ever outrank the incumbent.
+    """
+    banking = [q for p, q in zip(pts, slack) if p > 0]
+    return (sum(pts), min(banking) if banking else 0.0, sum(slack))
+
+
+def _safety_swaps(
+    parties: list[set[int]],
+    scorer: AssignmentScorer,
+    cap: int,
+    draw: list[str],
+    members: list[MemberRow],
+    free_pool: set[int],
+    target: Optional[float] = None,
+    max_moves: Optional[int] = None,
+    allow_overrides: Optional[bool] = None,
+) -> tuple[list[SafetySwap], Optional[float]]:
+    """Advisory points-preserving moves that lift the thinnest trial off the buzzer.
+
+    WHY A SEPARATE PASS. ``optimizer._refine_slack`` widens the margin of the
+    UNCONSTRAINED optimum, and cannot be applied here: it would move locked
+    volunteers, which this page promises never to do. So this is the same idea over
+    the only neighbourhood the sign-up page actually controls — **where the
+    uncommitted members sit**. Live motivation (SC, 2026-07-31): the enforced plan
+    tied the 4900-point ceiling while Foraging held tier 12 by 65 seconds of 3600,
+    against 18% for the optimum. Nothing in the points-based advice had a word to say
+    about it, because on points there was nothing to say.
+
+    THE SEARCH. Best-improvement local search over relocations (including to and from
+    the bench) and swaps, ranked on :func:`_slack_key`. TWO acceptance conditions,
+    both learned from a live probe that got them wrong (2026-07-31):
+
+    * **The points must be EXACTLY equal.** Ranking points-first only guarantees a
+      move never *costs* a tier; the probe promptly found one on LI that *gained* a
+      tier (Alchemy 9 -> 10) while crashing that trial's margin 25.96% -> 0.23%, and
+      reported it in a list captioned "same points, more margin". Points gains belong
+      to :func:`_improving_swaps`, which finds that one anyway. Here they are
+      excluded, so the caption is a guarantee rather than an aspiration.
+    * **The MINIMUM must strictly rise.** Accepting any lexicographic improvement lets
+      a move through on ``sum_margin`` alone. On SC the probe produced five such
+      moves, every one leaving the thinnest trial at 1.81% — a page full of advice
+      that fixed nothing. A move earns its place here only by lifting the thinnest
+      trial itself; ``sum_margin`` survives purely to choose *between* moves that lift
+      it equally.
+
+    TWO PHASES. Phase 1 moves only ``free_pool`` (uncommitted) members, so no sign-up
+    is overridden. If that cannot reach ``target`` — the SC case exactly: the thin
+    trial was all volunteers, with no open seat to fill and nobody movable in it —
+    phase 2 opens the whole roster and flags each such move ``overrides_signup``. The
+    points swaps already override sign-ups when points justify it; this extends the
+    same bargain to margin, but only after the cost-free options are exhausted, and
+    always labelled. ``allow_overrides=False``
+    (``config.SIGNUP_SAFETY_ALLOW_OVERRIDES``) stops after phase 1.
+
+    Note that phase 2's pool is a SUPERSET, not a disjoint set: once it opens, a
+    free-pool move may well follow an override, because phase 1 only exhausted the
+    moves that helped *from the plan as it then stood*. What is guaranteed is that
+    phase 1 is played out first, so ``allow_overrides=False`` returns exactly the
+    leading, override-free stretch of the full run.
+
+    Two stopping rules, both deliberate:
+
+    * ``target`` (``config.SIGNUP_SAFETY_TARGET``): stop once the thinnest banking
+      trial is comfortable. The pass exists to get off the buzzer, not to gold-plate
+      a healthy lineup — and a healthy lineup therefore costs one scan and exits.
+    * ``max_moves`` (``config.SIGNUP_SAFETY_MAX_MOVES``): a list nobody will carry
+      out is worse than a short one. Anything needing more moves than this is a
+      sign-up problem rather than a fill problem, and the page says so.
+
+    Note the pass PREFERS relocation to benching without being told to: moving a
+    member to another trial raises that trial's margin too, so it beats benching on
+    the ``sum_margin`` tie-break. Benching wins only where the receiving trial would
+    become the new thinnest — i.e. only where it genuinely buys more room.
+
+    TERMINATION: the minimum strictly rises on every accepted move and is bounded
+    above by ``target``, so no state can repeat; ``max_moves`` bounds the list length,
+    not the correctness.
+
+    Returns ``(moves, min_margin_after)``; ``min_margin_after`` is ``None`` when no
+    trial banks a tier. Does not mutate ``parties``. Deterministic: fixed scan order,
+    ties to the lowest indices.
+    """
+    if target is None:
+        target = config.SIGNUP_SAFETY_TARGET
+    if max_moves is None:
+        max_moves = config.SIGNUP_SAFETY_MAX_MOVES
+    if allow_overrides is None:
+        allow_overrides = config.SIGNUP_SAFETY_ALLOW_OVERRIDES
+
+    S = len(scorer.skills)
+    parties = [set(p) for p in parties]
+    n = len(scorer.members)
+    volunteers = set(range(n)) - set(free_pool)
+    moves: list[SafetySwap] = []
+
+    def _state() -> tuple[list[int], list[float]]:
+        pts = [scorer.party_points(s, parties[s]) for s in range(S)]
+        slack = [scorer.party_slack(s, parties[s]) for s in range(S)]
+        return pts, slack
+
+    def _min_margin(pts: list[int], slack: list[float]) -> Optional[float]:
+        banking = [q for p, q in zip(pts, slack) if p > 0]
+        return min(banking) if banking else None
+
+    def _best_move(movable: list[int], pts: list[int], slack: list[float]) -> Optional[tuple]:
+        """The best points-EQUAL move that strictly raises the thinnest margin."""
+        base_points, base_min, _ = _slack_key(pts, slack)
+        assigned = {m: s for s in range(S) for m in parties[s]}
+
+        def key_with(*changed: tuple[int, set]) -> tuple:
+            p, q = list(pts), list(slack)
+            for s, ids in changed:
+                p[s] = scorer.party_points(s, ids)
+                q[s] = scorer.party_slack(s, ids)
+            return _slack_key(p, q)
+
+        def admissible(key: tuple) -> bool:
+            # Points exactly preserved (a gain is the OTHER list's business, and a
+            # loss is never acceptable), and the thinnest trial strictly lifted.
+            return key[0] == base_points and key[1] > base_min
+
+        best_key: Optional[tuple] = None
+        best: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
+
+        # Relocations (bench included, both directions).
+        for m in movable:
+            a = assigned.get(m, -1)
+            for b in range(-1, S):
+                if b == a:
+                    continue
+                if b >= 0 and len(parties[b]) >= cap:
+                    continue
+                changed = []
+                if a >= 0:
+                    changed.append((a, parties[a] - {m}))
+                if b >= 0:
+                    changed.append((b, parties[b] | {m}))
+                key = key_with(*changed)
+                if admissible(key) and (best_key is None or key > best_key):
+                    best_key, best = key, ("R", m, a, b)
+
+        # Swaps between two seated movable members in different trials.
+        seated = [(m, assigned[m]) for m in movable if m in assigned]
+        for i in range(len(seated)):
+            m1, a = seated[i]
+            for j in range(i + 1, len(seated)):
+                m2, b = seated[j]
+                if a == b:
+                    continue
+                key = key_with(
+                    (a, (parties[a] - {m1}) | {m2}),
+                    (b, (parties[b] - {m2}) | {m1}),
+                )
+                if admissible(key) and (best_key is None or key > best_key):
+                    best_key, best = key, ("S", m1, a, m2, b)
+
+        return best
+
+    # Phase 1 spends only the uncommitted members (no sign-up overridden); phase 2
+    # opens the whole roster, and every move that touches a volunteer is flagged.
+    phase_pools = [sorted(free_pool)]
+    if allow_overrides:
+        phase_pools.append(list(range(n)))
+
+    for movable in phase_pools:
+        while len(moves) < max_moves:
+            pts, slack = _state()
+            current_min = _min_margin(pts, slack)
+            # Comfortable (or nothing banks a tier, in which case margin is not the
+            # problem and the points advice above is where to look).
+            if current_min is None or current_min >= target:
+                break
+
+            best_move = _best_move(movable, pts, slack)
+            if best_move is None:
+                break  # no permitted move lifts the thinnest trial
+
+            # Apply, then describe the move by the margins it actually moved.
+            touched: list[int] = []
+            if best_move[0] == "R":
+                _, m, a, b = best_move
+                if a >= 0:
+                    parties[a].discard(m)
+                    touched.append(a)
+                if b >= 0:
+                    parties[b].add(m)
+                    touched.append(b)
+                name = members[m].name
+                # Volunteers are never benched by construction, so any move of one
+                # takes them out of the trial they ticked — an override either way.
+                overrides = m in volunteers
+                if a == -1:
+                    action, from_skill, to_skill = "seat", None, draw[b]
+                    note = f"Seat {name} (currently benched) into {draw[b]}."
+                elif b == -1:
+                    action, from_skill, to_skill = "bench", draw[a], None
+                    note = (
+                        f"Bench {name} from {draw[a]} — one head fewer lowers that "
+                        f"trial's target by 1%. Costs {name} their share of the "
+                        f"reward, so weigh it against the margin it buys."
+                    )
+                else:
+                    action, from_skill, to_skill = "move", draw[a], draw[b]
+                    note = f"Move {name} from {draw[a]} to {draw[b]}."
+                swap = SafetySwap(
+                    member=name, action=action, from_skill=from_skill,
+                    to_skill=to_skill, note=note, overrides_signup=overrides,
+                )
+            else:
+                _, m1, a, m2, b = best_move
+                parties[a].discard(m1)
+                parties[a].add(m2)
+                parties[b].discard(m2)
+                parties[b].add(m1)
+                touched.extend([a, b])
+                n1, n2 = members[m1].name, members[m2].name
+                swap = SafetySwap(
+                    member=n1, action="swap", from_skill=draw[a], to_skill=draw[b],
+                    partner=n2,
+                    note=f"Swap {n1} ({draw[a]}) with {n2} ({draw[b]}).",
+                    overrides_signup=bool({m1, m2} & volunteers),
+                )
+
+            new_pts, new_slack = _state()
+            swap.min_before = current_min
+            swap.min_after = _min_margin(new_pts, new_slack) or 0.0
+            swap.trial_changes = [
+                {"skill": draw[s], "before": slack[s], "after": new_slack[s]}
+                for s in sorted(set(touched))
+                if new_slack[s] != slack[s]
+            ]
+            moves.append(swap)
+
+    pts, slack = _state()
+    return moves, _min_margin(pts, slack)
+
+
 def plan(
     members: list[MemberRow],
     picks: dict[str, set[str]],
@@ -837,10 +1156,16 @@ def plan(
                 points=result.points,
                 open_seats=cap - result.party_size,
                 roster=assigned_rows + rec_rows,
+                # How narrowly this lineup banked its score. Free: read off the
+                # simulate_race result already computed just above.
+                clear_seconds=tier_clear_seconds(result),
+                slack_fraction=time_slack_fraction(result),
             )
         )
 
     enforced_total = sum(t.points for t in trials)
+    scoring_slack = [t.slack_fraction for t in trials if t.tier_reached >= 1]
+    min_slack_fraction = min(scoring_slack) if scoring_slack else None
     seated_free = {i for i in placed}
     enforced_bench = sorted(
         members[i].name for i in free_pool if i not in seated_free
@@ -860,6 +1185,15 @@ def plan(
         optimal_points=optimal_points, optimal_tier=optimal_tier,
     )
 
+    # --- Advisory safety swaps: same points, more room ----------------------
+    # Runs from the SHIPPED plan (``enforced``, which _improving_swaps copies rather
+    # than mutates), independently of the points swaps above — the two lists are
+    # alternatives an officer chooses between, not a sequence. Costs one scan and
+    # exits when the lineup is already comfortable.
+    safety_swaps, safety_min_slack = _safety_swaps(
+        enforced, scorer, cap, draw, members, free_pool
+    )
+
     now = datetime.now(timezone.utc)
     return SignupPlan(
         generated_at=now.isoformat(),
@@ -875,10 +1209,14 @@ def plan(
         optimal_total=optimal_total,
         gap=optimal_total - enforced_total,
         reachable_total=reachable_total,
+        min_slack_fraction=min_slack_fraction,
+        budget_seconds=config.TRIAL_TIME_BUDGET_SECONDS,
+        safety_min_slack=safety_min_slack,
         trials=trials,
         enforced_bench=enforced_bench,
         optimal_summary=optimal_summary,
         swaps=swaps,
+        safety_swaps=safety_swaps,
         unmatched_signups=unmatched_signups,
         normalized_matches=normalized_matches,
     )
@@ -890,6 +1228,12 @@ def optimal_from_week(week) -> tuple[int, list[dict]]:
     Returns ``(optimal_total, optimal_summary)`` so the sign-up page reuses the
     exact optimum ``trials.html`` already computed — no second optimizer run,
     and the two pages never disagree on the ceiling.
+
+    The summary also carries the optimum's own time margins (``clear_seconds`` /
+    ``slack_fraction``), which is what the optimizer's safety pass deliberately
+    maximised. Showing them beside the enforced plan's margins answers the question
+    the points columns cannot: not just "how many points are we leaving on the
+    table" but "how much safer than us is the assignment we could have had".
     """
     optimal_summary = [
         {
@@ -897,6 +1241,8 @@ def optimal_from_week(week) -> tuple[int, list[dict]]:
             "tier_reached": t.tier_reached,
             "points": t.points,
             "party_size": t.party_size,
+            "clear_seconds": tier_clear_seconds(t),
+            "slack_fraction": time_slack_fraction(t),
         }
         for t in week.trials
     ]

@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from . import config
 from . import draw as draw_model
@@ -945,6 +946,172 @@ def _render_trials_html(
 """
 
 
+def _slack_band(slack: Optional[float]) -> str:
+    """CSS class banding a time margin: red / amber / green.
+
+    Thresholds are ``config.SLACK_THIN`` and ``config.SLACK_OK`` — see the note
+    there for why they sit where they do. ``None`` (no tier banked) is red: a trial
+    that scored nothing has no margin at all, and must never render as safe.
+    """
+    if slack is None:
+        return "danger-text"
+    if slack < config.SLACK_THIN:
+        return "danger-text"
+    if slack < config.SLACK_OK:
+        return "warn-text"
+    return "ok-text"
+
+
+def _pct(fraction: Optional[float]) -> str:
+    """A margin fraction as a one-decimal percentage ('16.4%'); '—' for None."""
+    if fraction is None:
+        return "&mdash;"
+    return f"{fraction * 100:.1f}%"
+
+
+def _margin_phrase(trial: dict, budget: float) -> str:
+    """How narrowly this trial banked its score, as a coloured phrase.
+
+    Points are a STEP function of the tier, so the score cannot show whether a tier
+    was held with ten minutes to spare or nine seconds. This spells it out: the
+    clock reading when the last completed tier finished, and what was left of the
+    per-trial budget at that moment.
+    """
+    tier = trial.get("tier_reached") or 0
+    secs = trial.get("clear_seconds")
+    if tier < 1 or secs is None:
+        return '<span class="danger-text">no tier banked</span>'
+    # Same fact, two forms; derive the fraction if only the seconds are present so
+    # the phrase and its colour band can never disagree.
+    slack = trial.get("slack_fraction")
+    if slack is None:
+        slack = 1.0 - secs / budget
+    return (
+        f'<span class="{_slack_band(slack)}">tier {tier} banked at '
+        f'{_num(secs, 0)}s of {_num(budget, 0)}s &middot; {_num(budget - secs, 0)}s '
+        f'spare ({_pct(slack)})</span>'
+    )
+
+
+def _render_safety_section(p: dict, thinnest: Optional[dict]) -> str:
+    """The advisory points-preserving moves that widen the thinnest margin.
+
+    The counterpart to the points swaps card: same structure, different currency.
+    Every row leaves the score untouched (guaranteed by ``signup._safety_swaps``) and
+    strictly lifts the thinnest trial, so the "thinnest margin" column reads as a
+    ladder — each move's ``after`` is the next move's ``before``.
+    """
+    moves = p.get("safety_swaps") or []
+    before = p.get("min_slack_fraction")
+    after = p.get("safety_min_slack")
+    target = config.SIGNUP_SAFETY_TARGET
+
+    if before is None:
+        return ""  # nothing banks a tier: margin is not this page's problem yet
+
+    if not moves:
+        if before >= target:
+            body = (
+                f'<p class="meta">None needed &mdash; every banking trial already holds '
+                f'with at least {_pct(target)} of the hour spare. '
+                f'<span class="ok-text">Thinnest: {_pct(before)}.</span></p>'
+            )
+        else:
+            thin_name = html.escape(thinnest["skill"]) if thinnest else "the thinnest trial"
+            # Only claim the override option was tried if it actually was.
+            reach = (
+                "not even one that overrides a sign-up"
+                if config.SIGNUP_SAFETY_ALLOW_OVERRIDES
+                else "and moves that override a sign-up are switched off"
+            )
+            body = (
+                f'<p class="meta">None found &mdash; no move that preserves the score '
+                f'widens {thin_name}\'s <span class="{_slack_band(before)}">'
+                f'{_pct(before)}</span> margin, {reach}. '
+                f'Every remaining option would cost points. Widening it needs a '
+                f'stronger party for that trial than this roster can field, so the '
+                f'realistic choices are to accept the risk or to trade points for it '
+                f'deliberately.</p>'
+            )
+        return f"""
+  <section class="card">
+    <h2>Safety swaps &mdash; same points, more margin</h2>
+    {body}
+  </section>"""
+
+    capped = len(moves) >= config.SIGNUP_SAFETY_MAX_MOVES
+    if after is not None and after >= target:
+        tail = "&mdash; comfortable."
+    elif capped:
+        tail = (
+            f"&mdash; still short of the comfortable {_pct(target)}, and the list stops "
+            f"at its {config.SIGNUP_SAFETY_MAX_MOVES}-move limit. Apply these and "
+            f"rebuild to see what comes next."
+        )
+    else:
+        tail = (
+            f"&mdash; still short of the comfortable {_pct(target)}; no further "
+            f"points-preserving move helps."
+        )
+    lead = (
+        f'These {len(moves)} move(s) lift the thinnest margin from '
+        f'<span class="{_slack_band(before)}">{_pct(before)}</span> to '
+        f'<span class="{_slack_band(after)}">{_pct(after)}</span> {tail} '
+        f'The score does not change &mdash; it stays {p["enforced_total"]} points, by '
+        f'construction rather than by luck &mdash; so this list is about surviving a '
+        f'no-show or an optimistic constant, not about scoring more. Each is advisory, '
+        f'and they are cumulative: apply them in order.'
+    )
+
+    n_override = sum(1 for m in moves if m.get("overrides_signup"))
+    rows = []
+    for m in moves:
+        changes = "".join(
+            f'<li>{html.escape(c["skill"])}: '
+            f'<span class="{_slack_band(c["before"])}">{_pct(c["before"])}</span> '
+            f'&rarr; <span class="{_slack_band(c["after"])}">{_pct(c["after"])}</span></li>'
+            for c in m.get("trial_changes") or []
+        )
+        detail = html.escape(m["note"])
+        if changes:
+            detail += f'<ul class="swap-moves">{changes}</ul>'
+        chips = f'<span class="chip safety">{html.escape(m["action"])}</span>'
+        if m.get("overrides_signup"):
+            chips += '<span class="chip override" title="Moves a member out of the trial they ticked">overrides sign-up</span>'
+        rows.append(
+            f'<tr><td>{chips}</td><td>{detail}</td>'
+            f'<td class=num><span class="{_slack_band(m["min_before"])}">'
+            f'{_pct(m["min_before"])}</span> &rarr; '
+            f'<span class="{_slack_band(m["min_after"])}">{_pct(m["min_after"])}</span>'
+            f'</td></tr>'
+        )
+
+    override_note = ""
+    if n_override:
+        override_note = (
+            f'<p class="meta">{n_override} of these move a member out of the trial they '
+            f'ticked (flagged <span class="chip override">overrides sign-up</span>). '
+            f'The search only resorts to that once the uncommitted members alone cannot '
+            f'lift the thinnest trial &mdash; which happens when that trial\'s party is '
+            f'entirely volunteers, as it is here. The points swaps above already '
+            f'override sign-ups when points justify it; these ask the same of you for '
+            f'margin instead, so they are a judgement call, not an instruction.</p>'
+        )
+
+    return f"""
+  <section class="card">
+    <h2>Safety swaps &mdash; same points, more margin</h2>
+    <p class="meta">{lead}</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Move</th><th>Detail</th>
+          <th class=num>Thinnest margin</th></tr></thead>
+        <tbody>{"".join(rows)}</tbody>
+      </table>
+    </div>{override_note}
+  </section>"""
+
+
 def _render_signup_html(p: dict, site: "GuildSite") -> str:
     """Render the sign-up optimiser page from a ``signup.SignupPlan`` dict.
 
@@ -952,10 +1119,48 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     uncommitted pool) is shown per trial with volunteers colour-coded green and
     recommended fills blue; below it, the minimal strictly-improving swaps to
     reach the full-roster optimum, and the optimum itself for comparison.
+
+    Each trial also reports the time margin by which it banked its score, and the
+    summary strip leads with the THINNEST of them, because the enforced plan is the
+    one assignment on this site that the optimizer's safety pass never touches: the
+    volunteers are locked, so whatever margin the real sign-ups leave is what ships.
     """
     optimal_by_skill = {o["skill"]: o for o in p["optimal_summary"]}
+    budget = p.get("budget_seconds") or config.TRIAL_TIME_BUDGET_SECONDS
 
-    # --- Summary strip: likely / with-swaps / ceiling ----------------------
+    # --- Safety tile: the thinnest margin in the shipped lineup -------------
+    # The weakest link, since a lost tier costs its points outright. Excludes
+    # trials that banked no tier (they have no margin); those show separately on
+    # their own card as "no tier banked".
+    thinnest = min(
+        (t for t in p["trials"] if (t.get("tier_reached") or 0) >= 1),
+        key=lambda t: t.get("slack_fraction") or 0.0,
+        default=None,
+    )
+    if thinnest is None:
+        safety_tile = """
+    <div class="stat"><div class=stat-skill>Thinnest margin</div>
+      <div class="stat-tier danger-text">&mdash;</div>
+      <div class=stat-pts>no trial banks a tier</div></div>"""
+    else:
+        thin_slack = thinnest.get("slack_fraction")
+        # Where the safety swaps below would take that margin — the tile is the first
+        # thing read, so it should say both what ships and what is available.
+        recoverable = p.get("safety_min_slack")
+        recover = ""
+        if recoverable is not None and thin_slack is not None and recoverable > thin_slack:
+            recover = (
+                f' &middot; <span class="{_slack_band(recoverable)}">{_pct(recoverable)}'
+                f'</span> with the safety swaps'
+            )
+        safety_tile = f"""
+    <div class="stat"><div class=stat-skill>Thinnest margin</div>
+      <div class="stat-tier {_slack_band(thin_slack)}">{_pct(thin_slack)}</div>
+      <div class=stat-pts>{html.escape(thinnest['skill'])} &middot;
+        {_num(budget - (thinnest.get('clear_seconds') or 0.0), 0)}s spare of
+        {_num(budget, 0)}s{recover}</div></div>"""
+
+    # --- Summary strip: likely / with-swaps / ceiling / safety --------------
     strip = f"""
     <div class="stat"><div class=stat-skill>Likely score</div>
       <div class=stat-tier>{p['enforced_total']}</div>
@@ -965,7 +1170,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
       <div class=stat-pts>after the swaps below</div></div>
     <div class="total"><div class=stat-skill>Optimal ceiling</div>
       <div class=stat-tier>{p['optimal_total']}</div>
-      <div class=stat-pts>best possible &middot; gap {p['gap']}</div></div>"""
+      <div class=stat-pts>best possible &middot; gap {p['gap']}</div></div>{safety_tile}"""
 
     # --- Per-trial enforced rosters ----------------------------------------
     def _row(r: dict) -> str:
@@ -999,6 +1204,15 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
                 f' &middot; <span class="hl">optimal reaches tier {opt_tier} '
                 f'({opt.get("points")} pts)</span>'
             )
+        # How safe this lineup is, and how safe the optimum manages to be on the
+        # same trial — the comparison is the point: a much wider margin next door
+        # means the risk is ours, not the trial's.
+        opt_slack = opt.get("slack_fraction")
+        opt_margin = (
+            f' &middot; optimal holds it with {_pct(opt_slack)} spare'
+            if opt_slack is not None and (t.get("tier_reached") or 0) >= 1
+            else ""
+        )
         n_assigned = sum(1 for r in t["roster"] if r["status"] == "assigned")
         n_rec = sum(1 for r in t["roster"] if r["status"] == "recommended")
         rows = "".join(_row(r) for r in t["roster"])
@@ -1008,6 +1222,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     <p class="meta">Party {t['party_size']} &middot; tier <strong>{t['tier_reached']}</strong>
        &middot; {t['points']} pts &middot; {n_assigned} signed up, {n_rec} recommended,
        {t['open_seats']} seat(s) still open{opt_note}</p>
+    <p class="meta">Safety: {_margin_phrase(t, budget)}{opt_margin}</p>
     <div class="scroll">
       <table>
         <thead><tr><th>Member</th><th class=num>Level</th>
@@ -1031,6 +1246,29 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             )
             detail += f'<ul class="swap-moves">{items}</ul>'
         return detail
+
+    # A points-equal plan is NOT necessarily a safe one, and the swap list only
+    # knows about points. Where the thinnest trial is below the comfortable band,
+    # say so here too — otherwise "already matches the optimal ceiling. Nothing to
+    # change." reads as all-clear while a tier hangs on seconds. Live example
+    # (SC, 2026-07-31): 4900 points, equal to the ceiling, with Foraging holding
+    # tier 12 by 65 seconds against the optimum's 18%.
+    safety_caveat = ""
+    if thinnest is not None and (thinnest.get("slack_fraction") or 0.0) < config.SLACK_OK:
+        thin_opt = optimal_by_skill.get(thinnest["skill"], {}).get("slack_fraction")
+        versus = (
+            f", against {_pct(thin_opt)} for the unconstrained optimum"
+            if thin_opt is not None else ""
+        )
+        safety_caveat = f"""
+    <p class="meta">Matching the ceiling on <em>points</em> is not the same as being
+       safe. <span class="{_slack_band(thinnest.get('slack_fraction'))}">
+       {html.escape(thinnest['skill'])} banks tier {thinnest['tier_reached']} with only
+       {_pct(thinnest.get('slack_fraction'))} of the hour spare</span>{versus} &mdash; so
+       an absence, a lapsed buff, or a slightly optimistic constant costs that whole
+       tier. The optimizer's safety pass cannot help here: the volunteers are locked,
+       so widening that margin is a human decision &mdash; see
+       <em>Safety swaps</em> below.</p>"""
 
     if p["swaps"]:
         swap_rows = "".join(
@@ -1067,14 +1305,15 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         <thead><tr><th>Move</th><th>Detail</th><th class=num>Gain</th></tr></thead>
         <tbody>{swap_rows}</tbody>
       </table>
-    </div>
+    </div>{safety_caveat}
   </section>"""
     elif p["enforced_total"] >= p["optimal_total"]:
         swaps_section = f"""
   <section class="card">
     <h2>Recommended swaps to reach optimal</h2>
     <p class="meta">None &mdash; the enforced sign-up plan ({p['enforced_total']} pts)
-       already matches the optimal ceiling ({p['optimal_total']} pts). Nothing to change.</p>
+       already matches the optimal ceiling ({p['optimal_total']} pts), so there is
+       nothing to gain in <em>points</em>.</p>{safety_caveat}
   </section>"""
     else:
         swaps_section = f"""
@@ -1084,15 +1323,22 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
        sits {p['optimal_total'] - p['enforced_total']} below the optimal ceiling
        ({p['optimal_total']} pts), but no swap (single or grouped) closes the gap
        without lowering another trial. Reaching the ceiling would need a wider
-       reshuffle &mdash; compare the two rosters below.</p>
+       reshuffle &mdash; compare the two rosters below.</p>{safety_caveat}
   </section>"""
 
+    safety_section = _render_safety_section(p, thinnest)
+
     # --- Optimal comparison table ------------------------------------------
+    # Carries the optimum's own margin, which is what the optimizer's safety pass
+    # maximised — the standard to read the enforced plan's margins against.
     opt_rows = "".join(
         f'<tr><th scope=row>{html.escape(o["skill"])}</th>'
         f'<td class=num>{o["party_size"]}</td>'
         f'<td class=num>{o["tier_reached"]}</td>'
-        f'<td class=num>{o["points"]}</td></tr>'
+        f'<td class=num>{o["points"]}</td>'
+        f'<td class="num {_slack_band(o.get("slack_fraction"))}">'
+        f'{_pct(o.get("slack_fraction"))}</td>'
+        f'<td class=num>{_num(o.get("clear_seconds"), 0) or "&mdash;"}</td></tr>'
         for o in p["optimal_summary"]
     )
 
@@ -1202,9 +1448,22 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
                text-transform: capitalize; }}
   .chip.missing {{ background: rgba(245,100,90,.18); color: var(--danger);
                border: 1px solid rgba(245,100,90,.55); }}
+  /* Safety swaps: green (they buy margin, never points), with overrides flagged. */
+  .chip.safety {{ background: rgba(62,207,142,.18); color: var(--on);
+               text-transform: capitalize; }}
+  .chip.override {{ background: rgba(224,179,65,.16); color: var(--warn);
+               border: 1px solid rgba(224,179,65,.45); margin-left: .3rem; }}
   .card.danger {{ border-color: var(--danger); background: #241618; }}
   .card.danger h2 {{ color: var(--danger); }}
   .danger-text {{ color: var(--danger); font-weight: 700; }}
+  /* Time-margin bands (config.SLACK_THIN / SLACK_OK): green comfortable,
+     amber thin, red knife-edge or nothing banked. The two-class rules exist
+     because .stat-tier sets its own colour and is declared LATER than
+     .warn-text — equal specificity there would let the accent blue win. */
+  .ok-text {{ color: var(--on); }}
+  .stat-tier.ok-text {{ color: var(--on); }}
+  .stat-tier.warn-text {{ color: var(--warn); }}
+  .stat-tier.danger-text {{ color: var(--danger); }}
   .chips {{ display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 0; }}
   .swap-moves {{ margin: .35rem 0 0; padding-left: 1.1rem; font-size: .82rem;
                color: #aab1c0; }}
@@ -1235,9 +1494,18 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     <span><span class="sw" style="background:var(--rec)"></span> Recommended fill (from the uncommitted pool)</span>
     <span><span class="sw" style="background:var(--warn)"></span> Swap (advisory)</span>
   </p>
+  <p class="legend">Time margin:
+    <span><span class="sw" style="background:var(--on)"></span> comfortable
+      (&ge;&nbsp;{config.SLACK_OK * 100:.0f}% of the hour spare)</span>
+    <span><span class="sw" style="background:var(--warn)"></span> thin
+      (&lt;&nbsp;{config.SLACK_OK * 100:.0f}%)</span>
+    <span><span class="sw" style="background:var(--danger)"></span> knife-edge
+      (&lt;&nbsp;{config.SLACK_THIN * 100:.0f}%, or no tier banked)</span>
+  </p>
   {missing_html}
   {cards_html}
   {swaps_section}
+  {safety_section}
 
   <section class="card">
     <h2>Optimal (unconstrained) for comparison</h2>
@@ -1247,7 +1515,8 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     <div class="scroll">
       <table>
         <thead><tr><th>Trial</th><th class=num>Party</th>
-          <th class=num>Tier</th><th class=num>Points</th></tr></thead>
+          <th class=num>Tier</th><th class=num>Points</th>
+          <th class=num>Margin</th><th class=num>Banked at (s)</th></tr></thead>
         <tbody>{opt_rows}</tbody>
       </table>
     </div>
@@ -1275,6 +1544,28 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         assignment the <a href="trials.html">Guild Trials</a> page computes, so the
         two never disagree. The scoring model, tiers and equipment assumptions are
         documented there.</li>
+    <li><strong>The margin is the risk.</strong> Points are a <em>step</em> function
+        of the tier reached, so a trial that banks its tier with nine seconds left
+        scores exactly the same as one that banks it with ten minutes left &mdash;
+        right up until a member does not turn up, a buff lapses, or the model's
+        constants are slightly off, at which point the thin one loses the whole tier.
+        Each card therefore shows when its last tier was <em>banked</em> out of the
+        {_num(budget, 0)}-second budget, and the strip above leads with the thinnest
+        of them. Note that the optimizer's safety pass, which deliberately widens
+        this margin, applies to the <a href="trials.html">unconstrained optimum</a>
+        only: here the volunteers are locked, so the margin the real sign-ups leave
+        is the margin that ships. A comfortable optimum next to a knife-edge sign-up
+        plan means the exposure is in <em>who signed up for what</em>, not in the
+        draw.</li>
+    <li><strong>Safety swaps buy margin, never points.</strong> The second swap list
+        searches the same neighbourhood for moves that leave the score
+        <em>exactly</em> as it is while lifting the thinnest trial &mdash; a move that
+        would gain a tier belongs to the points list above, and one that would lose a
+        tier is never offered. It spends the uncommitted members first (nothing
+        overridden); only if that cannot reach {_pct(config.SIGNUP_SAFETY_TARGET)} does
+        it propose moving a volunteer, and every such row is flagged. The list stops at
+        {config.SIGNUP_SAFETY_MAX_MOVES} moves and each entry strictly improves on the
+        one before, so applying a prefix is always valid.</li>
   </ol>
   <p>Any player who signed up but is <span class="danger-text">missing from the
      roster</span> is flagged in red near the top &mdash; they must add their data to
