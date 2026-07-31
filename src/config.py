@@ -184,10 +184,10 @@ TRIAL_SKILL_TO_SHEET_COLUMN = {
 # source of truth — the officers reroll the draw each cycle and a hand-edited
 # list here goes stale immediately. It remains only as the default for tests
 # and direct library calls to trials.run_week / signup.plan that pass no draw.
-# Kept current-ish for convenience (Trial Assignments tab, Date 7/24). Names use
+# Kept current-ish for convenience (Trial Assignments tab, Date 7/31). Names use
 # the trial's own skill labels; "Alchemy" resolves to the "Bell Farming" sheet
 # column via TRIAL_SKILL_TO_SHEET_COLUMN above.
-TRIAL_SKILLS_CURRENT = ["Milking", "Woodcutting", "Crafting", "Alchemy"]
+TRIAL_SKILLS_CURRENT = ["Milking", "Foraging", "Crafting", "Alchemy"]
 
 # --- Random assignment (Phase 1: NO optimizer) ------------------------------
 # Fixed seed for reproducibility. NEVER use unseeded randomness.

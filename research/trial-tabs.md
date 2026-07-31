@@ -102,24 +102,41 @@ Since 2026-07-25 the notice block also carries a pointer to this project's own o
 > `src/draw.py`. Anything parsed out of *this* tab must use that override; the member and
 > sign-up parsers are instead written against the collapsed form.
 
+> **⚠ The tab was REBUILT on 2026-07-31** — a second, unrelated breakage. The officers threw
+> away the whole notice block and the `Skilling Trial Info` banner with its four `Trial N`
+> rows, and republished the draw as a two-column **"Trial Priority"** table off to the right
+> (see §2.2). `draw.parse_draw` could no longer find its anchor and the site degraded to the
+> last-known draw behind the stale-draw banner — visibly wrong, since the draw had rerolled
+> Woodcutting → Foraging that same cycle. `src/draw.py` now reads **both** shapes, preferring
+> the legacy one when both are present (it alone carries `Trial N` slot labels).
+>
+> **Lesson.** This tab is hand-maintained cosmetics, not a data contract; it will be rebuilt
+> again. Every parser reading it should anchor on a distinctive *string*, scan for it rather
+> than pin it to a row/column index, and — as `build.build_guild` does — degrade loudly rather
+> than fail the deploy. Cross-check any draw read from here against the sign-up tab headers
+> (§2.2), which the game itself writes.
+
 ### 2.1 Skill cut-offs
 
 Two columns of per-skill numbers, headed:
 
 - **"Skilling Trails Survey Corps — Cut-Off(30)"**
-- **"Lactose Intolerant — Cut-Off(25)"**
+- **"Lactose Intolerant — Cut-Off(30)"** (was `Cut-Off(25)` before the 2026-07-31 rebuild)
 
-| Skill | SC Cut-Off (30) | LI Cut-Off (25) |
+Cut-offs are re-tuned by the officers from time to time; the numbers below are the
+2026-07-31 capture (the 2026-07-17 values are in brackets where they differ).
+
+| Skill | SC Cut-Off (30) | LI Cut-Off (30) |
 |---|---|---|
-| Milking | 119 | 112 |
-| Foraging | 121 | 117 |
+| Milking | 120 [119] | 113 [112] |
+| Foraging | 122 [121] | 116 [117] |
 | Woodcutting | 113 | 106 |
-| Cheesesmithing | 116 | 107 |
-| Crafting | 116 | 112 |
+| Cheesesmithing | 116 | 109 [107] |
+| Crafting | 116 | 111 [112] |
 | Tailoring | 113 | 108 |
-| Cooking | 121 | 116 |
+| Cooking | 122 [121] | 117 [116] |
 | Brewing | 118 | 113 |
-| Alchemy | 109 | 105 |
+| Alchemy | 110 [109] | 105 |
 | Enhancing | 106 | 101 |
 
 Exactly **10 skills** — the trial-eligible skill list. (No "Bell Farming"; the tenth skill is
@@ -144,7 +161,35 @@ Sign-up rules (verbatim from the tab):
 
 ### 2.2 Current skilling trials and priority
 
-**"Skilling Trial Info — Date: 7/17"** (today's cycle):
+**CURRENT shape (since the 2026-07-31 rebuild).** A bare two-column **"Trial Priority"**
+table, sitting to the right of the cut-off tables (col K–L today, but its position is not
+fixed — `src/draw.py` scans for the banner string). There are **no `Trial N` slot labels any
+more**, and the skilling section carries **no date**; the tab's single `Date: 7/31` now sits
+on the `Combat Trials` banner below, and `draw.parse_draw` falls back to it as the cycle date.
+
+| Trial Priority | |
+|---|---|
+| Milking | 3 |
+| Foraging | 4 |
+| Crafting | 2 |
+| Alchemy | 1 |
+
+Note the listing order is **not** priority order (3, 4, 2, 1) — so the list order is the only
+slot ordering available, and that is what `TrialDraw.skills` carries. Below the four skills
+sit one blank cell and then three lines of sign-up prose; the blank is what ends the block.
+
+Above it, 22 rows × 4 columns of unlabelled `FALSE` tick-boxes per guild (22 = the party cap)
+— the seat grid, with **no skill headers** in the merged cells above the columns. Nothing
+downstream reads it.
+
+**INDEPENDENT CORROBORATION of the draw.** Each guild's sign-up tab (`SC Trial Signup` /
+`LI Trial Signup`) heads its four tick-box columns B–E with the same four skills, written by
+the game itself rather than by hand — on 2026-07-31, `Foraging | Crafting | Milking | Alchemy`
+(the game's own `guildWeeklyTrialSet` order, which differs from the officers' listing order).
+That is the more authoritative of the two sources; use it to settle any disagreement.
+
+**LEGACY shape (up to 2026-07-25).** A `Skilling Trial Info` banner with its own date, one
+`Trial N` row per drawn skill, and the priority in a third column. E.g. Date 7/17:
 
 | Slot | Skill | Priority |
 |---|---|---|
@@ -158,8 +203,10 @@ first**, then Alchemy, Woodcutting, Foraging. (Plausibly because Enhancing/Alche
 lowest cut-offs / thinnest talent pool, so they need the qualified people most; the sheet does
 not state the rationale.)
 
-Note the skill draw changed from the 07/13 cycle (Milking/Crafting/Brewing/Alchemy) to 7/17
-(Foraging/Woodcutting/Alchemy/Enhancing) — consistent with 4 skills drawn randomly each cycle.
+**Observed draws.** 07/13 Milking/Crafting/Brewing/Alchemy → 7/17
+Foraging/Woodcutting/Alchemy/Enhancing → 7/24 Milking/Woodcutting/Crafting/Alchemy → 7/31
+Milking/Foraging/Crafting/Alchemy — consistent with 4 skills drawn randomly each cycle, and
+the reason the draw must be read live rather than transcribed into `config`.
 
 ### 2.3 Combat trials
 
