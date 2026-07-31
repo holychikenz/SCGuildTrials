@@ -99,9 +99,17 @@ trials) are ignored by position. Parsing is guarded by the "User" sentinel
 
 ## Deploy (GitHub Actions)
 
-`.github/workflows/deploy.yml` builds and deploys on a **daily** schedule and on
-manual dispatch, using `uv` (via `astral-sh/setup-uv`, cached) and the
-artifact-based Pages flow (`actions/upload-pages-artifact` + `actions/deploy-pages`).
+`.github/workflows/deploy.yml` builds and deploys on **every push to `main`**, on a
+**daily** schedule, and on manual dispatch, using `uv` (via `astral-sh/setup-uv`,
+cached) and the artifact-based Pages flow (`actions/upload-pages-artifact` +
+`actions/deploy-pages`).
+
+**Push to `main` is the reliable path** when a refresh is actually needed: it
+rebuilds immediately. The cron is best-effort and GitHub defers it under load —
+every scheduled run on record has started 2h13m–4h00m late, which is why the cron
+asks for 01:00 UTC rather than the hour anyone wants (see the comment in the
+workflow). Do not read the cron as a promise of when the site refreshes.
+
 The schedule is daily rather than hourly because the Phase 2 optimizer takes a
 couple of minutes per run; hourly would burn ~2000+ Actions minutes/month.
 
