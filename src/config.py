@@ -195,7 +195,7 @@ TRIAL_RNG_SEED = 42
 # Skilling trial party cap (research/trial-tabs.md §1: max 20 observed).
 # Tunable — parties may run larger than the 20 originally observed. For now this
 # is a magic number; a later change will read it from the guild spreadsheet.
-TRIAL_PARTY_CAP = 22
+TRIAL_PARTY_CAP = 24
 
 # ===========================================================================
 # Guild Trials (Phase 2) — optimizer strategy + knobs (src/optimizer.py)
