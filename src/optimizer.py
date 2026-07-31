@@ -51,6 +51,7 @@ from .trials import (
     guild_building_skill_levels,
     rate,
     simulate_race,
+    time_slack_fraction,
 )
 
 # Internal representation during search:
@@ -68,11 +69,19 @@ Parties = list  # list[set[int]]
 class AssignmentScorer:
     """Memoised bridge to :func:`src.trials.simulate_race`.
 
-    ``party_points`` is cached on ``(skill, frozenset(member_ids))`` because
-    local search revisits the same party repeatedly; the cache turns an
-    otherwise quadratic search into something a CI build tolerates. ``sim_calls``
-    counts genuine (cache-missing) simulations so the bake-off can report the
-    "how quickly" axis in oracle calls, independent of wall-clock noise.
+    Each party is cached on ``(skill, frozenset(member_ids))`` because local
+    search revisits the same party repeatedly; the cache turns an otherwise
+    quadratic search into something a CI build tolerates. ``sim_calls`` counts
+    genuine (cache-missing) simulations so the bake-off can report the "how
+    quickly" axis in oracle calls, independent of wall-clock noise.
+
+    ONE simulation now yields TWO numbers, cached together: the party's points
+    (the objective every strategy maximises) and its time-slack fraction (the
+    tie-break the final pass maximises — see :func:`_refine_slack`). They share a
+    cache entry because they come from the same ``simulate_race`` call, so slack
+    costs no extra simulations at all. ``party_points`` keeps its exact previous
+    contract — an ``int``, identical to ``simulate_race(...).points`` — so every
+    strategy, ``src.signup``, and the existing tests are untouched.
     """
 
     def __init__(
@@ -86,11 +95,11 @@ class AssignmentScorer:
         self.skills = skills
         self.target_scale = target_scale
         self.cap = cap
-        self._cache: dict[tuple[str, frozenset], int] = {}
+        self._cache: dict[tuple[str, frozenset], tuple[int, float]] = {}
         self.sim_calls = 0
 
-    def party_points(self, skill_idx: int, member_ids) -> int:
-        """Points for the party ``member_ids`` running ``skills[skill_idx]``."""
+    def _evaluate(self, skill_idx: int, member_ids) -> tuple[int, float]:
+        """``(points, time_slack_fraction)`` for one party, memoised."""
         skill = self.skills[skill_idx]
         key = (skill, frozenset(member_ids))
         cached = self._cache.get(key)
@@ -98,9 +107,22 @@ class AssignmentScorer:
             return cached
         party = [self.members[i] for i in key[1]]
         self.sim_calls += 1
-        pts = simulate_race(party, skill, self.target_scale).points
-        self._cache[key] = pts
-        return pts
+        result = simulate_race(party, skill, self.target_scale)
+        value = (result.points, time_slack_fraction(result))
+        self._cache[key] = value
+        return value
+
+    def party_points(self, skill_idx: int, member_ids) -> int:
+        """Points for the party ``member_ids`` running ``skills[skill_idx]``."""
+        return self._evaluate(skill_idx, member_ids)[0]
+
+    def party_slack(self, skill_idx: int, member_ids) -> float:
+        """Relative time margin by which that party held its tier (0 if none).
+
+        See :func:`src.trials.time_slack_fraction`. Free: served from the same
+        cache entry as :meth:`party_points`.
+        """
+        return self._evaluate(skill_idx, member_ids)[1]
 
     def total_points(self, parties: Parties) -> int:
         """Total points across all parties (cache-backed, cheap to re-call)."""
@@ -742,6 +764,119 @@ def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
 
 
 # ---------------------------------------------------------------------------
+# Final safety pass: buy time margin, never points
+# ---------------------------------------------------------------------------
+def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
+    """Move members to widen the time margin, WITHOUT changing the points.
+
+    THE PROBLEM. ``points`` is a step function of the tier reached, so the search
+    is blind to *how narrowly* a tier was held. Measured on the live SC roster
+    (2026-07-31, research/risk-aware-objective.md): 25 assignments all scoring
+    exactly 4900 points held their last tier by margins ranging from 100 seconds
+    to 560 out of the 3600-second budget. A 100-second margin is 2.8% — thinner
+    than the error on the model's own constants, so the difference between those
+    assignments is the difference between a tier and a coin flip. Nothing in the
+    objective distinguishes them, so which one ships is luck.
+
+    THE PASS. Best-improvement local search over the SAME neighbourhood as
+    :func:`_refine_hill_climb` (relocate, including to/from the bench, plus swap),
+    ranked on the lexicographic key::
+
+        (total_points, min_slack_over_trials, sum_slack_over_trials)
+
+    ``total_points`` FIRST and compared as the exact ``int`` it always was, so a
+    move that would cost a tier can never be accepted — the point total this pass
+    returns is provably the one it was given (or better, if it stumbles on a gain
+    the main search missed). ``min`` before ``sum`` deliberately: the aim is to get
+    the *thinnest* trial off the 3600-second boundary, not to pile margin onto a
+    trial that is already comfortable. A consequence worth knowing: because this is
+    a max-min, the SUM of the margins may legitimately FALL while the minimum rises
+    — lifting the knife-edge trial is the goal, and spending another trial's surplus
+    to do it is a good trade, not a regression.
+
+    TERMINATION: every accepted move strictly increases a bounded lexicographic
+    key over a finite state space, so no move can repeat and no cycle can form.
+    ``OPT_SLACK_MAX_ITERS`` is therefore a bound on worst-case build time, not a
+    correctness requirement.
+
+    COST: slack rides in the scorer's existing cache entry, so this adds no new
+    simulations for any party the search already visited. Deterministic — moves are
+    scanned in a fixed order and ties fall to the lowest indices.
+    """
+    S = len(scorer.skills)
+    cap = scorer.cap
+    n = len(scorer.members)
+    parties = [set(p) for p in parties]
+
+    for _ in range(config.OPT_SLACK_MAX_ITERS):
+        pts = [scorer.party_points(s, parties[s]) for s in range(S)]
+        slack = [scorer.party_slack(s, parties[s]) for s in range(S)]
+        base_key = (sum(pts), min(slack), sum(slack))
+        assigned = {m: s for s in range(S) for m in parties[s]}
+
+        def key_with(*changed: tuple[int, set]) -> tuple:
+            """The key after replacing the given slots' rosters (bench: omitted)."""
+            p, q = list(pts), list(slack)
+            for s, ids in changed:
+                p[s] = scorer.party_points(s, ids)
+                q[s] = scorer.party_slack(s, ids)
+            return (sum(p), min(q), sum(q))
+
+        best_key = base_key
+        best_move: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
+
+        # Relocations (including to and from the bench).
+        for m in range(n):
+            a = assigned.get(m, -1)
+            for b in range(-1, S):
+                if b == a:
+                    continue
+                if b >= 0 and len(parties[b]) >= cap:
+                    continue
+                changed = []
+                if a >= 0:
+                    changed.append((a, parties[a] - {m}))
+                if b >= 0:
+                    changed.append((b, parties[b] | {m}))
+                key = key_with(*changed)
+                if key > best_key:
+                    best_key = key
+                    best_move = ("R", m, a, b)
+
+        # Swaps between members of two different slots.
+        assigned_items = sorted(assigned.items())
+        for i in range(len(assigned_items)):
+            m1, a = assigned_items[i]
+            for j in range(i + 1, len(assigned_items)):
+                m2, b = assigned_items[j]
+                if a == b:
+                    continue
+                key = key_with(
+                    (a, (parties[a] - {m1}) | {m2}),
+                    (b, (parties[b] - {m2}) | {m1}),
+                )
+                if key > best_key:
+                    best_key = key
+                    best_move = ("S", m1, a, m2, b)
+
+        if best_move is None:
+            break
+        if best_move[0] == "R":
+            _, m, a, b = best_move
+            if a >= 0:
+                parties[a].discard(m)
+            if b >= 0:
+                parties[b].add(m)
+        else:
+            _, m1, a, m2, b = best_move
+            parties[a].discard(m1)
+            parties[a].add(m2)
+            parties[b].discard(m2)
+            parties[b].add(m1)
+    return parties
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def optimize(
@@ -770,8 +905,19 @@ def optimize(
 
     scorer = AssignmentScorer(members, skills, target_scale, cap)
     parties = run_strategy(scorer, strategy, seed)
+    # Safety pass: among the many assignments that score these same points, take
+    # the one that holds its tiers by the widest time margin (_refine_slack).
+    # Points-preserving by construction, so it can only change WHICH optimum
+    # ships, never how many points it is worth. OPT_SLACK_PASS = False disables.
+    if config.OPT_SLACK_PASS:
+        parties = _refine_slack(parties, scorer)
     # Courtesy pass: seat any leftover bench where it does not lower points, so
     # stragglers come along for the ride rather than sit idle.
+    # DELIBERATELY LAST, so inclusion outranks margin. The safety pass will bench a
+    # member to buy margin (the headcount penalty is 1% of the target each), and on
+    # the live LI roster it cut three; re-seating them afterwards costs only 1.2pp
+    # of the minimum margin (634s -> 591s, measured 2026-07-31) and no points at
+    # all, which is a price worth paying to keep everyone in the reward.
     parties = _fill_bench(parties, scorer)
 
     assigned: set[int] = set()

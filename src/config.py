@@ -308,6 +308,28 @@ OPT_SA_RESTARTS = 2
 OPT_SA_T_START = 150.0
 OPT_SA_T_END = 0.5
 
+# --- Final safety pass (slack) ----------------------------------------------
+# The objective is a STEP function of the tier reached, so it cannot see HOW
+# NARROWLY a tier was held. Measured on the live SC roster (2026-07-31): 25
+# assignments all scoring exactly 4900 points held their last tier by margins from
+# 100 to 560 seconds out of the 3600-second budget — a 2.8% margin on the thinnest,
+# which is finer than the error on the model's own constants. Which of those
+# assignments shipped was pure luck.
+#
+# optimizer._refine_slack runs ONE local-search pass after the search has settled,
+# maximising (total_points, min_margin, sum_margin) lexicographically. Points come
+# first and are compared as exact ints, so the pass CANNOT cost a tier: it only
+# chooses which of the equally-scoring optima ships. Slack is read from the same
+# simulate_race call the scorer already cached, so it adds no simulations for any
+# party the search already visited.
+# Set OPT_SLACK_PASS = False to restore the pre-2026-07-31 behaviour (a one-line
+# rollback; nothing else in the pipeline reads the margin).
+OPT_SLACK_PASS = True
+# Iteration bound on the pass. Every accepted move strictly increases a bounded
+# lexicographic key over a finite state space, so the pass terminates on its own;
+# this caps worst-case build time rather than guaranteeing correctness.
+OPT_SLACK_MAX_ITERS = 100
+
 # --- Beam search (beam) -----------------------------------------------------
 OPT_BEAM_WIDTH = 16
 

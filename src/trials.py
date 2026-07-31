@@ -417,6 +417,34 @@ def rate(
     return success(level, tier, success_bonus, building) * double * wp / asec
 
 
+def time_slack_fraction(result: "TrialResult") -> float:
+    """How much of the 1-hour budget the party had left over, as a fraction.
+
+    ``1 - cumulative_time(T) / TRIAL_TIME_BUDGET_SECONDS`` for the highest tier T
+    actually cleared, i.e. the relative time margin by which the recorded tier was
+    held. In ``[0, 1)``: near 1 for a party that cleared its tier almost
+    instantly, near 0 for one that scraped in with seconds to spare.
+
+    WHY THIS EXISTS: ``points`` is a STEP function of the tier, so two assignments
+    that reach the same tiers score identically even when one clears its last tier
+    with 560 seconds spare and the other with 100 (measured on the live SC roster,
+    2026-07-31 — see research/risk-aware-objective.md). That margin is the only
+    protection against the model being slightly wrong, a member not turning up, or
+    a community buff lapsing, so the optimizer's final pass maximises it as a
+    TIE-BREAK once the points are settled (:func:`src.optimizer._refine_slack`).
+
+    Returns 0.0 when no tier was cleared at all — a party that scores nothing has
+    no margin to protect, and must never look "safe" by virtue of an empty
+    timeline.
+    """
+    if result.tier_reached < 1:
+        return 0.0
+    for step in reversed(result.timeline):
+        if step.cleared and step.cumulative_time is not None:
+            return 1.0 - step.cumulative_time / config.TRIAL_TIME_BUDGET_SECONDS
+    return 0.0
+
+
 def points_for_tier(tier_reached: int) -> int:
     """points(T) = 100 + 100*T for T >= 1, else 0.
 

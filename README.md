@@ -60,6 +60,19 @@ a **beam-search-seeded genetic algorithm** — and returns the single best resul
 `# BAKE-OFF RESULTS` block in `config.py`). To restore the Phase-1 random split,
 set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 
+### The safety pass (why the optimum is not on the buzzer)
+
+Points are a *step* function of the tier reached, so the search cannot see how
+narrowly a tier was held — and on live data it routinely held one by seconds. A
+final pass (`optimizer._refine_slack`) therefore picks, from among the many
+assignments scoring those same points, the one whose *thinnest* trial has the most
+time to spare: it maximises `(total_points, min_margin, sum_margin)` with points
+first and compared as exact ints, so **it cannot trade a tier for margin**. On the
+2026-07-31 rosters the minimum margin went from 4.28% → 17.92% (SC) and 0.26% —
+nine seconds — → 16.41% (LI), for no change in points. `OPT_SLACK_PASS = False` is
+the one-line rollback; see `research/risk-aware-objective.md` for the measurements
+and for the probabilistic models this deliberately stops short of.
+
 ## Sign-up optimiser (real sign-ups)
 
 `src/signup.py` reads each guild's sign-up tab (**SC Trial Signup** /

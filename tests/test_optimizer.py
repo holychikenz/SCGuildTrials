@@ -299,6 +299,78 @@ def test_parse_strategy_rejects_unknown_token():
 
 
 # ---------------------------------------------------------------------------
+# Final safety pass (_refine_slack)
+# ---------------------------------------------------------------------------
+def _margins(scorer, parties):
+    return [scorer.party_slack(s, parties[s]) for s in range(len(scorer.skills))]
+
+
+def test_party_slack_matches_simulate_race_and_is_zero_without_a_tier():
+    members = _roster(24, seed=5)
+    scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
+    party = set(range(12))
+    expected = trials.time_slack_fraction(
+        trials.simulate_race([members[i] for i in sorted(party)], SKILLS[0],
+                             config.TARGET_SCALE)
+    )
+    assert scorer.party_slack(0, party) == expected
+    assert 0.0 <= expected < 1.0
+    # An empty party clears nothing, so it has no margin to protect — it must not
+    # look "safe" by virtue of an empty timeline.
+    assert scorer.party_slack(0, set()) == 0.0
+    assert scorer.party_points(0, set()) == 0
+
+
+def test_refine_slack_preserves_points_and_never_lowers_the_worst_margin():
+    members = _roster(60, seed=23)
+    scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
+    start = optimizer.run_strategy(scorer, "proxy_greedy+hill_climb", 99)
+
+    before_pts = scorer.total_points(start)
+    before = _margins(scorer, start)
+    refined = optimizer._refine_slack(start, scorer)
+    after_pts = scorer.total_points(refined)
+    after = _margins(scorer, refined)
+
+    # The whole point of the pass: points are the FIRST key, compared as exact
+    # ints, so a tier can never be traded for margin.
+    assert after_pts >= before_pts
+    # It improves the LEXICOGRAPHIC key (points, min margin, sum margin) by strict
+    # improvement, so the key can only rise. NB the SUM may legitimately FALL: the
+    # pass is a max-min, and lifting the thinnest trial off the boundary is worth
+    # more than total margin (observed here: min 1.27% -> 4.54% while the sum drops
+    # 0.241 -> 0.200). Asserting the sum alone would be asserting the wrong goal.
+    assert (after_pts, min(after), sum(after)) >= (
+        before_pts, min(before), sum(before)
+    )
+    assert min(after) >= min(before)
+    # Still a valid assignment: no duplicates, cap respected.
+    ids = [m for p in refined for m in p]
+    assert len(ids) == len(set(ids))
+    assert all(len(p) <= 20 for p in refined)
+
+
+def test_refine_slack_is_deterministic_and_optimize_keeps_its_points():
+    members = _roster(45, seed=11)
+    a = optimizer.optimize(members, SKILLS, seed=7, cap=20,
+                           strategy="proxy_greedy+hill_climb")
+    b = optimizer.optimize(members, SKILLS, seed=7, cap=20,
+                           strategy="proxy_greedy+hill_climb")
+    assert {k: [m.name for m in v] for k, v in a.parties.items()} == {
+        k: [m.name for m in v] for k, v in b.parties.items()
+    }
+
+    # Enabling the pass must not cost points against the same seed/strategy.
+    config.OPT_SLACK_PASS = False
+    try:
+        off = optimizer.optimize(members, SKILLS, seed=7, cap=20,
+                                 strategy="proxy_greedy+hill_climb")
+    finally:
+        config.OPT_SLACK_PASS = True
+    assert _total_points(members, SKILLS, a) >= _total_points(members, SKILLS, off)
+
+
+# ---------------------------------------------------------------------------
 # run_week integration
 # ---------------------------------------------------------------------------
 def test_run_week_uses_optimizer_and_records_strategy():
