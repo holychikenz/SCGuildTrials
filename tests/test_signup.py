@@ -684,21 +684,78 @@ def test_safety_section_renders_the_ladder_and_flags_overrides():
     doctored = dict(p)
     doctored["min_slack_fraction"] = 0.02
     doctored["safety_min_slack"] = 0.17
+    doctored["safety_min_probability"] = 0.97
     doctored["safety_swaps"] = [
         {"member": "FreeMid", "action": "move", "from_skill": "Foraging",
          "to_skill": "Woodcutting", "note": "Move FreeMid.", "partner": None,
          "min_before": 0.02, "min_after": 0.09, "overrides_signup": False,
-         "trial_changes": [{"skill": "Foraging", "before": 0.02, "after": 0.09}]},
+         "min_prob_before": 0.61, "min_prob_after": 0.88,
+         "trial_changes": [{"skill": "Foraging", "before": 0.02, "after": 0.09,
+                            "prob_before": 0.61, "prob_after": 0.88}]},
         {"member": "Vol1", "action": "swap", "from_skill": "Foraging",
          "to_skill": "Woodcutting", "note": "Swap Vol1 with Vol3.", "partner": "Vol3",
          "min_before": 0.09, "min_after": 0.17, "overrides_signup": True,
+         "min_prob_before": 0.88, "min_prob_after": 0.97,
          "trial_changes": []},
     ]
     page = " ".join(build._render_signup_html(doctored, site).split())
-    assert "These 2 move(s) lift the thinnest margin from" in page
+    # Reported in odds, with the margin retained beside it — the reader needs both:
+    # a probability alone cannot say whether it was bought with seconds or minutes.
+    assert "These 2 move(s) take the weakest trial from" in page
+    assert "97%" in page and "likely to hold" in page
     assert "2.0%" in page and "17.0%" in page
     assert "overrides sign-up" in page
-    assert "comfortable." in page  # 17% >= the 15% target
+    # The per-move ladder rungs, in both currencies.
+    assert "61%" in page and "88%" in page
+
+    # The closing verdict leads on ODDS, not on the margin target. At 97% the ladder
+    # has cleared the 15% margin the pass aims for but has NOT reached comfortable, and
+    # the page must not claim otherwise — announcing "comfortable" over a 1-in-33 chance
+    # of dropping a tier is exactly the overstatement the probability was added to stop.
+    assert "at the 15.0% margin the pass aims for" in page
+    assert "comfortable." not in page
+
+    comfortable = dict(doctored, safety_min_probability=0.995)
+    comfortable["safety_swaps"] = [
+        dict(doctored["safety_swaps"][0]),
+        dict(doctored["safety_swaps"][1], min_prob_after=0.995),
+    ]
+    page = " ".join(build._render_signup_html(comfortable, site).split())
+    assert "comfortable." in page
+
+
+def test_safety_swaps_carry_probabilities_alongside_the_margins():
+    """The ladder is REPORTED in odds but SELECTED on margin — both must be present.
+
+    The rendering test above hand-feeds its swap dicts, so it cannot catch
+    signup.plan failing to populate the probability fields at all. This checks the
+    real pipeline, and pins the invariant that matters: probability moves in the
+    SAME direction as the margin the search actually optimised. If those two ever
+    disagreed on an accepted move, the page would be recommending a swap on one
+    currency while displaying another.
+    """
+    members, picks, draw = _thin_scenario()
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4
+    ).to_dict()
+
+    assert "safety_min_probability" in p
+    for m in p["safety_swaps"]:
+        assert m["min_prob_before"] is not None
+        assert m["min_prob_after"] is not None
+        # Every accepted move strictly raises the thinnest margin (by construction),
+        # so it must not LOWER the weakest trial's odds.
+        assert m["min_after"] > m["min_before"]
+        assert m["min_prob_after"] >= m["min_prob_before"] - 1e-9
+        for c in m["trial_changes"]:
+            assert c["prob_before"] is not None and c["prob_after"] is not None
+            # Within a single trial the map from margin to probability is strictly
+            # monotone, so the two must agree on the direction of travel.
+            assert (c["after"] > c["before"]) == (c["prob_after"] > c["prob_before"])
+
+    # The ladder's endpoint is what the summary tile promises.
+    if p["safety_swaps"]:
+        assert p["safety_min_probability"] == p["safety_swaps"][-1]["min_prob_after"]
 
 
 def test_safety_section_says_so_when_nothing_helps():

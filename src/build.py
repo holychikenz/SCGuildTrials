@@ -1101,6 +1101,12 @@ def _prob(p: Optional[float]) -> str:
     return f"{p * 100:.0f}%"
 
 
+# The odds at which a lineup stops being a problem. Shared by _prob_band's green
+# threshold and the safety list's "this is where the moves stop mattering" note, so
+# the page cannot call a trial comfortable in one place and worth fixing in another.
+_PROB_COMFORTABLE = 0.99
+
+
 def _prob_band(p: Optional[float]) -> str:
     """CSS class banding a clear probability: red / amber / green.
 
@@ -1114,7 +1120,7 @@ def _prob_band(p: Optional[float]) -> str:
         return "danger-text"
     if p < 0.90:
         return "danger-text"
-    if p < 0.99:
+    if p < _PROB_COMFORTABLE:
         return "warn-text"
     return "ok-text"
 
@@ -1154,17 +1160,27 @@ def _margin_phrase(trial: dict, budget: float) -> str:
     )
 
 
-def _render_safety_section(p: dict, thinnest: Optional[dict]) -> str:
-    """The advisory points-preserving moves that widen the thinnest margin.
+def _render_safety_section(p: dict, thinnest: Optional[dict], riskiest: Optional[dict]) -> str:
+    """The advisory points-preserving moves that make the weakest trial likelier to hold.
 
     The counterpart to the points swaps card: same structure, different currency.
     Every row leaves the score untouched (guaranteed by ``signup._safety_swaps``) and
-    strictly lifts the thinnest trial, so the "thinnest margin" column reads as a
-    ladder — each move's ``after`` is the next move's ``before``.
+    strictly lifts the thinnest trial, so the columns read as a ladder — each move's
+    ``after`` is the next move's ``before``.
+
+    REPORTED IN ODDS, SELECTED ON MARGIN. The search ranks candidates on the time
+    margin, where its guarantee lives (points exactly preserved, thinnest strictly
+    raised); this only translates the result into the unit an officer decides in.
+    The margin is kept beside it as the supporting detail rather than dropped,
+    because it is the quantity the move actually acts on — and because a reader who
+    sees only "83% -> 97%" cannot tell whether that came from twelve seconds or two
+    minutes.
     """
     moves = p.get("safety_swaps") or []
     before = p.get("min_slack_fraction")
     after = p.get("safety_min_slack")
+    prob_before = riskiest.get("clear_probability") if riskiest else None
+    prob_after = p.get("safety_min_probability")
     target = config.SIGNUP_SAFETY_TARGET
 
     if before is None:
@@ -1172,10 +1188,12 @@ def _render_safety_section(p: dict, thinnest: Optional[dict]) -> str:
 
     if not moves:
         if before >= target:
+            weakest = f" ({html.escape(riskiest['skill'])})" if riskiest else ""
             body = (
                 f'<p class="meta">None needed &mdash; every banking trial already holds '
-                f'with at least {_pct(target)} of the hour spare. '
-                f'<span class="ok-text">Thinnest: {_pct(before)}.</span></p>'
+                f'with at least {_pct(target)} of the hour spare. Least likely: '
+                f'<span class="{_prob_band(prob_before)}">{_prob(prob_before)}</span>'
+                f'{weakest}, thinnest margin {_pct(before)}.</p>'
             )
         else:
             thin_name = html.escape(thinnest["skill"]) if thinnest else "the thinnest trial"
@@ -1188,49 +1206,90 @@ def _render_safety_section(p: dict, thinnest: Optional[dict]) -> str:
             body = (
                 f'<p class="meta">None found &mdash; no move that preserves the score '
                 f'widens {thin_name}\'s <span class="{_slack_band(before)}">'
-                f'{_pct(before)}</span> margin, {reach}. '
-                f'Every remaining option would cost points. Widening it needs a '
+                f'{_pct(before)}</span> margin, {reach}. That leaves the weakest trial '
+                f'holding <span class="{_prob_band(prob_before)}">{_prob(prob_before)}'
+                f'</span> of the time. '
+                f'Every remaining option would cost points. Improving it needs a '
                 f'stronger party for that trial than this roster can field, so the '
                 f'realistic choices are to accept the risk or to trade points for it '
                 f'deliberately.</p>'
             )
         return f"""
   <section class="card">
-    <h2>Safety swaps &mdash; same points, more margin</h2>
+    <h2>Safety swaps &mdash; same points, better odds</h2>
     {body}
   </section>"""
 
     capped = len(moves) >= config.SIGNUP_SAFETY_MAX_MOVES
-    if after is not None and after >= target:
+    # The tail leads on ODDS, because that is the question ("is this lineup safe?").
+    # The margin target only gets a mention when the odds are NOT yet comfortable —
+    # otherwise the page would announce a lineup as "still short" while reporting it
+    # as better than 99.9% certain, which is how a reader learns to distrust a page.
+    if prob_after is not None and prob_after >= _PROB_COMFORTABLE:
         tail = "&mdash; comfortable."
+    elif after is not None and after >= target:
+        tail = f"&mdash; at the {_pct(target)} margin the pass aims for."
     elif capped:
         tail = (
-            f"&mdash; still short of the comfortable {_pct(target)}, and the list stops "
-            f"at its {config.SIGNUP_SAFETY_MAX_MOVES}-move limit. Apply these and "
-            f"rebuild to see what comes next."
+            f"&mdash; still short, and the list stops at its "
+            f"{config.SIGNUP_SAFETY_MAX_MOVES}-move limit. Apply these and rebuild to "
+            f"see what comes next."
         )
     else:
-        tail = (
-            f"&mdash; still short of the comfortable {_pct(target)}; no further "
-            f"points-preserving move helps."
+        tail = "&mdash; still short; no further points-preserving move helps."
+    # WHERE THE LIST STOPS EARNING ITS KEEP. The search stops on a MARGIN target
+    # (config.SIGNUP_SAFETY_TARGET), and with the measured sigma that target sits far
+    # past the point of diminishing returns: on the live SC lineup one move takes the
+    # weakest trial from 78.5% to 99.6% and the remaining seven move it from 100% to
+    # 100%. Rather than silently hand an officer eight moves of which one matters, say
+    # which prefix does the work. Presentational only — the search is untouched, and
+    # every move remains listed for anyone who wants the last fraction of a percent.
+    enough = None
+    for i, m in enumerate(moves, start=1):
+        after_p = m.get("min_prob_after")
+        if after_p is not None and after_p >= _PROB_COMFORTABLE:
+            enough = i
+            break
+    gold_plating = ""
+    if enough is not None and enough < len(moves):
+        spare = len(moves) - enough
+        first = "first move alone takes" if enough == 1 else f"first {enough} take"
+        gold_plating = (
+            f' <strong>The {first} the weakest trial past '
+            f'{_prob(_PROB_COMFORTABLE)}</strong>, so the remaining {spare} are '
+            f'refinement rather than repair &mdash; the list runs on because the pass '
+            f'stops on a {_pct(target)} margin, which at this party\'s spread is well '
+            f'past the point where extra room changes the odds.'
         )
+
     lead = (
-        f'These {len(moves)} move(s) lift the thinnest margin from '
+        f'These {len(moves)} move(s) take the weakest trial from '
+        f'<span class="{_prob_band(prob_before)}">{_prob(prob_before)}</span> to '
+        f'<span class="{_prob_band(prob_after)}">{_prob(prob_after)}</span> likely to '
+        f'hold, widening the thinnest margin from '
         f'<span class="{_slack_band(before)}">{_pct(before)}</span> to '
         f'<span class="{_slack_band(after)}">{_pct(after)}</span> {tail} '
         f'The score does not change &mdash; it stays {p["enforced_total"]} points, by '
-        f'construction rather than by luck &mdash; so this list is about surviving a '
-        f'no-show or an optimistic constant, not about scoring more. Each is advisory, '
-        f'and they are cumulative: apply them in order.'
+        f'construction rather than by luck &mdash; so this list is about surviving an '
+        f'optimistic constant or a missing piece of gear, not about scoring more. Each '
+        f'is advisory, and they are cumulative: apply them in order.{gold_plating}'
     )
 
     n_override = sum(1 for m in moves if m.get("overrides_signup"))
     rows = []
     for m in moves:
+        # Per-trial effect: odds first, with the margin that produced them in
+        # parentheses. A trial can appear here having got SAFER or WORSE — a move
+        # that lifts the weakest trial often costs a comfortable one a little, which
+        # is exactly the trade the reader is being asked to approve.
         changes = "".join(
             f'<li>{html.escape(c["skill"])}: '
-            f'<span class="{_slack_band(c["before"])}">{_pct(c["before"])}</span> '
-            f'&rarr; <span class="{_slack_band(c["after"])}">{_pct(c["after"])}</span></li>'
+            f'<span class="{_prob_band(c.get("prob_before"))}">'
+            f'{_prob(c.get("prob_before"))}</span> &rarr; '
+            f'<span class="{_prob_band(c.get("prob_after"))}">'
+            f'{_prob(c.get("prob_after"))}</span> '
+            f'<span class="meta">({_pct(c["before"])} &rarr; {_pct(c["after"])} '
+            f'margin)</span></li>'
             for c in m.get("trial_changes") or []
         )
         detail = html.escape(m["note"])
@@ -1241,6 +1300,10 @@ def _render_safety_section(p: dict, thinnest: Optional[dict]) -> str:
             chips += '<span class="chip override" title="Moves a member out of the trial they ticked">overrides sign-up</span>'
         rows.append(
             f'<tr><td>{chips}</td><td>{detail}</td>'
+            f'<td class=num><span class="{_prob_band(m.get("min_prob_before"))}">'
+            f'{_prob(m.get("min_prob_before"))}</span> &rarr; '
+            f'<span class="{_prob_band(m.get("min_prob_after"))}">'
+            f'{_prob(m.get("min_prob_after"))}</span></td>'
             f'<td class=num><span class="{_slack_band(m["min_before"])}">'
             f'{_pct(m["min_before"])}</span> &rarr; '
             f'<span class="{_slack_band(m["min_after"])}">{_pct(m["min_after"])}</span>'
@@ -1261,11 +1324,12 @@ def _render_safety_section(p: dict, thinnest: Optional[dict]) -> str:
 
     return f"""
   <section class="card">
-    <h2>Safety swaps &mdash; same points, more margin</h2>
+    <h2>Safety swaps &mdash; same points, better odds</h2>
     <p class="meta">{lead}</p>
     <div class="scroll">
       <table>
         <thead><tr><th>Move</th><th>Detail</th>
+          <th class=num>Weakest trial holds</th>
           <th class=num>Thinnest margin</th></tr></thead>
         <tbody>{"".join(rows)}</tbody>
       </table>
@@ -1338,11 +1402,21 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
       <div class=stat-pts>no trial banks a tier</div></div>"""
     else:
         rp = riskiest["clear_probability"]
+        # Where the safety swaps would take it. Same contract as the margin tile:
+        # say both what ships and what is available, so the reader does not have to
+        # scroll to find out whether the risk is fixable.
+        rec_p = p.get("safety_min_probability")
+        recover_p = ""
+        if rec_p is not None and rec_p > rp + 1e-9:
+            recover_p = (
+                f' &middot; <span class="{_prob_band(rec_p)}">{_prob(rec_p)}</span>'
+                f' with the safety swaps'
+            )
         odds_tile = f"""
     <div class="stat"><div class=stat-skill>Least likely to hold</div>
       <div class="stat-tier {_prob_band(rp)}">{_prob(rp)}</div>
       <div class=stat-pts>{html.escape(riskiest['skill'])} tier
-        {riskiest.get('tier_reached')} &middot; if the party turns up</div></div>"""
+        {riskiest.get('tier_reached')} &middot; if the party turns up{recover_p}</div></div>"""
 
     # --- Summary strip: likely / with-swaps / ceiling / safety --------------
     strip = f"""
@@ -1526,7 +1600,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
        reshuffle &mdash; compare the two rosters below.</p>{safety_caveat}
   </section>"""
 
-    safety_section = _render_safety_section(p, thinnest)
+    safety_section = _render_safety_section(p, thinnest, riskiest)
 
     # --- Optimal comparison table ------------------------------------------
     # Carries the optimum's own margin, which is what the optimizer's safety pass
@@ -1824,7 +1898,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         it excludes sheet staleness, which can only make it conservative. It was checked
         against an independent simulation that rolls every action individually: predicted
         83%, realised 84% on the thinnest live lineup.</li>
-    <li><strong>Safety swaps buy margin, never points.</strong> The second swap list
+    <li><strong>Safety swaps buy odds, never points.</strong> The second swap list
         searches the same neighbourhood for moves that leave the score
         <em>exactly</em> as it is while lifting the thinnest trial &mdash; a move that
         would gain a tier belongs to the points list above, and one that would lose a
@@ -1832,7 +1906,13 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         overridden); only if that cannot reach {_pct(config.SIGNUP_SAFETY_TARGET)} does
         it propose moving a volunteer, and every such row is flagged. The list stops at
         {config.SIGNUP_SAFETY_MAX_MOVES} moves and each entry strictly improves on the
-        one before, so applying a prefix is always valid.</li>
+        one before, so applying a prefix is always valid.
+        The list is <em>reported</em> in odds but <em>selected</em> on the margin, and
+        the distinction is deliberate: the margin is where the guarantee lives (points
+        exactly preserved, thinnest trial strictly raised), so ranking on the derived
+        probability would buy nothing and could quietly change which moves ship. Both
+        numbers are shown, because "83% &rarr; 97%" alone does not tell you whether that
+        came from twelve seconds or two minutes.</li>
   </ol>
   <p>Any player who signed up but is <span class="danger-text">missing from the
      roster</span> is flagged in red near the top &mdash; they must add their data to

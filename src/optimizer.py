@@ -48,11 +48,16 @@ from . import config
 from .reader import MemberRow
 from .trials import (
     Assignment,
+    clear_probability,
     guild_building_skill_levels,
     rate,
     simulate_race,
     time_slack_fraction,
 )
+
+# Sentinel for the reporting-only probability cache: None is a legitimate cached
+# value there (a party that banks no tier), so absence needs its own marker.
+_MISSING = object()
 
 # Internal representation during search:
 #   * members are referred to by their INDEX into the input ``members`` list;
@@ -96,6 +101,9 @@ class AssignmentScorer:
         self.target_scale = target_scale
         self.cap = cap
         self._cache: dict[tuple[str, frozenset], tuple[int, float]] = {}
+        # Separate, reporting-only cache — see party_probability. None is a real
+        # value here (no tier banked), so a sentinel marks "not yet computed".
+        self._prob_cache: dict[tuple[str, frozenset], Optional[float]] = {}
         self.sim_calls = 0
 
     def _evaluate(self, skill_idx: int, member_ids) -> tuple[int, float]:
@@ -123,6 +131,37 @@ class AssignmentScorer:
         cache entry as :meth:`party_points`.
         """
         return self._evaluate(skill_idx, member_ids)[1]
+
+    def party_probability(self, skill_idx: int, member_ids) -> Optional[float]:
+        """P(this party actually holds its tier). REPORTING ONLY — never the objective.
+
+        Deliberately NOT folded into :meth:`_evaluate`'s cache tuple. That cache is
+        the optimizer's hot path (~87k parties per pipeline) and
+        :func:`trials.clear_probability` re-races the party to accumulate the Wald
+        variance; paying that on every cache miss would dominate the build. This has
+        its own cache and is called only by the handful of REPORTED states — the
+        shipped lineup and each advisory safety swap.
+
+        WHY THE SEARCH STILL RANKS ON MARGIN. Probability is monotone in margin for a
+        fixed party, so on the dominant axis the two agree; where they differ is when
+        a move also changes the party's own sigma, and there the honest answer is that
+        the search's guarantee (points EXACTLY preserved, thinnest margin STRICTLY
+        raised) is what makes a swap safe to recommend. Ranking on a noisier derived
+        quantity would buy nothing and would silently change which swaps ship.
+        """
+        skill = self.skills[skill_idx]
+        key = (skill, frozenset(member_ids))
+        # NB the explicit default: a bare .get() returns None on a miss, which is
+        # indistinguishable from a cached None ("this party banks no tier") and would
+        # make every first call return None without computing anything.
+        cached = self._prob_cache.get(key, _MISSING)
+        if cached is not _MISSING:
+            return cached
+        party = [self.members[i] for i in key[1]]
+        result = simulate_race(party, skill, self.target_scale)
+        value = clear_probability(party, skill, result)
+        self._prob_cache[key] = value
+        return value
 
     def total_points(self, parties: Parties) -> int:
         """Total points across all parties (cache-backed, cheap to re-call)."""

@@ -347,7 +347,14 @@ class SafetySwap:
     partner: Optional[str] = None  # the other member, for ``action == "swap"``
     min_before: float = 0.0
     min_after: float = 0.0
-    # [{"skill": str, "before": float, "after": float}] for each trial that changed.
+    # The same two facts as ODDS: P(the least likely banking trial holds) before and
+    # after this move. Reported rather than optimised — the search still ranks on the
+    # margin (see _safety_swaps and optimizer.party_probability), because that is
+    # where its "points exactly preserved, thinnest strictly raised" guarantee lives.
+    # None when no trial banks a tier.
+    min_prob_before: Optional[float] = None
+    min_prob_after: Optional[float] = None
+    # [{"skill", "before", "after", "prob_before", "prob_after"}] per changed trial.
     trial_changes: list[dict] = field(default_factory=list)
     # True when the move relocates a VOLUNTEER out of the trial they ticked. The
     # search only resorts to these once the uncommitted members alone cannot lift the
@@ -385,6 +392,10 @@ class SignupPlan:
     # Thinnest margin once the advisory safety swaps below are applied (None when no
     # trial banks a tier). Equals ``min_slack_fraction`` when there is nothing to do.
     safety_min_slack: Optional[float] = None
+    # The same, as odds: P(the least likely banking trial holds) once every safety
+    # swap below has been applied. Equal to the shipped lineup's own figure when
+    # there is nothing to do. None when no trial banks a tier.
+    safety_min_probability: Optional[float] = None
     trials: list[SignupTrial] = field(default_factory=list)
     enforced_bench: list[str] = field(default_factory=list)
     optimal_summary: list[dict] = field(default_factory=list)
@@ -419,6 +430,7 @@ class SignupPlan:
             "min_slack_fraction": self.min_slack_fraction,
             "budget_seconds": self.budget_seconds,
             "safety_min_slack": self.safety_min_slack,
+            "safety_min_probability": self.safety_min_probability,
             "trials": [
                 {
                     "skill": t.skill,
@@ -887,6 +899,22 @@ def _safety_swaps(
         banking = [q for p, q in zip(pts, slack) if p > 0]
         return min(banking) if banking else None
 
+    def _probs(pts: list[int]) -> list[Optional[float]]:
+        """P(holds) per trial for the CURRENT parties — reporting only.
+
+        Costs one race per banking trial (four in total) and is called once per
+        accepted move, never inside _best_move's candidate scan. The search's cost
+        is therefore unchanged; only the description of what it chose gets richer.
+        """
+        return [
+            scorer.party_probability(s, parties[s]) if pts[s] > 0 else None
+            for s in range(S)
+        ]
+
+    def _min_prob(probs: list[Optional[float]]) -> Optional[float]:
+        live = [q for q in probs if q is not None]
+        return min(live) if live else None
+
     def _best_move(movable: list[int], pts: list[int], slack: list[float]) -> Optional[tuple]:
         """The best points-EQUAL move that strictly raises the thinnest margin."""
         base_points, base_min, _ = _slack_key(pts, slack)
@@ -960,6 +988,9 @@ def _safety_swaps(
             if best_move is None:
                 break  # no permitted move lifts the thinnest trial
 
+            # Snapshot the odds BEFORE mutating parties below.
+            probs_before = _probs(pts)
+
             # Apply, then describe the move by the margins it actually moved.
             touched: list[int] = []
             if best_move[0] == "R":
@@ -1007,10 +1038,19 @@ def _safety_swaps(
                 )
 
             new_pts, new_slack = _state()
+            probs_after = _probs(new_pts)
             swap.min_before = current_min
             swap.min_after = _min_margin(new_pts, new_slack) or 0.0
+            swap.min_prob_before = _min_prob(probs_before)
+            swap.min_prob_after = _min_prob(probs_after)
             swap.trial_changes = [
-                {"skill": draw[s], "before": slack[s], "after": new_slack[s]}
+                {
+                    "skill": draw[s],
+                    "before": slack[s],
+                    "after": new_slack[s],
+                    "prob_before": probs_before[s],
+                    "prob_after": probs_after[s],
+                }
                 for s in sorted(set(touched))
                 if new_slack[s] != slack[s]
             ]
@@ -1203,6 +1243,15 @@ def plan(
     safety_swaps, safety_min_slack = _safety_swaps(
         enforced, scorer, cap, draw, members, free_pool
     )
+    # Where the swap ladder ends, in odds. The last accepted move already knows it;
+    # with no moves the answer is simply where the shipped lineup already stands, so
+    # the "with the safety swaps" comparison degenerates to "no change" rather than
+    # to a missing value.
+    trial_probs = [t.clear_probability for t in trials if t.clear_probability is not None]
+    safety_min_probability = (
+        safety_swaps[-1].min_prob_after if safety_swaps
+        else (min(trial_probs) if trial_probs else None)
+    )
 
     now = datetime.now(timezone.utc)
     return SignupPlan(
@@ -1222,6 +1271,7 @@ def plan(
         min_slack_fraction=min_slack_fraction,
         budget_seconds=config.TRIAL_TIME_BUDGET_SECONDS,
         safety_min_slack=safety_min_slack,
+        safety_min_probability=safety_min_probability,
         trials=trials,
         enforced_bench=enforced_bench,
         optimal_summary=optimal_summary,
