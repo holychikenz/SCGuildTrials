@@ -212,7 +212,23 @@ class Sources:
                                    # the honest shape is one-sided — see the note
                                    # in _prepare_perturbed
     gear_slots: bool = False       # ignore the three half-widths and draw the
-                                   # ACTUAL item set from research/item-stats.json,
+                                   # ACTUAL item set from research/item-stats.json
+    # --- COMMUNITY BUFF MAGNITUDES ------------------------------------------
+    # The three live event buffs, each flagged a WORKING ASSUMPTION in config:
+    #   gathering  -> +0.20 doubling chance   (COMMUNITY_GATHERING_BUFF_DOUBLE)
+    #   production -> +0.15 efficiency        (COMMUNITY_PRODUCTION_EFFICIENCY_BUFF)
+    #   enhancing  -> +0.20 action speed      (COMMUNITY_ENHANCING_SPEED_BUFF)
+    # Half-widths below are in ABSOLUTE stat points, as for gear.
+    #
+    # THESE ARE COMMON-MODE, AND THAT IS THE WHOLE POINT. Every gear term above is
+    # drawn per member, so a party of 24 averages it down by ~sqrt(k_eff) and even
+    # a generous +/-10pp lands at ~1% of party rate. A buff is ONE draw applied to
+    # EVERYONE, so it passes through to the party rate undiluted. Point for point,
+    # a buff uncertainty is worth several times a gear uncertainty, and the ranking
+    # in the variance budget cannot be read off the half-widths alone.
+    buff_gathering: float = 0.0    # uncertainty on the +0.20 doubling chance
+    buff_production: float = 0.0   # uncertainty on the +0.15 efficiency
+    buff_enhancing: float = 0.0    # uncertainty on the +0.20 enhancing speed,
                                    # respecting slot exclusivity
     q_signed: float = 1.0     # turnout probability for a member who volunteered
     q_filled: float = 1.0     # turnout probability for an optimizer-filled seat
@@ -326,6 +342,7 @@ def _prepare_perturbed(
     building_levels: int,
     level_drift: int,
     pool: Optional[list[int]] = None,
+    buffs: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> Optional[tuple[int, float, int, float, int, float]]:
     """Mirror of ``trials._prepare_member`` with per-member/per-slot perturbation.
 
@@ -396,12 +413,16 @@ def _prepare_perturbed(
     efficiency = 0.0
     success_bonus = 0.0
 
+    # Common-mode buff shifts, drawn ONCE per replicate by the caller and applied
+    # identically to every member — which is exactly why they do not average down.
+    buff_gathering, buff_production, buff_enhancing = buffs
+
     if skill == "Enhancing":
         success_bonus += _stat(
             TOOL_SUCCESS_CELESTIAL if tool else TOOL_SUCCESS_HOLY, enh(ASSUMED_GEAR)
         )
         speed += _stat(GLOVES_ENHANCING_SPEED, enh(ASSUMED_GEAR))
-        speed += config.COMMUNITY_ENHANCING_SPEED_BUFF
+        speed += config.COMMUNITY_ENHANCING_SPEED_BUFF + buff_enhancing
         speed += config.HOUSE_ENHANCING_SPEED_PER_LEVEL * house_level
     else:
         speed += _stat(
@@ -410,7 +431,9 @@ def _prepare_perturbed(
         efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
         efficiency += config.HOUSE_EFFICIENCY_PER_LEVEL * house_level
         if skill not in config.GATHERING_SKILLS:
-            efficiency += config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF
+            efficiency += (
+                config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF + buff_production
+            )
 
     if top:
         efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
@@ -457,7 +480,7 @@ def _prepare_perturbed(
     # gatheringQuantity is a GATHERING-family mechanic; production and enhancing
     # parties carry no doubling term at all, so there is nothing for it to move.
     if trials.double_chance(skill) > 0:
-        double = max(1.0, double + gather_bonus)
+        double = max(1.0, double + gather_bonus + buff_gathering)
 
     return (
         level,
@@ -633,9 +656,19 @@ def run_trial(
         # source therefore contributes a favourable BIAS as well as variance,
         # which is exactly why bias is reported separately from sigma.
         drift = rng.randint(0, src.level_common) if src.level_common else 0
+        # ONE draw per replicate, shared by the whole party — a community buff is
+        # a property of the world, not of a member.
+        buffs = (
+            rng.uniform(-src.buff_gathering, src.buff_gathering)
+            if src.buff_gathering else 0.0,
+            rng.uniform(-src.buff_production, src.buff_production)
+            if src.buff_production else 0.0,
+            rng.uniform(-src.buff_enhancing, src.buff_enhancing)
+            if src.buff_enhancing else 0.0,
+        )
         prepared = [
             p for p in (
-                _prepare_perturbed(s, src, rng, building_levels, drift, pool)
+                _prepare_perturbed(s, src, rng, building_levels, drift, pool, buffs)
                 for s in seats
             ) if p is not None
         ]
