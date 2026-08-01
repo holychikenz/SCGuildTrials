@@ -463,6 +463,136 @@ def time_slack_fraction(result: "TrialResult") -> float:
     return 1.0 - seconds / config.TRIAL_TIME_BUDGET_SECONDS
 
 
+def _normal_cdf(z: float) -> float:
+    """Standard normal CDF, via ``math.erf`` — no SciPy dependency in the build."""
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _variance_rate(prepared: list[tuple], tier: int) -> float:
+    """Party work-VARIANCE per second at ``tier`` — the aleatoric term.
+
+    Each action is ``X = W * S * (1 + D)`` with ``S ~ Bern(p)`` the success roll
+    and ``D ~ Bern(delta)`` the doubling roll, independent, so
+
+        E[X]   = W * p * (1 + delta)              (exactly the shipped rate model)
+        E[X^2] = W^2 * p * (1 + 3*delta)          since E[(1+D)^2] = 1 + 3*delta
+        Var[X] = W^2 * [ p(1+3d) - p^2 (1+d)^2 ]  (-> W^2 p(1-p) when d = 0)
+
+    The action COUNT is deterministic — ``action_seconds`` is fixed, so a member
+    performs exactly tau/a actions in time tau and only the payload is random —
+    which is the textbook setting for the CLT, and why this is a variance RATE
+    that adds across members exactly as the drift does.
+
+    ``prepared`` carries ``double = 1 + delta``, hence ``(1 + 3*delta)`` as
+    ``3*double - 2``.
+
+    FLAGGED ASSUMPTION: efficiency contributes no variance — the capture in
+    research/trial-messages.md shows the engine folding it deterministically into
+    progressPerAction. If a later capture shows it behaving as an instant-repeat
+    CHANCE, a compound-Poisson term belongs here.
+    """
+    total = 0.0
+    for level, success_bonus, building, double, wp, asec in prepared:
+        p = success(level, tier, success_bonus, building)
+        total += wp * wp * (p * (3.0 * double - 2.0) - p * p * double * double) / asec
+    return total
+
+
+def clear_sigma(
+    party: list[MemberRow],
+    skill: str,
+    tier: int,
+    building_levels: Optional[int] = None,
+) -> Optional[float]:
+    """Aleatoric sd of ``ln(clear time)`` for banking ``tier`` — the dice alone.
+
+    First passage to a work level ``Y`` under drift ``R`` and variance rate ``V``
+    is inverse-Gaussian with mean ``Y/R`` and variance ``Y*V/R^3`` (the standard
+    Wald result). Tiers are raced sequentially and are independent to first order,
+    so the variances accumulate and
+
+        sigma_T = sqrt( sum_{t<=T} Target(t) * V_t / R_t^3 ) / tau_T
+
+    is the sd of the LOG clearing time — which is what the risk bridge needs,
+    because a multiplicative rate shock is multiplicative on the clock too.
+
+    DELIBERATELY NOT COMPUTED INSIDE :func:`simulate_race`. The optimizer calls
+    that ~87k times per pipeline and this would ride the hot loop for no benefit;
+    the probability is wanted for the handful of races that actually get rendered,
+    so it is a separate call made once per shipped trial.
+
+    Returns None when the party cannot move at all.
+
+    VALIDATED against a direct action-level roll (src/simulate_trial.py): the
+    formula reproduces the simulated sd to within 0.2% at the marginal tier, and
+    tracks it across all thirteen tiers of the live Foraging lineup.
+    """
+    if tier < 1:
+        return None
+    if building_levels is None:
+        building_levels = guild_building_skill_levels(skill)
+    prepared = [
+        p
+        for p in (_prepare_member(m, skill, building_levels) for m in party)
+        if p is not None
+    ]
+    if not prepared:
+        return None
+
+    n = len(party)
+    cumulative = 0.0
+    variance = 0.0
+    for t in range(1, tier + 1):
+        rate = sum(
+            success(level, t, success_bonus, building) * double * wp / asec
+            for level, success_bonus, building, double, wp, asec in prepared
+        )
+        if rate <= 0:
+            return None
+        target = effective_target(t, n, config.TARGET_SCALE)
+        cumulative += target / rate
+        variance += target * _variance_rate(prepared, t) / rate ** 3
+    if cumulative <= 0:
+        return None
+    return math.sqrt(variance) / cumulative
+
+
+def clear_probability(
+    party: list[MemberRow],
+    skill: str,
+    result: "TrialResult",
+    building_levels: Optional[int] = None,
+) -> Optional[float]:
+    """P(this lineup actually banks the tier it is credited with).
+
+    ``Phi( -ln(1 - m) / sigma )`` where ``m`` is :func:`time_slack_fraction` and
+    ``sigma`` combines the party's own aleatoric sigma (:func:`clear_sigma`) with
+    ``config.RISK_SIGMA_SYSTEMATIC`` in quadrature. See that constant for what the
+    systematic term covers, what it deliberately excludes, and how both were
+    validated.
+
+    The number is CONDITIONAL on the assigned party turning up — this tool advises
+    where to go and when to switch, not whether to appear.
+
+    Returns None when no tier was banked: a trial that scored nothing has no
+    margin to hold, and must never be rendered as a probability of anything.
+    """
+    tier = result.tier_reached
+    if tier < 1:
+        return None
+    sigma_dice = clear_sigma(party, skill, tier, building_levels)
+    if sigma_dice is None:
+        return None
+    sigma = math.hypot(sigma_dice, config.RISK_SIGMA_SYSTEMATIC)
+    if sigma <= 0:
+        return 1.0
+    margin = time_slack_fraction(result)
+    # -ln(1 - m) is the log of the slowdown the party can absorb. Guard the log
+    # against a margin of exactly 1 (an instantaneous clear), which cannot arise
+    # from a real race but would otherwise divide by zero.
+    return _normal_cdf(-math.log(max(1e-12, 1.0 - margin)) / sigma)
+
+
 def points_for_tier(tier_reached: int) -> int:
     """points(T) = 100 + 100*T for T >= 1, else 0.
 
@@ -517,6 +647,10 @@ class TrialResult:
     points: int
     roster: list[RosterEntry] = field(default_factory=list)
     timeline: list[TierStep] = field(default_factory=list)
+    # P(this tier actually holds), filled in by run_week for the SHIPPED races
+    # only — see clear_probability for why simulate_race does not compute it.
+    # None means "not computed" or "no tier banked"; the page renders both as "—".
+    clear_probability: Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -1021,6 +1155,12 @@ def run_week(
         simulate_race(assignment.parties[skill], skill, target_scale)
         for skill in skills
     ]
+    # Attach the risk number ONCE per shipped race. The optimizer has finished by
+    # now, so this is four calls rather than the ~87k the hot loop makes.
+    for skill, result in zip(skills, trials):
+        result.clear_probability = clear_probability(
+            assignment.parties[skill], skill, result
+        )
     # How many levels of each trial's guild building would buy another tier, and
     # when does that spend pay for itself? The parties above are held fixed, so
     # each answer is an upper bound on the cost (see probe_building_upgrade).

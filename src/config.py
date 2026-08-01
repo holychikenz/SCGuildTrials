@@ -348,6 +348,50 @@ OPT_SLACK_MAX_ITERS = 100
 SLACK_THIN = 0.05
 SLACK_OK = 0.15
 
+# --- Turning the margin into a PROBABILITY (src.trials.clear_probability) ----
+# A margin is an ordinal comfort; officers plan against odds. Under a
+# multiplicative shock on the party rate (R~ = R*exp(eps)) the clearing time is
+# tau*exp(-eps), so
+#
+#     P(tier holds) = Phi( ln(BUDGET / tau_T) / sigma ) = Phi( -ln(1 - m) / sigma )
+#
+# The margin enters as the LOG of the slowdown the party can absorb, because the
+# shock is multiplicative. Two pieces make up sigma, added in quadrature:
+#
+#  1. ALEATORIC — the per-action dice, derived exactly per party and per tier by
+#     trials.clear_sigma (Wald first passage). It is NOT a constant: it runs
+#     ~0.014-0.019 across the live lineups and rises with the tier as success
+#     rates fall toward SUCCESS_FLOOR.
+#  2. SYSTEMATIC — everything else, and the constant below.
+#
+# RISK_SIGMA_SYSTEMATIC comes from the calibration campaign (src/calibrate.py,
+# live SC lineup 2026-08-01): the full budget measured sigma = 0.0231 at the
+# marginal tier against an aleatoric 0.0190, so the systematic remainder is
+# sqrt(0.0231^2 - 0.0190^2) = 0.0131. It covers unmodelled neck/ring/earring gear
+# (the sheet has no column for them), enhancement levels away from the assumed +7,
+# mis-ticked tool checkboxes, and house-level slips.
+#
+# DELIBERATELY EXCLUDED, and each for a stated reason:
+#   * turnout       — this tool says WHERE to go and WHEN to switch, not IF a
+#                     member shows up. The published number is conditional on the
+#                     assigned party turning up.
+#   * sheet staleness — one-sided (levels only rise), so excluding it can only
+#                     make the answer conservative.
+#   * model form    — the work formulas are confirmed, not guessed. Where a
+#                     constant IS a placeholder (GEAR_DOUBLE_CHANCE, the
+#                     COMMUNITY_* buffs) it moves the answer by a whole TIER, not
+#                     by a few points of probability, so it belongs in a scenario
+#                     rather than smeared into sigma.
+#
+# VALIDATED against an independent action-level simulation (src/simulate_trial.py,
+# 20 000 runs rolling every die): predicted 0.8309 vs realised 0.8407 on the
+# thinnest live lineup, with the entire 1-point residual accounted for by the
+# simulator's own O(dt) grid bias. Coverage across a deadline sweep: mean absolute
+# error 0.014. The published number over-covers by design.
+#
+# Set to 0.0 to publish the aleatoric floor alone (a one-line change).
+RISK_SIGMA_SYSTEMATIC = 0.0131
+
 # --- Safety swaps on the sign-up page ---------------------------------------
 # The advisory, POINTS-PRESERVING counterpart to the sign-up page's existing points
 # swaps (signup._safety_swaps). It admits a move only when the total points are

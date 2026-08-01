@@ -68,6 +68,7 @@ from .trials import (
     RosterEntry,
     rate,
     simulate_race,
+    clear_probability,
     tier_clear_seconds,
     time_slack_fraction,
 )
@@ -284,6 +285,11 @@ class SignupTrial:
     clear_seconds: Optional[float] = None
     # Unspent share of the budget at that moment, in [0, 1); 0.0 when no tier held.
     slack_fraction: float = 0.0
+    # The same fact as odds: P(this lineup actually banks the tier it is credited
+    # with), conditional on the assigned party turning up. None when no tier held.
+    # A margin is ordinal; officers plan against probabilities, and the mapping is
+    # violently non-linear near the buzzer — see trials.clear_probability.
+    clear_probability: Optional[float] = None
 
 
 @dataclass
@@ -422,6 +428,7 @@ class SignupPlan:
                     "open_seats": t.open_seats,
                     "clear_seconds": t.clear_seconds,
                     "slack_fraction": t.slack_fraction,
+                    "clear_probability": t.clear_probability,
                     "roster": [asdict(r) for r in t.roster],
                 }
                 for t in self.trials
@@ -1160,6 +1167,9 @@ def plan(
                 # simulate_race result already computed just above.
                 clear_seconds=tier_clear_seconds(result),
                 slack_fraction=time_slack_fraction(result),
+                # The margin as odds. One extra pass over the party per trial
+                # (four in total) — this is well outside the optimizer's hot loop.
+                clear_probability=clear_probability(party, skill, result),
             )
         )
 
@@ -1243,6 +1253,9 @@ def optimal_from_week(week) -> tuple[int, list[dict]]:
             "party_size": t.party_size,
             "clear_seconds": tier_clear_seconds(t),
             "slack_fraction": time_slack_fraction(t),
+            # Already attached by trials.run_week for the shipped races, so this
+            # is a read rather than a recomputation.
+            "clear_probability": t.clear_probability,
         }
         for t in week.trials
     ]
