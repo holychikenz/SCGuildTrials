@@ -195,6 +195,27 @@ Shrinking the same party one member at a time shows the second identity:
 | 14 | 11 | **0.0162** | 0.031 | **1200** | 1201.56 |
 | 13 | 10 | 0.2836 | 0.963 | 1100 | 1148.13 |
 
+> ### ⚠ CORRECTION — this subsection's conclusion is WRONG, and the live run refuted it
+>
+> **Implemented and measured 2026-08-11.** The claim below that "the new objective walks
+> off the buzzer by itself" is false. The minimum margin did not improve from 8.1% /
+> 24.1% — it **collapsed to 0.09% and 0.04%**, with three of eight live trials banking
+> their tier 1–4 seconds inside the hour at `P(holds) ≈ 0.51`.
+>
+> The first step of the reasoning is sound: *within* a tier, partial credit does price
+> the margin linearly. What it misses is that the **residual step at the boundary is
+> still worth `(1−ρ)·100 = 50 points`**, which dwarfs any margin the search could buy
+> by standing still. So the objective does not walk off the buzzer; it walks off *this*
+> tier's buzzer and straight onto the *next* one's, and every extra tier it finds is
+> almost by construction held by seconds.
+>
+> That is nevertheless the **right** gamble — falling short lands on the tier below with
+> ~99% partial credit, so reaching wins on expectation by ~24 points — and it is what
+> earned Lactose Intolerance **+200 deterministic points**. But it made the
+> deterministic score an optimistic estimate, which is why Phase 7 (`E[points]`) was
+> promoted from optional to shipped. Full treatment, with the measured table, in
+> `research/partial-tier-credit.md` §9.1–§9.3.
+
 `f = 3600·margin / ttc(T+1)`, so **partial credit is a linear read-out of the very time
 margin `optimizer._refine_slack` was invented to protect**. At N=14 the lineup holds
 tier 11 by 1.6% — 58 seconds — and scores *identically* to the comfortable N=20 lineup
