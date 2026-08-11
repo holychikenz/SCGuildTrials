@@ -767,6 +767,92 @@ GUILD_BUILDING_POINT_COSTS = {
     16: 45075,  17: 60850,   18: 82150,   19: 110900,  20: 149725,
 }
 
+# --- Guild shrines (guild-wide SPEED / EFFICIENCY buffs) ---------------------
+# NEW 2026-08-11: "Shrine buffs now apply inside guild Trials". Before the patch the
+# shrines were irrelevant here and config said so — "plus the force/tempo shrines —
+# none of which grants a skill level" — which was true and beside the point: they do
+# not grant LEVELS, they grant efficiency and action speed, and those enter the race
+# just as surely.
+#
+# Authoritative game data (cowstuff milkyway_client_info.json -> guildBuffDetailMap,
+# game version v1.20260715.0). Each shrine carries TWO buffs, one flagged
+# isCombat=true and one false; only the skilling side is modelled. Values follow the
+# same in-game rule as the buildings, flatBoost + (level-1)*flatBoostLevelBonus with
+# the two equal, so the grant is simply per_level * level. Verbatim example:
+#     {"hrid": "/guild_buffs/force_skilling", "shrineHrid": "/guild_shrines/force",
+#      "isCombat": false,
+#      "buffs": [{"typeHrid": "/buff_types/efficiency",
+#                 "flatBoost": 0.005, "flatBoostLevelBonus": 0.005}]}
+#
+# ONLY TWO OF THE FIVE REACH THE TIER RACE, and getting this wrong in either
+# direction would be a silent modelling error:
+#   force   -> /buff_types/efficiency     -> work_power        MODELLED
+#   tempo   -> /buff_types/action_speed   -> action_seconds    MODELLED
+#   rarity  -> /buff_types/rare_find      -> LOOT only         not modelled
+#   spirit  -> /buff_types/essence_find   -> LOOT only         not modelled
+#   scholar -> /buff_types/wisdom         -> XP only           not modelled
+# The three unmodelled entries are listed anyway, with their post-patch values, so
+# that "we considered it and it does not affect the race" is on the record rather
+# than inferred from absence.
+#
+# THE PATCH NOTES ARE THE CROSS-CHECK. "Rare Find 1% -> 1.5% per level, Essence Find
+# 2% -> 3% per level" matches the pre-patch dump's rare_find 0.01 and essence_find
+# 0.02 exactly, which (a) confirms the per-level reading above and (b) tells us Force
+# and Tempo were NOT re-tuned — only admitted into trials. So the 0.005 figures are
+# current even though the dump predates the patch.
+GUILD_SHRINE_NAMES = {
+    "force": "Shrine of Force",
+    "tempo": "Shrine of Tempo",
+    "spirit": "Shrine of Spirit",
+    "rarity": "Shrine of Rarity",
+    "scholar": "Shrine of Scholar",
+}
+# shrine key -> (in-game buff type, value per shrine level, model channel or None).
+# The channel is what trials.guild_shrine_bonuses dispatches on; None means the buff
+# is real but does not touch the tier race.
+GUILD_SHRINE_SKILLING_BUFFS = {
+    "force": ("efficiency", 0.005, "efficiency"),
+    "tempo": ("action_speed", 0.005, "speed"),
+    "rarity": ("rare_find", 0.015, None),
+    "spirit": ("essence_find", 0.03, None),
+    "scholar": ("wisdom", 0.005, None),
+}
+GUILD_SHRINE_MAX_LEVEL = 20
+# Live levels (guild_updated capture 2026-07-22, Survey Corps id 4): the guild's
+# guildBuildingLevelMap holds "/guild_shrines/force": 1 and "/guild_shrines/tempo": 1
+# and nothing else. ONE map serves both guilds, exactly as GUILD_BUILDING_LEVELS does
+# and with the same caveat: split it per guild the moment SC and LI diverge.
+#
+# OPEN QUESTION, recorded in research/guild-shrines.md §6: the shrine LEVEL (bought
+# with guild points, and what this map holds) and the BUFF level (bought with guild
+# tokens + credits, on each guildBuffDetailMap entry's own levelCosts ladder) are
+# separate. It is the buff level that ought to multiply the values above, and no
+# capture this repo holds records it. The patch's new [View Buffs] button is the
+# intended resolution. Until then this map is the best available reading and it errs
+# low, since the buff level cannot exceed the shrine level.
+GUILD_SHRINE_LEVELS = {
+    "force": 1,
+    "tempo": 1,
+    "spirit": 0,
+    "rarity": 0,
+    "scholar": 0,
+}
+# Guild-point cost to REACH each shrine level (guildShrineDetailMap guildPointCosts,
+# verbatim; all five shrines share one ladder). Note it is exactly DOUBLE the
+# building ladder at every level — which, with the measured effect being a fraction
+# of a tier even at level 20, is what makes shrines a poor guild-point investment
+# beside buildings. See research/guild-shrines.md §5 for the numbers.
+GUILD_SHRINE_POINT_COSTS = {
+    1: 1000,     2: 1350,     3: 1800,     4: 2450,     5: 3300,
+    6: 4500,     7: 6050,     8: 8150,     9: 11050,   10: 14900,
+    11: 20100,  12: 27150,   13: 36650,   14: 49450,   15: 66800,
+    16: 90150,  17: 121700,  18: 164300,  19: 221800,  20: 299450,
+}
+# Master switch for the patch note "Shrine buffs now apply inside guild Trials".
+# False restores the pre-patch race exactly (bit-identical rates), which is also the
+# one-line rollback if a capture ever shows the buffs are excluded after all.
+SHRINE_BUFFS_APPLY_IN_TRIALS = True
+
 # --- Upgrade payback ("weeks to return") -------------------------------------
 # A building upgrade is a ONE-OFF spend of guild points that only earns anything
 # back in the weeks its own skill is drawn. The weekly draw picks 4 of the 10

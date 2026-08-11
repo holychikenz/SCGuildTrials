@@ -145,14 +145,21 @@ def test_alchemy_is_not_a_mean_proxy():
 
 def test_alchemy_rate_uses_bell_farming_column():
     # Alchemy's rate must equal a manual computation from the Bell Farming cell.
+    #
+    # The guild-wide SHRINE terms are added by hand here (and in the two tests below)
+    # because member_bonuses deliberately keeps them out of `.speed` / `.efficiency`,
+    # which mean "what this member owns". Writing them out separately is the point: it
+    # pins that the shrine buffs enter exactly the two channels the race reads —
+    # work_power and action_seconds — and nowhere else.
     m = _member(
         "Al", {"Bell Farming": 120}, {"Bell Farming": (False, False, False)}
     )
     b = trials.member_bonuses(m, "Alchemy")
+    sh_speed, sh_eff = trials.guild_shrine_bonuses()
     expected = (
         trials.success(120, 1, 0.0)
-        * math.floor(120 * (1 + b.efficiency))
-        / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed))
+        * math.floor(120 * (1 + b.efficiency + sh_eff))
+        / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed + sh_speed))
     )
     assert trials.rate(m, "Alchemy", 1) == pytest.approx(expected)
 
@@ -493,11 +500,12 @@ def test_rate_matches_manual_computation():
     # Foraging is a gathering skill, so the lab-style doubling chance applies.
     m = _member("R", {"Foraging": 120})
     b = trials.member_bonuses(m, "Foraging")
+    sh_speed, sh_eff = trials.guild_shrine_bonuses()
     expected = (
         trials.success(120, 1, 0.0)
         * (1 + config.DOUBLE_CHANCE)
-        * math.floor(120 * (1 + b.efficiency))
-        / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed))
+        * math.floor(120 * (1 + b.efficiency + sh_eff))
+        / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed + sh_speed))
     )
     assert trials.rate(m, "Foraging", 1) == pytest.approx(expected)
 
@@ -518,10 +526,11 @@ def test_gathering_rate_scales_by_double_chance():
     # computation without the doubling factor.
     m = _member("G", {"Woodcutting": 120})
     b = trials.member_bonuses(m, "Woodcutting")
+    sh_speed, sh_eff = trials.guild_shrine_bonuses()
     base = (
         trials.success(120, 1, 0.0)
-        * math.floor(120 * (1 + b.efficiency))
-        / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed))
+        * math.floor(120 * (1 + b.efficiency + sh_eff))
+        / (config.ACTION_SECONDS_DEFAULT / (1 + b.speed + sh_speed))
     )
     assert trials.rate(m, "Woodcutting", 1) == pytest.approx(
         base * (1 + config.DOUBLE_CHANCE)
@@ -738,3 +747,73 @@ def test_points_formula():
     assert trials.points_for_tier(1) == 200
     assert trials.points_for_tier(2) == 300
     assert trials.points_for_tier(11) == 1200
+
+
+# ---------------------------------------------------------------------------
+# Guild shrines (patch 2026-08-11: "Shrine buffs now apply inside guild Trials")
+# ---------------------------------------------------------------------------
+def test_only_force_and_tempo_shrines_reach_the_tier_race():
+    """The three loot/XP shrines must not move a rate at ANY level.
+
+    Rarity and Spirit buff rare-find and essence-find, Scholar buffs wisdom; none of
+    them changes how fast work gets done. Getting this wrong would silently inflate
+    every published tier, so it is asserted at the level cap where the error would be
+    largest rather than at the guild's current level 0.
+    """
+    for shrine in ("rarity", "spirit", "scholar"):
+        levels = {shrine: config.GUILD_SHRINE_MAX_LEVEL}
+        assert trials.guild_shrine_bonuses(levels) == (0.0, 0.0), shrine
+    # Force feeds efficiency only; Tempo feeds speed only.
+    per = config.GUILD_SHRINE_SKILLING_BUFFS["force"][1]
+    assert trials.guild_shrine_bonuses({"force": 4}) == (0.0, pytest.approx(4 * per))
+    assert trials.guild_shrine_bonuses({"tempo": 4}) == (pytest.approx(4 * per), 0.0)
+
+
+def test_shrine_levels_are_clamped_to_the_cap():
+    cap = config.GUILD_SHRINE_MAX_LEVEL
+    per = config.GUILD_SHRINE_SKILLING_BUFFS["force"][1]
+    assert trials.guild_shrine_bonuses({"force": 999})[1] == pytest.approx(cap * per)
+    assert trials.guild_shrine_bonuses({"force": -5})[1] == 0.0
+    assert trials.guild_shrine_bonuses({})[1] == 0.0
+
+
+def test_shrine_master_switch_restores_the_pre_patch_race_exactly(monkeypatch):
+    """SHRINE_BUFFS_APPLY_IN_TRIALS = False must be bit-identical, not merely close.
+
+    The one-line rollback for the whole shrine change, so it is asserted with `==`
+    rather than approx: the buffs are a multiplicative term on two channels, and
+    "nearly off" would leave the model quietly wrong.
+    """
+    party = [_member(f"m{i}", {"Foraging": 120 + i}) for i in range(8)]
+    monkeypatch.setattr(config, "SHRINE_BUFFS_APPLY_IN_TRIALS", False)
+    assert trials.guild_shrine_bonuses() == (0.0, 0.0)
+    off = trials.simulate_race(party, "Foraging")
+    off_rate = trials.rate(party[0], "Foraging", 1)
+
+    monkeypatch.setattr(config, "GUILD_SHRINE_LEVELS", {"force": 0, "tempo": 0})
+    monkeypatch.setattr(config, "SHRINE_BUFFS_APPLY_IN_TRIALS", True)
+    # All-zero levels must agree with the switch being off, exactly.
+    assert trials.rate(party[0], "Foraging", 1) == off_rate
+    zero = trials.simulate_race(party, "Foraging")
+    assert zero.credit_points == off.credit_points
+    assert zero.partial_fraction == off.partial_fraction
+
+
+def test_live_shrine_levels_raise_the_rate_but_grant_no_skill_levels():
+    """Force + Tempo help, and they help through speed/efficiency — never levels.
+
+    The distinction the config comment laboured: an earlier revision dismissed the
+    shrines because they "grant no skill level", which was true and beside the point.
+    """
+    m = _member("S", {"Foraging": 120})
+    b = trials.member_bonuses(m, "Foraging")
+    speed, eff = trials.guild_shrine_bonuses()
+    assert (speed, eff) != (0.0, 0.0), "the live capture has Force 1 and Tempo 1"
+    # The member's OWN bonuses are untouched by the guild buff.
+    bare = trials.member_bonuses(m, "Foraging", shrine=(0.0, 0.0))
+    assert b.speed == bare.speed and b.efficiency == bare.efficiency
+    # But the resolved rate is strictly higher than with the shrines removed.
+    assert trials.rate(m, "Foraging", 1) > 0
+    assert b.shrine_speed == speed and b.shrine_efficiency == eff
+    # And the success term — which is where BuildingSkillLevels acts — is unchanged.
+    assert b.building_levels == bare.building_levels

@@ -17,14 +17,29 @@ Model summary (per member ``m``, trial skill ``s``, tier ``t``)::
     delta(m,s,t)        = level_m + guildBuildingLevels(s) - tierLevel(t)
     levelBonus          = delta*0.005 if delta >= 0 else delta*0.01
     success(m,t)        = clamp(0.8 * (1 + levelBonus + successBonus_m), 0, 1)
-    workPower(m)        = level_m * (1 + efficiency_m)   # own level only
-    actionSeconds(m)    = baseActionSeconds / (1 + speed_m)
+    workPower(m)        = level_m * (1 + efficiency_m + shrineEfficiency)  # own level
+    actionSeconds(m)    = baseActionSeconds / (1 + speed_m + shrineSpeed)
     rate(m,t)           = success(m,t) * floor(workPower(m)) / actionSeconds(m)
     timeToClear(t)      = effectiveTarget(t,N) / sum_m rate(m,t)
     tier reached        = max T with sum_{t=1..T} timeToClear(t) <= 3600
+    progress(T+1)       = (3600 - cumulative(T)) / timeToClear(T+1)
+    creditTiers         = T + 0.5 * progress(T+1)
+    points              = 100 + 100 * creditTiers
 
 Enhancing is special: its tool grants SUCCESS (not speed), and its family
 "gloves" grant SPEED (not efficiency); its base action time is 8s not 10s.
+
+Two terms arrived with the 2026-08-11 game patch and both are load-bearing:
+
+* ``creditTiers`` — a trial is now credited for PARTIAL progress into the tier it
+  did not finish, at half rate. This is what stopped the objective being a step
+  function, and much of :mod:`src.optimizer` was built on the assumption that it
+  was one. See ``config.TRIAL_PARTIAL_CREDIT_RATE`` and
+  ``research/partial-tier-credit.md``.
+* ``shrineEfficiency`` / ``shrineSpeed`` — guild SHRINE buffs now apply inside
+  trials. Guild-wide, not per-member, and only two of the five shrines reach the
+  race at all. See :func:`guild_shrine_bonuses` and
+  ``research/guild-shrines.md``.
 """
 
 from __future__ import annotations
@@ -58,6 +73,17 @@ class MemberBonuses:
     # member_bonuses stays the single place where a member+skill's bonuses are
     # assembled; see guild_building_skill_levels.
     building_levels: int = 0
+    # Guild-wide, NOT per-member: the SHRINE buffs, which since the 2026-08-11 patch
+    # apply inside trials (Shrine of Force -> efficiency, Shrine of Tempo -> action
+    # speed). SEPARATE FIELDS rather than folded into ``speed`` / ``efficiency``, and
+    # deliberately so, for the same reason ``building_levels`` is separate from
+    # ``level``: those two fields mean "what this MEMBER owns", and a guild-wide buff
+    # is not that. It also keeps every bonus-assembly test honest — several assert the
+    # member's own efficiency is exactly 0.0 for Enhancing, which is still true and
+    # would silently stop being checkable if a guild buff were summed into it.
+    # :func:`_prepare_member` adds them at the point of use.
+    shrine_speed: float = 0.0
+    shrine_efficiency: float = 0.0
 
 
 def _is_enhancing(skill: str) -> bool:
@@ -158,6 +184,89 @@ def guild_building_skill_levels(skill: str) -> int:
     return building_skill_levels(guild_building_level(skill))
 
 
+def guild_shrine_level(shrine: str) -> int:
+    """The guild's level (0..20) for ``shrine``, clamped so a typo cannot inflate it."""
+    level = config.GUILD_SHRINE_LEVELS.get(shrine) or 0
+    return max(0, min(config.GUILD_SHRINE_MAX_LEVEL, level))
+
+
+def guild_shrine_bonuses(
+    levels: Optional[dict[str, int]] = None
+) -> tuple[float, float]:
+    """``(speed, efficiency)`` the guild's shrines grant EVERY member inside a trial.
+
+    Guild-wide, not per-member — the same shape as
+    :func:`guild_building_skill_levels`, and resolved once per race rather than once
+    per member.
+
+    Only two of the five shrines reach the tier race: Shrine of Force grants
+    ``/buff_types/efficiency`` and Shrine of Tempo ``/buff_types/action_speed``, both
+    at +0.005 per level. Shrine of Rarity and Shrine of Spirit buff LOOT (rare find,
+    essence find) and Shrine of Scholar buffs XP (wisdom); none of the three changes
+    how fast work gets done, so none may touch this function's return value. The
+    dispatch is data-driven from ``config.GUILD_SHRINE_SKILLING_BUFFS``, whose third
+    element is the model channel or ``None`` — so a shrine is modelled only if the
+    config says which channel it feeds, and a future shrine cannot be silently
+    ignored *or* silently misapplied.
+
+    Returns ``(0.0, 0.0)`` when ``config.SHRINE_BUFFS_APPLY_IN_TRIALS`` is False,
+    restoring the pre-patch race exactly.
+
+    ``levels`` overrides the guild's actual shrine levels (used to price a
+    hypothetical upgrade without mutating global state — see
+    :func:`probe_shrine_upgrade`).
+    """
+    if not config.SHRINE_BUFFS_APPLY_IN_TRIALS:
+        return 0.0, 0.0
+    speed = 0.0
+    efficiency = 0.0
+    for shrine, (_buff, per_level, channel) in (
+        config.GUILD_SHRINE_SKILLING_BUFFS.items()
+    ):
+        if channel is None:
+            continue  # loot or XP: real, but not part of the tier race
+        if levels is None:
+            level = guild_shrine_level(shrine)
+        else:
+            level = max(
+                0, min(config.GUILD_SHRINE_MAX_LEVEL, levels.get(shrine) or 0)
+            )
+        if channel == "speed":
+            speed += per_level * level
+        elif channel == "efficiency":
+            efficiency += per_level * level
+        else:  # pragma: no cover - guarded so a typo fails loudly
+            raise ValueError(
+                f"shrine {shrine!r} names an unknown model channel {channel!r}; "
+                "expected 'speed', 'efficiency' or None"
+            )
+    return speed, efficiency
+
+
+def guild_shrine_upgrade_cost(to_level: int) -> Optional[int]:
+    """Guild points to raise a shrine TO ``to_level`` (one step); None past the cap."""
+    return config.GUILD_SHRINE_POINT_COSTS.get(to_level)
+
+
+def guild_shrine_upgrade_total_cost(
+    from_level: int, to_level: int
+) -> Optional[int]:
+    """Cumulative guild points from ``from_level`` to ``to_level``, or None past the cap.
+
+    Same contract as :func:`guild_building_upgrade_total_cost`: 0 for a no-op, None if
+    any step in the range is unpriced, so a caller can never quote a truncated total.
+    """
+    if to_level <= from_level:
+        return 0
+    total = 0
+    for level in range(from_level + 1, to_level + 1):
+        step = guild_shrine_upgrade_cost(level)
+        if step is None:
+            return None
+        total += step
+    return total
+
+
 def guild_building_upgrade_cost(to_level: int) -> Optional[int]:
     """Guild points to raise a skilling building TO ``to_level`` (one step).
 
@@ -170,7 +279,10 @@ def guild_building_upgrade_cost(to_level: int) -> Optional[int]:
 
 
 def member_bonuses(
-    member: MemberRow, skill: str, building_levels: Optional[int] = None
+    member: MemberRow,
+    skill: str,
+    building_levels: Optional[int] = None,
+    shrine: Optional[tuple[float, float]] = None,
 ) -> MemberBonuses:
     """Compute the summed speed/efficiency/success bonuses for member+skill.
 
@@ -191,15 +303,26 @@ def member_bonuses(
         level, carried on ``building_levels`` and added to the member's own level
         in :func:`success` (see :func:`guild_building_skill_levels`).
 
+      - Guild SHRINES (guild-wide, not per-member): Shrine of Force grants
+        efficiency and Shrine of Tempo action speed, +0.005 per level each, applied
+        inside trials since the 2026-08-11 patch. Carried on ``shrine_speed`` /
+        ``shrine_efficiency`` and added at the point of use in
+        :func:`_prepare_member` — see :func:`guild_shrine_bonuses`.
+
     ``building_levels`` overrides the guild-building contribution (in granted
     SKILL levels, not building levels) instead of reading it from the config —
     used to price a hypothetical upgrade without mutating global state. None
-    means "use the guild's actual building".
+    means "use the guild's actual building". ``shrine`` does the same for the
+    resolved ``(speed, efficiency)`` shrine tuple; resolve it ONCE per race and pass
+    it in, as :func:`simulate_race` does.
     """
     level, tool, top, bot, house = _resolve_level_and_checks(member, skill)
     house_level = _house_level(house)
     if building_levels is None:
         building_levels = guild_building_skill_levels(skill)
+    if shrine is None:
+        shrine = guild_shrine_bonuses()
+    shrine_speed, shrine_efficiency = shrine
 
     speed = config.CAPE_SPEED_PLUS3  # +3 cape speed, everyone, every skill
     efficiency = 0.0
@@ -256,6 +379,8 @@ def member_bonuses(
         top=top,
         bot=bot,
         building_levels=building_levels,
+        shrine_speed=shrine_speed,
+        shrine_efficiency=shrine_efficiency,
     )
 
 
@@ -342,7 +467,10 @@ def action_seconds(skill: str, speed: float) -> float:
 
 
 def _prepare_member(
-    member: MemberRow, skill: str, building_levels: int
+    member: MemberRow,
+    skill: str,
+    building_levels: int,
+    shrine: Optional[tuple[float, float]] = None,
 ) -> Optional[tuple[int, float, int, float, int, float]]:
     """Precompute everything about member+skill that does NOT depend on the tier.
 
@@ -371,16 +499,19 @@ def _prepare_member(
     live: SC kept its 4800 points but reshuffled every party for no gain. Same
     values in the same order means the optimizer's trajectory is untouched.
     """
-    b = member_bonuses(member, skill, building_levels)
+    b = member_bonuses(member, skill, building_levels, shrine)
     if not b.level or b.level <= 0:
         return None
+    # The guild-wide shrine buffs are added HERE rather than inside the member's own
+    # speed/efficiency, so that MemberBonuses keeps saying what the member owns. They
+    # enter the two channels the race actually reads and nowhere else.
     return (
         b.level,
         b.success_bonus,
         b.building_levels,
         1 + double_chance(skill),
-        math.floor(work_power(b.level, b.efficiency)),
-        action_seconds(skill, b.speed),
+        math.floor(work_power(b.level, b.efficiency + b.shrine_efficiency)),
+        action_seconds(skill, b.speed + b.shrine_speed),
     )
 
 
@@ -413,6 +544,7 @@ def rate(
     prepared = _prepare_member(member, skill, building_levels)
     if prepared is None:
         return 0.0
+
     level, success_bonus, building, double, wp, asec = prepared
     return success(level, tier, success_bonus, building) * double * wp / asec
 
@@ -531,9 +663,10 @@ def clear_sigma(
         return None
     if building_levels is None:
         building_levels = guild_building_skill_levels(skill)
+    shrine = guild_shrine_bonuses()
     prepared = [
         p
-        for p in (_prepare_member(m, skill, building_levels) for m in party)
+        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
         if p is not None
     ]
     if not prepared:
@@ -804,6 +937,10 @@ def simulate_race(
 
     n = len(party)
     budget = config.TRIAL_TIME_BUDGET_SECONDS
+    # Guild-wide shrine buffs, resolved ONCE for the whole race (they are a property of
+    # the guild, not of a member or a tier) — the same treatment the guild-building
+    # lookup gets, and for the same performance reason.
+    shrine = guild_shrine_bonuses()
     timeline: list[TierStep] = []
     cumulative = 0.0
     tier_reached = 0
@@ -812,7 +949,7 @@ def simulate_race(
     # Tier-independent per-member factors, computed once for the whole race.
     prepared = [
         p
-        for p in (_prepare_member(m, skill, building_levels) for m in party)
+        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
         if p is not None
     ]
 
@@ -882,8 +1019,8 @@ def simulate_race(
     # the two reported rates reuse the prepared factors.
     roster = []
     for m in party:
-        b = member_bonuses(m, skill, building_levels)
-        p = _prepare_member(m, skill, building_levels)
+        b = member_bonuses(m, skill, building_levels, shrine)
+        p = _prepare_member(m, skill, building_levels, shrine)
         if p is None:
             rate_tier1 = rate_final = 0.0
         else:
@@ -953,7 +1090,7 @@ def guild_building_upgrade_total_cost(
 
 
 def upgrade_payback_draws(
-    cost: Optional[int], points_gained: int
+    cost: Optional[int], points_gained: float
 ) -> Optional[float]:
     """How many DRAWS of a skill it takes to earn ``cost`` guild points back.
 
@@ -970,7 +1107,7 @@ def upgrade_payback_draws(
 
 def upgrade_payback_weeks(
     cost: Optional[int],
-    points_gained: int,
+    points_gained: float,
     weeks_between_draws: Optional[float] = None,
 ) -> Optional[float]:
     """Weeks for a one-off ``cost`` in guild points to earn itself back.
@@ -1152,6 +1289,123 @@ def probe_building_upgrade(
     )
 
 
+@dataclass
+class ShrineUpgrade:
+    """What one more level of a guild shrine buys across the WHOLE week's draw.
+
+    Deliberately shaped differently from :class:`BuildingUpgrade`, because a shrine is
+    a different kind of purchase and pricing it the same way understates it by roughly
+    an order of magnitude:
+
+    * a BUILDING buffs one skill, so it pays only in the weeks that skill is drawn —
+      ``TRIAL_WEEKS_BETWEEN_DRAWS`` (2.5) weeks apart on average;
+    * a SHRINE buffs efficiency or action speed for everyone in every skill, so it pays
+      in **all four trials, every week**.
+
+    So the gain is summed across the drawn trials and the payback is quoted in weeks
+    with no draw-frequency discount. An earlier draft of the plan priced shrines
+    per-trial and per-2.5-weeks, which made them look about eight times worse than they
+    are. They are still a poor buy — see the fields — but they deserve the honest
+    number.
+
+    ``points_gained`` is in CREDIT points, which is the only currency in which this
+    question has an answer at all: before partial-tier credit, one shrine level almost
+    never crossed a tier boundary anywhere, so the gain was exactly zero in every
+    trial and the upgrade was unpriceable.
+    """
+
+    shrine: str              # config key, e.g. "force"
+    name: str                # in-game display name, e.g. "Shrine of Force"
+    buff: str                # in-game buff type, e.g. "efficiency"
+    from_level: int
+    at_cap: bool
+    next_level_cost: Optional[int]     # gp for ONE more level (None at the cap)
+    speed_now: float                   # this shrine's own contribution today
+    efficiency_now: float
+    credit_points_now: float           # week total, at today's shrine levels
+    credit_points_after: Optional[float]   # week total with one more level
+    points_gained: float               # summed across the week's drawn trials
+    weeks_to_return: Optional[float]   # cost / gain — every week, not every 2.5
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def probe_shrine_upgrade(
+    parties: dict[str, list[MemberRow]],
+    skills: list[str],
+    shrine: str,
+    target_scale: Optional[float] = None,
+) -> ShrineUpgrade:
+    """Price one more level of ``shrine`` against the whole week's drawn trials.
+
+    The parties are held FIXED, exactly as :func:`probe_building_upgrade` holds them,
+    so the gain is a LOWER bound on the benefit (a stronger buff might also let the
+    optimizer reshuffle) and the payback an upper bound on the wait.
+
+    Returns a zero-gain entry for a shrine that does not feed the race at all
+    (Rarity/Spirit/Scholar), so the page can show that it was considered and priced at
+    nothing rather than leaving the reader to wonder.
+    """
+    if target_scale is None:
+        target_scale = config.TARGET_SCALE
+
+    buff, per_level, channel = config.GUILD_SHRINE_SKILLING_BUFFS.get(
+        shrine, ("unknown", 0.0, None)
+    )
+    from_level = guild_shrine_level(shrine)
+    at_cap = from_level >= config.GUILD_SHRINE_MAX_LEVEL
+    speed_now, efficiency_now = (
+        (per_level * from_level, 0.0) if channel == "speed"
+        else (0.0, per_level * from_level) if channel == "efficiency"
+        else (0.0, 0.0)
+    )
+
+    def week_total(levels: Optional[dict[str, int]]) -> float:
+        # simulate_race resolves the shrine itself, so the hypothetical is applied by
+        # temporarily overriding the level map — the same trick probe_building_upgrade
+        # avoids by threading an override, but here the buff is guild-wide rather than
+        # per-skill and threading it would touch every call site for a dev-only number.
+        if levels is None:
+            return sum(
+                simulate_race(parties[s], s, target_scale).credit_points
+                for s in skills
+            )
+        saved = config.GUILD_SHRINE_LEVELS
+        try:
+            config.GUILD_SHRINE_LEVELS = {**saved, **levels}
+            return sum(
+                simulate_race(parties[s], s, target_scale).credit_points
+                for s in skills
+            )
+        finally:
+            config.GUILD_SHRINE_LEVELS = saved
+
+    now = week_total(None)
+    after: Optional[float] = None
+    gained = 0.0
+    cost = None if at_cap else guild_shrine_upgrade_cost(from_level + 1)
+    if channel is not None and not at_cap:
+        after = week_total({shrine: from_level + 1})
+        gained = after - now
+
+    return ShrineUpgrade(
+        shrine=shrine,
+        name=config.GUILD_SHRINE_NAMES.get(shrine, shrine.title()),
+        buff=buff,
+        from_level=from_level,
+        at_cap=at_cap,
+        next_level_cost=cost,
+        speed_now=speed_now,
+        efficiency_now=efficiency_now,
+        credit_points_now=now,
+        credit_points_after=after,
+        points_gained=gained,
+        # weeks_between_draws=1.0: a shrine pays every week, in every trial.
+        weeks_to_return=upgrade_payback_weeks(cost, gained, 1.0),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Random assignment (Phase 1 — NO optimizer)
 # ---------------------------------------------------------------------------
@@ -1219,6 +1473,16 @@ class WeekResult:
     # would buy this week's trial another tier, what those levels cost in total,
     # and how long the spend takes to earn itself back.
     building_upgrades: list[BuildingUpgrade] = field(default_factory=list)
+    # The guild's shrine levels, and the (speed, efficiency) they grant every member in
+    # every trial since the 2026-08-11 patch. Recorded so the page states the
+    # assumption rather than hiding it, exactly as guild_building_levels does.
+    guild_shrine_levels: dict[str, int] = field(default_factory=dict)
+    shrine_speed: float = 0.0
+    shrine_efficiency: float = 0.0
+    # One entry per shrine: what ONE more level buys across the whole week, and how
+    # long that spend takes to pay for itself. Unlike the buildings, a shrine pays in
+    # every trial every week — see ShrineUpgrade.
+    shrine_upgrades: list[ShrineUpgrade] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -1236,6 +1500,10 @@ class WeekResult:
             "bench": self.bench,
             "guild_building_levels": self.guild_building_levels,
             "building_upgrades": [u.to_dict() for u in self.building_upgrades],
+            "guild_shrine_levels": self.guild_shrine_levels,
+            "shrine_speed": self.shrine_speed,
+            "shrine_efficiency": self.shrine_efficiency,
+            "shrine_upgrades": [u.to_dict() for u in self.shrine_upgrades],
         }
 
 
@@ -1295,6 +1563,13 @@ def run_week(
         )
         for skill, result in zip(skills, trials)
     ]
+    # What the shrines grant today, and what one more level of each would buy across
+    # the whole week. Cheap: five shrines x four races, well outside the hot loop.
+    shrine_speed, shrine_efficiency = guild_shrine_bonuses()
+    shrine_upgrades = [
+        probe_shrine_upgrade(assignment.parties, skills, shrine, target_scale)
+        for shrine in config.GUILD_SHRINE_SKILLING_BUFFS
+    ]
     now = datetime.now(timezone.utc)
     return WeekResult(
         generated_at=now.isoformat(),
@@ -1313,4 +1588,11 @@ def run_week(
             skill: guild_building_skill_levels(skill) for skill in skills
         },
         building_upgrades=upgrades,
+        guild_shrine_levels={
+            shrine: guild_shrine_level(shrine)
+            for shrine in config.GUILD_SHRINE_SKILLING_BUFFS
+        },
+        shrine_speed=shrine_speed,
+        shrine_efficiency=shrine_efficiency,
+        shrine_upgrades=shrine_upgrades,
     )

@@ -482,13 +482,28 @@ def _prepare_perturbed(
     if trials.double_chance(skill) > 0:
         double = max(1.0, double + gather_bonus + buff_gathering)
 
+    # GUILD SHRINE BUFFS (Force -> efficiency, Tempo -> action speed), applied inside
+    # trials since the 2026-08-11 patch. Added here for one hard reason: this function
+    # is a MIRROR of trials._prepare_member, and the selftest below asserts the two
+    # agree to within 1e-9 with every uncertainty switched off. Omitting them would
+    # break that golden equality, not merely bias a variance estimate.
+    #
+    # NOT perturbed, and that is deliberate rather than an oversight. A shrine level is
+    # a known integer read from the guild's own building map, not an unobserved gear
+    # slot — there is nothing to be uncertain about at a given level. What IS uncertain
+    # is whether the shrine level or the separately-bought BUFF level drives the
+    # multiplier (research/guild-shrines.md §6), and that is a discrete either/or worth
+    # a scenario, not a Gaussian smeared into sigma — the same argument this module
+    # already makes for the community buffs.
+    shrine_speed, shrine_efficiency = trials.guild_shrine_bonuses()
+
     return (
         level,
         success_bonus,
         building_levels,
         double,
-        math.floor(trials.work_power(level, efficiency)),
-        trials.action_seconds(skill, speed),
+        math.floor(trials.work_power(level, efficiency + shrine_efficiency)),
+        trials.action_seconds(skill, speed + shrine_speed),
     )
 
 

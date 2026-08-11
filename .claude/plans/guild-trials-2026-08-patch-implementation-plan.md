@@ -268,11 +268,22 @@ Same synthetic Foraging party, applying Force (efficiency) and/or Tempo (speed) 
 
 **Two conclusions, and the second is the useful one.** (a) The buffs are *real and must
 be modelled* — Force+Tempo at L1 is +0.61 points per trial today and the model is
-currently wrong by that much. (b) As an *investment* they are catastrophic: even fully
-maxed, Force+Tempo buys **less than one tier** for 2.3M guild points, on a cost ladder
-twice the buildings'. The trials page should price shrines **and say plainly that
-buildings dominate** — a negative result the guild can act on, and one nobody can
-currently see.
+currently wrong by that much. (b) As an *investment* they are poor: even fully maxed,
+Force+Tempo buys **less than one tier** for 2.3M guild points, on a cost ladder twice
+the buildings'. The trials page should price shrines **and say plainly that buildings
+dominate** — a negative result the guild can act on, and one nobody can currently see.
+
+> **CORRECTION, made during Phase 3 implementation.** The weeks-to-repay column above
+> is wrong — too pessimistic by roughly an order of magnitude — because it prices a
+> shrine the way `probe_building_upgrade` prices a building: per-trial, and discounted
+> by `TRIAL_WEEKS_BETWEEN_DRAWS = 2.5` for the weeks that skill is not drawn. But a
+> **building buffs one skill** and so pays only when that skill is drawn, whereas a
+> **shrine buffs efficiency or action speed for everyone in every skill** and so pays
+> in **all four trials, every week**. Measured correctly by
+> `trials.probe_shrine_upgrade`, Force L1→L2 repays in **≈561 weeks** and Tempo L1→L2 in
+> **≈806**, against the ~7,196 and ~9,648 tabulated above. Still a bad buy beside a
+> building, and still worth publishing as such — but the honest figure is ~13× better
+> than this section originally claimed, and `ShrineUpgrade`'s docstring records why.
 
 ### 2.7 What the capture already gives us for verification
 
