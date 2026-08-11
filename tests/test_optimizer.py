@@ -96,14 +96,43 @@ def test_scorer_cache_matches_fresh():
 
 
 def test_scorer_total_matches_simulate_race_directly():
+    """The scorer's total is exactly the sum of the oracle's own credit points.
+
+    Reads ``credit_points`` rather than ``points`` since the 2026-08-11 patch: the
+    objective now includes partial-tier credit (see AssignmentScorer). Compared with
+    ``==`` rather than approx deliberately — the scorer must not merely agree with the
+    oracle, it must return the oracle's own float, so any re-association or rounding
+    creeping into the cache fails here.
+    """
     members = _roster(16)
     scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
     parties = [set(range(0, 4)), set(range(4, 8)), set(range(8, 12)), set(range(12, 16))]
-    expected = 0
+    expected = 0.0
     for s, skill in enumerate(SKILLS):
         party = [members[i] for i in sorted(parties[s])]
-        expected += trials.simulate_race(party, skill, config.TARGET_SCALE).points
+        expected += trials.simulate_race(
+            party, skill, config.TARGET_SCALE
+        ).credit_points
     assert scorer.total_points(parties) == expected
+
+
+def test_credit_points_reduce_to_step_points_when_the_patch_is_off(monkeypatch):
+    """TRIAL_PARTIAL_CREDIT_RATE = 0.0 restores the pre-patch objective EXACTLY.
+
+    The one-line rollback for the whole partial-credit change, asserted rather than
+    asserted-in-a-comment: with the rate at zero the scorer must return
+    ``float(simulate_race(...).points)`` bit for bit, for every party shape, so every
+    strategy's trajectory is provably the one it took before the patch.
+    """
+    monkeypatch.setattr(config, "TRIAL_PARTIAL_CREDIT_RATE", 0.0)
+    members = _roster(24)
+    scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
+    for size in range(0, 17):
+        ids = set(range(size))
+        for s, skill in enumerate(SKILLS):
+            party = [members[i] for i in sorted(ids)]
+            step = trials.simulate_race(party, skill, config.TARGET_SCALE).points
+            assert scorer.party_points(s, ids) == float(step)
 
 
 # ---------------------------------------------------------------------------

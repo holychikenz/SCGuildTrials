@@ -340,8 +340,10 @@ def test_enforced_never_exceeds_real_optimum():
     members, picks, draw = _scenario()
     cap = 3
     opt = optimize(members, draw, cap=cap, strategy="best")
+    # CREDIT points: SignupPlan's totals are the objective the optimizer maximises, so
+    # the ceiling must be measured in the same currency (see SignupPlan.enforced_total).
     optimal_total = sum(
-        simulate_race(opt.parties[s], s).points for s in draw
+        simulate_race(opt.parties[s], s).credit_points for s in draw
     )
     p = signup.plan(
         members, picks, optimal_total=optimal_total,
@@ -492,7 +494,7 @@ def test_points_equal_ceiling_still_warns_when_a_trial_is_on_the_buzzer():
 # Safety swaps (_safety_swaps): margin-only advisory moves
 # ---------------------------------------------------------------------------
 def _thin_scenario():
-    """A draw whose Foraging trial banks its tier with 0.63% of the hour to spare.
+    """A draw whose Foraging trial banks its tier with 0.57% of the hour to spare.
 
     The levels were FOUND BY SEARCH, not guessed, to reproduce the live shape (LI,
     2026-07-31): an uncommitted member helps once, phase 1 then runs dry, and only a
@@ -500,8 +502,34 @@ def _thin_scenario():
     all the work would leave the phase-ordering test asserting nothing.
 
     Foraging's volunteers are deliberately mediocre (122) beside Woodcutting's strong
-    pair, and the two trials are balanced so the points stay equal across the swap —
-    were they not, the pass would (correctly) refuse it and prove nothing here.
+    pair, and the two trials are balanced so the points survive the swap — were they
+    not, the pass would (correctly) refuse it and prove nothing here.
+
+    RE-SEARCHED 2026-08-11 for the partial-credit objective, which invalidated the
+    original vector: phase 1 stopped finding anything at all, and the assertions below
+    caught it (`len(free_only) >= 1`) instead of passing vacuously, which is the whole
+    reason that line is there. Three levels moved — FreeA Foraging 130 -> 128, FreeB
+    Foraging 122 -> 124, and FreeWeak 40 -> 70. FreeWeak is the substantive one: at
+    level 40 they were pure deadweight in a 4-strong party, so every phase-1 move
+    involving them cost more points than the tolerance allows; at 70 they are still the
+    obvious member to move and doing so is close enough to points-neutral to be
+    admissible.
+
+    HOW TO RE-SEARCH IT when the model changes again — this took ten minutes with a
+    grid, and guessing does not work:
+
+        1. Parametrise this vector (the eight levels below) and grid over each within
+           roughly +/- 15.
+        2. For each candidate, build the plan and run ``signup._safety_swaps`` twice at
+           ``target=1.0``: once with ``allow_overrides=True`` (call it ``full``) and
+           once with ``allow_overrides=False`` (``free_only``).
+        3. Keep candidates satisfying all four of: ``len(free_only) >= 1``;
+           ``any(m.overrides_signup for m in full)``; ``len(full) > len(free_only)``;
+           and ``free_only`` is a note-for-note PREFIX of ``full``.
+        4. Filter to a realistic thinness (``plan.min_slack_fraction`` in 0.002-0.02 —
+           a fixture at 0.0001 satisfies the assertions but is numerically silly), then
+           pick the candidate closest to the incumbent vector so the diff stays
+           readable.
     """
     draw = ["Foraging", "Woodcutting"]
     members = [
@@ -510,9 +538,9 @@ def _thin_scenario():
         _member("Vol3", {"Woodcutting": 150, "Foraging": 150}),
         _member("Vol4", {"Woodcutting": 150, "Foraging": 148}),
         _member("Vol5", {"Woodcutting": 150}),
-        _member("FreeA", {"Foraging": 130, "Woodcutting": 130}),
-        _member("FreeB", {"Foraging": 122, "Woodcutting": 136}),
-        _member("FreeWeak", {sk: 40 for sk in config.SKILLS}),
+        _member("FreeA", {"Foraging": 128, "Woodcutting": 130}),
+        _member("FreeB", {"Foraging": 124, "Woodcutting": 136}),
+        _member("FreeWeak", {sk: 70 for sk in config.SKILLS}),
     ]
     picks = {
         "Vol1": {"Foraging"}, "Vol2": {"Foraging"},
@@ -539,11 +567,20 @@ def _run_safety(members, picks, draw, cap=4, **kw):
     )
 
 
-def test_safety_swaps_never_change_the_points():
-    # The card is captioned "same points, more margin"; that must be a guarantee, not
-    # an aspiration. A live probe (2026-07-31) initially produced a move that GAINED
-    # a tier on LI while crashing that trial's margin 25.96% -> 0.23% — a points win
-    # smuggled into a safety list. Points gains belong to the points swaps.
+def test_safety_swaps_never_cost_more_than_the_stated_tolerance():
+    # The card promises the swaps do not cost the guild its score; that must be a
+    # guarantee, not an aspiration. A live probe (2026-07-31) initially produced a move
+    # that GAINED a tier on LI while crashing that trial's margin 25.96% -> 0.23% — a
+    # points win smuggled into a safety list.
+    #
+    # WEAKENED DELIBERATELY on 2026-08-11, from "the total is EXACTLY unchanged" to "the
+    # total never falls by more than SIGNUP_SAFETY_POINTS_TOLERANCE". Two reasons, and
+    # the pass's docstring carries both: exact float equality on a continuous objective
+    # matches nothing (the old assertion would have held only because the list was
+    # empty), and a points GAIN is no longer something to hide, because the independent
+    # requirement that the thinnest margin strictly RISE is what forbids the 0.23%
+    # disaster above. So: gains are fine, losses are capped, and at the shipped
+    # tolerance of 0.0 the caption "the score does not change" is still literally true.
     members, picks, draw = _thin_scenario()
     p, scorer, parties, (moves, _after) = _run_safety(members, picks, draw)
 
@@ -564,9 +601,11 @@ def test_safety_swaps_never_change_the_points():
                 replay[s_from].discard(m)
             if s_to >= 0:
                 replay[s_to].add(m)
-        # Every prefix of the list is a valid plan worth the same points, which is
-        # what lets the page tell officers to apply as many as they like, in order.
-        assert scorer.total_points(replay) == before
+        # Every prefix of the list is a valid plan worth at least the same points less
+        # the tolerance, which is what lets the page tell officers to apply as many as
+        # they like, in order.
+        floor = before - config.SIGNUP_SAFETY_POINTS_TOLERANCE - config.OPT_POINTS_EPS
+        assert scorer.total_points(replay) >= floor, mv.note
 
 
 def test_safety_swaps_each_strictly_raise_the_thinnest_margin():
@@ -789,7 +828,9 @@ def test_optimal_summary_carries_the_optimums_own_margin():
     week = run_week(members, skills=draw, cap=3)
     total, summary = signup.optimal_from_week(week)
 
-    assert total == week.total_points
+    # The CREDIT total — what the optimizer maximised, and the currency the sign-up
+    # plan compares itself against.
+    assert total == week.total_credit_points
     for o, t in zip(summary, week.trials):
         assert o["skill"] == t.skill
         assert ("clear_seconds" in o) and ("slack_fraction" in o)

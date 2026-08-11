@@ -300,13 +300,33 @@ OPT_ENSEMBLE_PIPELINES = ["beam+genetic+hill_climb"] * OPT_RESTARTS
 OPT_HILLCLIMB_MAX_ITERS = 500
 
 # --- Simulated annealing (sa) -----------------------------------------------
-# Point deltas come in multiples of ~100 (one tier), so the temperature band is
-# scaled to that: T_START accepts a one-tier loss ~exp(-0.67); T_END rejects it.
+# RESCALED 2026-08-11, and it had to be: the temperature band is meaningless unless
+# it matches the size of a typical move delta, and partial-tier credit changed that
+# size by two orders of magnitude.
+#
+# BEFORE: point deltas came in multiples of ~100 (one whole tier, the only thing the
+# step objective could see), so T_START = 150 accepted a one-tier loss at
+# exp(-100/150) = exp(-0.67) ~ 0.51 and T_END = 0.5 rejected it outright.
+#
+# AFTER: deltas run ~0.1 to 20 within a tier and ~50 at a tier crossing (the residual
+# step, half the old cliff). Keeping T_START = 150 would accept essentially EVERY
+# worsening move for the whole run — the schedule would not be annealing at all, it
+# would be a random walk. The same design intent, applied to the new scale:
+#   * T_START = 15 accepts a 10-point loss (a typical strong relocate, the new
+#     analogue of "one tier") at exp(-10/15) = exp(-0.67) — the original figure.
+#   * T_END = 0.05 rejects even the smallest meaningful move (~0.1 points, a marginal
+#     seat) at exp(-2) = 0.14 and anything larger decisively.
+# ``research/risk-aware-objective.md`` R1 anticipated exactly this ("drop it to
+# ~0.05").
+#
+# NB `sa` is not in OPT_ENSEMBLE_PIPELINES, so this does not touch the shipped
+# result — but src/optimize_bakeoff.py runs it, and a schedule wrong by 100x would
+# make the bake-off's verdict on SA meaningless.
 # Restarts spend the daily budget on escaping distinct local optima (best kept).
 OPT_SA_ITERS = 50000
 OPT_SA_RESTARTS = 2
-OPT_SA_T_START = 150.0
-OPT_SA_T_END = 0.5
+OPT_SA_T_START = 15.0
+OPT_SA_T_END = 0.05
 
 # --- Final safety pass (slack) ----------------------------------------------
 # The objective is a STEP function of the tier reached, so it cannot see HOW
@@ -329,6 +349,19 @@ OPT_SLACK_PASS = True
 # lexicographic key over a finite state space, so the pass terminates on its own;
 # this caps worst-case build time rather than guaranteeing correctness.
 OPT_SLACK_MAX_ITERS = 100
+# How many guild points the pass may SPEND to widen the thinnest margin.
+#
+# The pass used to rank on (total_points, min_margin, sum_margin) with the points
+# "compared as exact ints, so it cannot trade a tier for margin". Under partial
+# credit (TRIAL_PARTIAL_CREDIT_RATE) the points are continuous, exact ties barely
+# exist, and that formulation would quietly reduce to a duplicate of the hill-climb.
+# The pass is therefore re-founded on an explicit admissibility test — the total may
+# fall by at most this much AND the thinnest margin must STRICTLY rise — which turns
+# an accident of integer arithmetic into a stated price.
+#
+# 0.0 keeps the guarantee as strong as a continuous objective allows (no points may
+# be lost at all) and makes the pass a no-op when partial credit is off.
+OPT_SLACK_POINTS_TOLERANCE = 0.0
 
 # --- Reporting the margin (sign-up page bands) -------------------------------
 # The safety pass above only reaches the UNCONSTRAINED optimum. The sign-up plan
@@ -415,6 +448,20 @@ SIGNUP_SAFETY_MAX_MOVES = 8
 # and without this the page could only shrug. Every such move is flagged on the page.
 # Set False for a guild that would rather never see a sign-up questioned.
 SIGNUP_SAFETY_ALLOW_OVERRIDES = True
+# How many guild points a safety swap may COST. The counterpart of
+# OPT_SLACK_POINTS_TOLERANCE, and for the same reason.
+#
+# THIS CONSTANT EXISTS TO PREVENT A SILENT REGRESSION. The pass admitted a move only
+# when `key[0] == base_points` — an EXACT equality, which was sound while points were
+# integers and two lineups could genuinely tie. Under partial credit that equality
+# matches essentially nothing, so the list would come out EMPTY and the page would
+# print "None found" with no test failing (the existing safety-swap tests would pass
+# vacuously). The tolerance restores the pass's reach and states its price.
+#
+# 0.0 preserves the page's original promise — the score does not change — because a
+# move must then leave the total no lower than it found it. Raise it only with the
+# page copy changed to match: the footnote currently guarantees "same points".
+SIGNUP_SAFETY_POINTS_TOLERANCE = 0.0
 
 # --- Beam search (beam) -----------------------------------------------------
 OPT_BEAM_WIDTH = 16
@@ -503,6 +550,83 @@ TRIAL_POINTS_PER_TIER = 100    # points(T) slope: what one extra tier is worth
 HEADCOUNT_PENALTY_PER_MEMBER = 0.01
 ACTION_SECONDS_ENHANCING = 8   # baseActionSeconds for enhancing
 ACTION_SECONDS_DEFAULT = 10    # baseActionSeconds for every other skill
+
+# ===========================================================================
+# Partial-tier credit (game patch 2026-08-11)
+# ===========================================================================
+# Patch note, verbatim: "Partial-tier progress is tracked when a trial ends,
+# granting partial rewards. 0.5% credit per 1% progress. up to 50% credit at
+# 99.99% but incomplete."
+#
+# That is a pure LINEAR rule of slope 0.5 with no separate cap — 0.5 * 99.99% =
+# 49.995%, so the quoted "up to 50%" is the limit of the rule, not a clamp on it:
+#
+#     creditTiers = tier_reached + TRIAL_PARTIAL_CREDIT_RATE * progress_fraction
+#
+# where progress_fraction is how far into the first UNCLEARED tier the party got
+# when the hour ran out (trials.tier_progress_fraction).
+#
+# WHY THIS IS THE MOST CONSEQUENTIAL CONSTANT IN THE FILE. Before the patch,
+# points were a STEP function of the integer tier, so a member who crossed no
+# threshold was worth EXACTLY zero and could be seated for free — the entire
+# justification for optimizer._fill_bench ("no harm done") and for the
+# points-preserving safety passes, which relied on exact integer ties existing at
+# all. Partial credit makes the objective a RAMP of height 50 followed by a STEP of
+# 50 at each tier boundary: the old 100-point cliff is HALVED, not removed (which is
+# why signup._compound_reshuffle_into still has work to do), and every seat now
+# moves the score in one direction or the other. Measured on a live-shaped party,
+# the sign changes between a member contributing 1.1% and 1.0% of party throughput
+# — see research/partial-tier-credit.md for that table and the derivation.
+#
+# RESOLVED 2026-08-11: the credit lands on GUILD POINTS (there is no separate loot
+# table for guild trials), so this is the objective and not merely a display figure.
+#
+# SET TO 0.0 to restore the pre-patch step function EXACTLY — credit_points becomes
+# float(points) bit for bit, and every optimizer trajectory is identical. That is the
+# one-line rollback for the whole objective change.
+TRIAL_PARTIAL_CREDIT_RATE = 0.5
+
+# Whether the flat TRIAL_POINTS_BASE is awarded on PARTIAL progress alone, i.e.
+# before any tier has been completed at all.
+#
+# UNCONFIRMED, and deliberately set to the conservative reading. The shipped
+# schedule points(T) = 100 + 100*T is anchored on exactly two observations
+# (tier1 -> 200, tier2 -> 300) with points(0) == 0, so the 100 reads as a bonus for
+# COMPLETING a tier rather than for making progress toward one. False therefore
+# awards partial credit alone (no base) while tier_reached == 0, and adds the base
+# only once a tier is actually banked — understating an unconfirmed gain, as the
+# model does everywhere else. Set True if a capture ever shows a party that cleared
+# nothing being credited the base.
+#
+# Note this edge case cannot arise on a real lineup: every live party reaches tier
+# 10-12. It exists so that tiny and empty parties are scored coherently.
+TRIAL_PARTIAL_CREDIT_BASE_ON_PARTIAL = False
+
+# --- Float-noise guard for a now-CONTINUOUS objective ------------------------
+# With integer points, "strictly improving" was exact. With partial credit the move
+# deltas are floats, and trials._prepare_member documents why an ULP matters here: a
+# one-ULP change in a party rate once left SC on the same 4800 points while
+# reshuffling every party for no gain. Every strict comparison in the search
+# therefore admits a move only if it beats the incumbent by more than this.
+#
+# NOT a correctness requirement. Termination never depended on integrality — every
+# accepted move strictly increases a bounded key over a finite state space, which
+# cannot cycle in float any more than in int — so this buys DETERMINISM.
+OPT_POINTS_EPS = 1e-9
+
+# --- How many guild points will we pay to include one more member? -----------
+# Under the old step objective a marginal member was worth exactly zero, so seating
+# them cost nothing and optimizer._fill_bench could call it "no harm done". Partial
+# credit prices them: a member earns their seat iff they contribute more than roughly
+# 1/(100 + N) of the party's throughput at the contested tier (0.81% at N=24).
+# Inclusion is therefore a PURCHASE, and it gets a price rather than a silent
+# default — the sign-up page prints the bill.
+#
+# 0.0 = seat nobody who costs points. Raise it to buy stragglers a seat in the
+# reward at a stated cost. Measured on the live 2026-08-11 rosters this changes
+# nothing either way: every seated member already clears the break-even and the
+# bench is produced by TRIAL_PARTY_CAP, not by marginal value.
+TRIAL_FILL_MAX_POINT_COST = 0.0
 
 # --- Skill families (for the per-category community buffs; MWI categories) ---
 # The three live community buffs each target one skill family:

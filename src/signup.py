@@ -63,7 +63,7 @@ import requests
 
 from . import config
 from .reader import MemberRow, SheetStructureError, _cell, _to_bool
-from .optimizer import AssignmentScorer
+from .optimizer import AssignmentScorer, _min_banking
 from .trials import (
     RosterEntry,
     rate,
@@ -257,7 +257,11 @@ class SignupRosterEntry:
     bot: bool
     rate_final: float
     status: str  # "assigned" (volunteer) | "recommended" (fill from free pool)
-    fill_gain: Optional[int] = None  # points this fill added (recommended only)
+    # Credit points this fill added (recommended only). A FLOAT since the 2026-08-11
+    # patch, and it may be NEGATIVE: partial-tier credit prices a marginal seat, so a
+    # rider seated under config.TRIAL_FILL_MAX_POINT_COST has a cost, and the page
+    # prints it rather than implying the seat was free.
+    fill_gain: Optional[float] = None
     lifts_tier: bool = False  # True when the fill strictly raised the party's points
 
 
@@ -278,8 +282,14 @@ class SignupTrial:
     skill: str
     party_size: int
     tier_reached: int
+    # The integer, step-function award for the tier actually banked — unchanged by the
+    # 2026-08-11 patch, exactly as in trials.TrialResult.
     points: int
-    open_seats: int  # seats still empty after fills (cap - party_size)
+    # How far into the next tier this lineup got, and what the lineup is worth once
+    # that partial progress is credited (the objective).
+    partial_fraction: float = 0.0
+    credit_points: float = 0.0
+    open_seats: int = 0  # seats still empty after fills (cap - party_size)
     roster: list[SignupRosterEntry] = field(default_factory=list)
     # Seconds elapsed when the last cleared tier finished; None if no tier held.
     clear_seconds: Optional[float] = None
@@ -319,7 +329,7 @@ class Swap:
     to_skill: Optional[str]
     note: str
     partner: Optional[str] = None  # the other member, for an "action == swap"
-    gain: int = 0  # guild points this move (or group) adds
+    gain: float = 0.0  # credit points this move (or group) adds
     # For ``action == "reshuffle"``: the component swaps, each
     # ``{"in": name, "out": name, "from_skill": donor_trial}``. ``None`` otherwise.
     moves: Optional[list[dict]] = None
@@ -377,10 +387,21 @@ class SignupPlan:
     signup_count: int
     non_signups: list[str]
     conflicts: list[str]
-    enforced_total: int
-    optimal_total: int
-    gap: int
-    reachable_total: int  # score after applying the listed swaps
+    # THE FOUR TOTALS ARE CREDIT POINTS (floats) since the 2026-08-11 patch, i.e. the
+    # quantity the optimizer maximises and the one every comparison in this module is
+    # made against (scorer.total_points). They must stay in the SAME currency as each
+    # other or the page's arithmetic silently stops adding up: `reachable_total` comes
+    # from the scorer, so `enforced_total` cannot be a step-points sum.
+    enforced_total: float
+    optimal_total: float
+    gap: float
+    reachable_total: float  # score after applying the listed swaps
+    # The same two figures in STEP points — the confirmed award for the tiers actually
+    # banked, with no partial credit. Carried for the page, which quotes both: the
+    # tiers are what the guild will see in-game, the credit total is what the plan was
+    # chosen on.
+    enforced_step_total: int = 0
+    optimal_step_total: int = 0
     # Thinnest time margin across the trials that actually banked a tier (the
     # weakest link in the lineup's safety), or None when no trial banked one.
     # Trials that reached no tier are EXCLUDED rather than counted as 0.0, so
@@ -427,6 +448,8 @@ class SignupPlan:
             "optimal_total": self.optimal_total,
             "gap": self.gap,
             "reachable_total": self.reachable_total,
+            "enforced_step_total": self.enforced_step_total,
+            "optimal_step_total": self.optimal_step_total,
             "min_slack_fraction": self.min_slack_fraction,
             "budget_seconds": self.budget_seconds,
             "safety_min_slack": self.safety_min_slack,
@@ -437,6 +460,8 @@ class SignupPlan:
                     "party_size": t.party_size,
                     "tier_reached": t.tier_reached,
                     "points": t.points,
+                    "partial_fraction": t.partial_fraction,
+                    "credit_points": t.credit_points,
                     "open_seats": t.open_seats,
                     "clear_seconds": t.clear_seconds,
                     "slack_fraction": t.slack_fraction,
@@ -493,15 +518,16 @@ def _fill_open_seats(
     threshold and does no harm, so they are welcomed aboard.
 
     Returns ``(parties, placed)`` where ``placed`` maps ``member_idx ->
-    (slot_idx, gain)`` for each fill actually seated.
+    (slot_idx, gain)`` for each fill actually seated. ``gain`` is a float and may be
+    negative — see ``config.TRIAL_FILL_MAX_POINT_COST``.
     """
     parties = [set(p) for p in parties]
     remaining = set(free_pool)
-    placed: dict[int, tuple[int, int]] = {}
+    placed: dict[int, tuple[int, float]] = {}
     S = len(scorer.skills)
 
     while remaining:
-        best: Optional[tuple[int, int, int]] = None  # (gain, member, slot)
+        best: Optional[tuple[float, int, int]] = None  # (gain, member, slot)
         for s in range(S):
             if len(parties[s]) >= cap:
                 continue
@@ -510,7 +536,13 @@ def _fill_open_seats(
                 gain = scorer.party_points(s, parties[s] | {m}) - base
                 if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
                     best = (gain, m, s)
-        if best is None or best[0] < 0:
+        # Mirrors optimizer._fill_bench, including its price: at
+        # TRIAL_FILL_MAX_POINT_COST == 0.0 this is the pre-patch "never lower points"
+        # rule, and the epsilon keeps float noise from reading as a cost. Partial credit
+        # means a marginal seat is no longer free, so a rider seated here carries the
+        # cost in its fill_gain and the page shows it.
+        floor = -config.TRIAL_FILL_MAX_POINT_COST - config.OPT_POINTS_EPS
+        if best is None or best[0] < floor:
             break
         gain, m, s = best
         parties[s].add(m)
@@ -543,7 +575,9 @@ def _single_move_climb(
 
     for _ in range(config.OPT_HILLCLIMB_MAX_ITERS):
         assigned = {m: s for s in range(S) for m in parties[s]}
-        best_delta = 0
+        # Was 0. The objective is continuous since partial credit, so a move must beat
+        # the incumbent by more than float noise (config.OPT_POINTS_EPS).
+        best_delta = config.OPT_POINTS_EPS
         best_move: Optional[tuple] = None
 
         for m in range(n):
@@ -665,7 +699,7 @@ def _compound_reshuffle_into(
                     continue
                 for m_in in sorted(parties[b]):
                     delta = _swap_delta(scorer, parties, m_out, s, m_in, b)
-                    if delta < 0:
+                    if delta < -config.OPT_POINTS_EPS:
                         continue  # never let any trial regress
                     new_phi = cur_phi - rate_out + rate(
                         members[m_in], skill, target_tier
@@ -695,12 +729,12 @@ def _compound_reshuffle_into(
         cur_phi = new_phi
 
         gain = scorer.total_points(parties) - base
-        if gain > 0:
+        if gain > config.OPT_POINTS_EPS:
             ins = ", ".join(m["in"] for m in moves)
             outs = ", ".join(m["out"] for m in moves)
             n = len(moves)
             note = (
-                f"Lift {skill} a tier (+{gain}) with {n} "
+                f"Lift {skill} a tier (+{gain:.1f}) with {n} "
                 f"swap{'s' if n != 1 else ''}: bring in {ins}; send out {outs}."
             )
             return parties, Swap(
@@ -756,8 +790,8 @@ def _improving_swaps(
     # Phase 2: close remaining tier gaps trial-by-trial. Re-scan after every
     # reshuffle (a lift can unlock further single moves or another crossing);
     # the loop ends when no under-tier trial admits a break-even crossing.
-    ceiling = sum(optimal_points.get(draw[s], 0) for s in range(S))
-    while total < ceiling:
+    ceiling = sum(optimal_points.get(draw[s], 0.0) for s in range(S))
+    while total < ceiling - config.OPT_POINTS_EPS:
         progressed = False
         for s in range(S):
             skill = draw[s]
@@ -765,7 +799,7 @@ def _improving_swaps(
             tier = optimal_tier.get(skill)
             if target is None or tier is None:
                 continue
-            if scorer.party_points(s, parties[s]) >= target:
+            if scorer.party_points(s, parties[s]) >= target - config.OPT_POINTS_EPS:
                 continue  # this trial already at (or above) its optimal tier
             result = _compound_reshuffle_into(
                 parties, s, scorer, draw, members, tier
@@ -786,19 +820,34 @@ def _improving_swaps(
     return swaps, total
 
 
-def _slack_key(pts: list[int], slack: list[float]) -> tuple[int, float, float]:
+# Float-noise guard on the MARGIN comparison, mirroring optimizer._SLACK_EPS. A real
+# improvement in a fraction-of-the-hour margin is many orders of magnitude larger; this
+# exists only so that re-summing the same rosters cannot register as a "rise".
+_MARGIN_EPS = 1e-12
+
+
+def _slack_key(
+    pts: list[float], slack: list[float], tiers: list[int]
+) -> tuple[float, float, float]:
     """Lexicographic rank ``(total_points, min_margin, sum_margin)``.
 
-    The same key :func:`src.optimizer._refine_slack` maximises, with ONE deliberate
-    difference: the minimum is taken over the trials that actually BANK a tier. A
-    trial scoring nothing has no margin to protect, and including its 0.0 would peg
-    the minimum there and blind the max-min to every real improvement elsewhere.
+    The minimum is taken over the trials that actually BANK a tier, via the shared
+    :func:`src.optimizer._min_banking`. A trial holding nothing has no margin to
+    protect, and including its 0.0 would peg the minimum there and blind the max-min to
+    every real improvement elsewhere. The helper is IMPORTED rather than reimplemented
+    so that this pass and ``optimizer._refine_slack`` agree by construction — they
+    previously differed on exactly this point, and only one of them was right.
 
-    ``total_points`` comes first and is summed as the exact ``int`` it always was, so
-    no candidate that costs a tier can ever outrank the incumbent.
+    TWO CHANGES ON 2026-08-11, both forced by partial-tier credit:
+
+    * ``total_points`` is a FLOAT. It used to be summed "as the exact ``int`` it always
+      was, so no candidate that costs a tier can ever outrank the incumbent" — a
+      guarantee that came free from integrality and now has to be stated explicitly, as
+      a tolerance, by the caller.
+    * Banking is decided by the TIER, not by ``points > 0``. Those were equivalent
+      before; a party 30% into tier 1 now scores credit points while banking nothing.
     """
-    banking = [q for p, q in zip(pts, slack) if p > 0]
-    return (sum(pts), min(banking) if banking else 0.0, sum(slack))
+    return (sum(pts), _min_banking(tiers, slack), sum(slack))
 
 
 def _safety_swaps(
@@ -811,8 +860,9 @@ def _safety_swaps(
     target: Optional[float] = None,
     max_moves: Optional[int] = None,
     allow_overrides: Optional[bool] = None,
+    points_tolerance: Optional[float] = None,
 ) -> tuple[list[SafetySwap], Optional[float]]:
-    """Advisory points-preserving moves that lift the thinnest trial off the buzzer.
+    """Advisory near-points-neutral moves that lift the thinnest trial off the buzzer.
 
     WHY A SEPARATE PASS. ``optimizer._refine_slack`` widens the margin of the
     UNCONSTRAINED optimum, and cannot be applied here: it would move locked
@@ -827,7 +877,12 @@ def _safety_swaps(
     the bench) and swaps, ranked on :func:`_slack_key`. TWO acceptance conditions,
     both learned from a live probe that got them wrong (2026-07-31):
 
-    * **The points must be EXACTLY equal.** Ranking points-first only guarantees a
+    * **The points must be preserved to within ``points_tolerance``** (0.0 by
+      default, so by default preserved outright). This was an EXACT equality until
+      2026-08-11, when partial-tier credit made the score continuous and exact ties all
+      but vanished — an equality test would have emptied this list silently, with every
+      test below still passing. The original reasoning stands, and is why the default is
+      0.0; only the arithmetic had to change. Ranking points-first only guarantees a
       move never *costs* a tier; the probe promptly found one on LI that *gained* a
       tier (Alchemy 9 -> 10) while crashing that trial's margin 25.96% -> 0.23%, and
       reported it in a list captioned "same points, more margin". Points gains belong
@@ -883,6 +938,8 @@ def _safety_swaps(
         max_moves = config.SIGNUP_SAFETY_MAX_MOVES
     if allow_overrides is None:
         allow_overrides = config.SIGNUP_SAFETY_ALLOW_OVERRIDES
+    if points_tolerance is None:
+        points_tolerance = config.SIGNUP_SAFETY_POINTS_TOLERANCE
 
     S = len(scorer.skills)
     parties = [set(p) for p in parties]
@@ -890,16 +947,23 @@ def _safety_swaps(
     volunteers = set(range(n)) - set(free_pool)
     moves: list[SafetySwap] = []
 
-    def _state() -> tuple[list[int], list[float]]:
+    def _state() -> tuple[list[float], list[float], list[int]]:
         pts = [scorer.party_points(s, parties[s]) for s in range(S)]
         slack = [scorer.party_slack(s, parties[s]) for s in range(S)]
-        return pts, slack
+        tiers = [scorer.party_tier(s, parties[s]) for s in range(S)]
+        return pts, slack, tiers
 
-    def _min_margin(pts: list[int], slack: list[float]) -> Optional[float]:
-        banking = [q for p, q in zip(pts, slack) if p > 0]
+    def _min_margin(slack: list[float], tiers: list[int]) -> Optional[float]:
+        """Thinnest margin among the BANKING trials, or None if none banks one.
+
+        None rather than 0.0 is the whole point: "no trial holds a tier" is a different
+        situation from "a trial holds one by nothing", and the caller stops rather than
+        chasing a margin that does not exist.
+        """
+        banking = [q for t, q in zip(tiers, slack) if t >= 1]
         return min(banking) if banking else None
 
-    def _probs(pts: list[int]) -> list[Optional[float]]:
+    def _probs(tiers: list[int]) -> list[Optional[float]]:
         """P(holds) per trial for the CURRENT parties — reporting only.
 
         Costs one race per banking trial (four in total) and is called once per
@@ -907,7 +971,7 @@ def _safety_swaps(
         is therefore unchanged; only the description of what it chose gets richer.
         """
         return [
-            scorer.party_probability(s, parties[s]) if pts[s] > 0 else None
+            scorer.party_probability(s, parties[s]) if tiers[s] >= 1 else None
             for s in range(S)
         ]
 
@@ -915,22 +979,43 @@ def _safety_swaps(
         live = [q for q in probs if q is not None]
         return min(live) if live else None
 
-    def _best_move(movable: list[int], pts: list[int], slack: list[float]) -> Optional[tuple]:
-        """The best points-EQUAL move that strictly raises the thinnest margin."""
-        base_points, base_min, _ = _slack_key(pts, slack)
+    def _best_move(
+        movable: list[int],
+        pts: list[float],
+        slack: list[float],
+        tiers: list[int],
+    ) -> Optional[tuple]:
+        """The best near-points-neutral move that strictly raises the thinnest margin."""
+        base_points, base_min, _ = _slack_key(pts, slack, tiers)
+        floor = base_points - points_tolerance - config.OPT_POINTS_EPS
         assigned = {m: s for s in range(S) for m in parties[s]}
 
         def key_with(*changed: tuple[int, set]) -> tuple:
-            p, q = list(pts), list(slack)
+            p, q, t = list(pts), list(slack), list(tiers)
             for s, ids in changed:
                 p[s] = scorer.party_points(s, ids)
                 q[s] = scorer.party_slack(s, ids)
-            return _slack_key(p, q)
+                t[s] = scorer.party_tier(s, ids)
+            return _slack_key(p, q, t)
 
         def admissible(key: tuple) -> bool:
-            # Points exactly preserved (a gain is the OTHER list's business, and a
-            # loss is never acceptable), and the thinnest trial strictly lifted.
-            return key[0] == base_points and key[1] > base_min
+            """Costs at most the tolerance, and strictly lifts the thinnest trial.
+
+            THE POINTS TEST USED TO BE ``key[0] == base_points`` — an exact equality,
+            which was sound while points were integers and two lineups could genuinely
+            tie. Under partial credit it matches essentially nothing, so it would empty
+            this list and the page would print "None found" with no test failing. The
+            tolerance (config.SIGNUP_SAFETY_POINTS_TOLERANCE, 0.0 by default) restores
+            the pass's reach while keeping its promise: at 0.0 the total may not fall at
+            all, so "the score does not change" remains literally true.
+
+            A points GAIN is admissible now, where it used to be excluded. The
+            exclusion existed because a live probe found a move that gained a tier
+            while crashing that trial's margin to 0.23% — but the second condition
+            forbids that independently, since the thinnest margin must strictly RISE.
+            A move that gains points and lifts the thinnest trial is simply good.
+            """
+            return key[0] >= floor and key[1] > base_min + _MARGIN_EPS
 
         best_key: Optional[tuple] = None
         best: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
@@ -977,19 +1062,19 @@ def _safety_swaps(
 
     for movable in phase_pools:
         while len(moves) < max_moves:
-            pts, slack = _state()
-            current_min = _min_margin(pts, slack)
+            pts, slack, tiers = _state()
+            current_min = _min_margin(slack, tiers)
             # Comfortable (or nothing banks a tier, in which case margin is not the
             # problem and the points advice above is where to look).
             if current_min is None or current_min >= target:
                 break
 
-            best_move = _best_move(movable, pts, slack)
+            best_move = _best_move(movable, pts, slack, tiers)
             if best_move is None:
                 break  # no permitted move lifts the thinnest trial
 
             # Snapshot the odds BEFORE mutating parties below.
-            probs_before = _probs(pts)
+            probs_before = _probs(tiers)
 
             # Apply, then describe the move by the margins it actually moved.
             touched: list[int] = []
@@ -1037,10 +1122,10 @@ def _safety_swaps(
                     overrides_signup=bool({m1, m2} & volunteers),
                 )
 
-            new_pts, new_slack = _state()
-            probs_after = _probs(new_pts)
+            new_pts, new_slack, new_tiers = _state()
+            probs_after = _probs(new_tiers)
             swap.min_before = current_min
-            swap.min_after = _min_margin(new_pts, new_slack) or 0.0
+            swap.min_after = _min_margin(new_slack, new_tiers) or 0.0
             swap.min_prob_before = _min_prob(probs_before)
             swap.min_prob_after = _min_prob(probs_after)
             swap.trial_changes = [
@@ -1056,8 +1141,8 @@ def _safety_swaps(
             ]
             moves.append(swap)
 
-    pts, slack = _state()
-    return moves, _min_margin(pts, slack)
+    pts, slack, tiers = _state()
+    return moves, _min_margin(slack, tiers)
 
 
 def plan(
@@ -1184,12 +1269,13 @@ def plan(
                     )
                 )
             else:
-                gain = placed.get(i, (s, 0))[1]
+                gain = placed.get(i, (s, 0.0))[1]
                 rec_rows.append(
                     SignupRosterEntry(
                         name=r.name, level=r.level, tool=r.tool, top=r.top,
                         bot=r.bot, rate_final=r.rate_final, status="recommended",
-                        fill_gain=gain, lifts_tier=gain > 0,
+                        fill_gain=gain,
+                        lifts_tier=gain > config.OPT_POINTS_EPS,
                     )
                 )
         assigned_rows.sort(key=lambda e: e.rate_final, reverse=True)
@@ -1201,6 +1287,8 @@ def plan(
                 party_size=result.party_size,
                 tier_reached=result.tier_reached,
                 points=result.points,
+                partial_fraction=result.partial_fraction,
+                credit_points=result.credit_points,
                 open_seats=cap - result.party_size,
                 roster=assigned_rows + rec_rows,
                 # How narrowly this lineup banked its score. Free: read off the
@@ -1213,7 +1301,11 @@ def plan(
             )
         )
 
-    enforced_total = sum(t.points for t in trials)
+    # CREDIT points, to match scorer.total_points — which is where reachable_total and
+    # the optimum come from. Mixing the two currencies would leave the page quoting an
+    # "enforced -> reachable" arithmetic that does not add up.
+    enforced_total = sum(t.credit_points for t in trials)
+    enforced_step_total = sum(t.points for t in trials)
     scoring_slack = [t.slack_fraction for t in trials if t.tier_reached >= 1]
     min_slack_fraction = min(scoring_slack) if scoring_slack else None
     seated_free = {i for i in placed}
@@ -1228,7 +1320,11 @@ def plan(
     # here strictly raises the score, so the list is short and actionable. The
     # optimal per-trial tiers/points (from the summary) let a stalled climb cross
     # a tier plateau with a short break-even reshuffle — see _improving_swaps.
-    optimal_points = {o["skill"]: o["points"] for o in optimal_summary}
+    # Credit points, for the same currency reason. ``.get`` falls back to the step
+    # points so a hand-built summary (the tests do this) still works.
+    optimal_points = {
+        o["skill"]: o.get("credit_points", o["points"]) for o in optimal_summary
+    }
     optimal_tier = {o["skill"]: o["tier_reached"] for o in optimal_summary}
     swaps, reachable_total = _improving_swaps(
         enforced, scorer, cap, draw, members,
@@ -1267,6 +1363,10 @@ def plan(
         enforced_total=enforced_total,
         optimal_total=optimal_total,
         gap=optimal_total - enforced_total,
+        enforced_step_total=enforced_step_total,
+        optimal_step_total=sum(
+            int(o["points"]) for o in optimal_summary
+        ),
         reachable_total=reachable_total,
         min_slack_fraction=min_slack_fraction,
         budget_seconds=config.TRIAL_TIME_BUDGET_SECONDS,
@@ -1282,7 +1382,7 @@ def plan(
     )
 
 
-def optimal_from_week(week) -> tuple[int, list[dict]]:
+def optimal_from_week(week) -> tuple[float, list[dict]]:
     """Adapt a :class:`src.trials.WeekResult` into ``plan``'s optimal inputs.
 
     Returns ``(optimal_total, optimal_summary)`` so the sign-up page reuses the
@@ -1300,6 +1400,8 @@ def optimal_from_week(week) -> tuple[int, list[dict]]:
             "skill": t.skill,
             "tier_reached": t.tier_reached,
             "points": t.points,
+            "partial_fraction": t.partial_fraction,
+            "credit_points": t.credit_points,
             "party_size": t.party_size,
             "clear_seconds": tier_clear_seconds(t),
             "slack_fraction": time_slack_fraction(t),
@@ -1309,4 +1411,7 @@ def optimal_from_week(week) -> tuple[int, list[dict]]:
         }
         for t in week.trials
     ]
-    return week.total_points, optimal_summary
+    # The CREDIT total, because that is what the optimizer maximised and what the
+    # sign-up plan must be compared against. week.total_points (step) travels alongside
+    # in each summary entry for the page to quote the banked tiers.
+    return week.total_credit_points, optimal_summary

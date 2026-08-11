@@ -9,16 +9,23 @@ Why this is not a plain assignment problem
 ------------------------------------------
 The objective is total guild points::
 
-    total(assignment) = sum_s points_for_tier(simulate_race(party_s, s).tier_reached)
+    total(assignment) = sum_s simulate_race(party_s, s).credit_points
 
 which is both NON-linear and NON-separable, for two reasons documented in
 ``research/trial-messages.md``:
 
-* **Points are a STEP function** of the tier reached (each tier ~ +100 pts),
-  not a smooth per-member score.
+* **Points are PIECEWISE LINEAR WITH STEPS in the tier reached.** Since the
+  2026-08-11 patch a trial is credited ``tier + 0.5 * progress_into_the_next_tier``
+  (``config.TRIAL_PARTIAL_CREDIT_RATE``), so each tier is a ramp of ~50 points
+  followed by a step of ~50 at the boundary. It was a pure step function of ~100
+  points per tier, and much of this module was shaped by that: see
+  :class:`AssignmentScorer` for what changed and
+  ``research/partial-tier-credit.md`` for why.
 * **The headcount penalty** (``effective_target`` grows 1% per member) means a
-  weak member can *lower* a party's tier — so party SIZE is itself a decision
-  variable and "fill every slot to 20" is not automatically optimal.
+  weak member can *lower* a party's score — so party SIZE is itself a decision
+  variable and "fill every slot" is not automatically optimal. This used to bite
+  only when a member cost a whole tier; now it bites continuously, and the
+  break-even is a member contributing about ``1/(100 + N)`` of the party's rate.
 
 Consequently a classic linear-assignment solver (Hungarian) only optimises a
 *proxy*; the true objective must be measured by calling ``simulate_race``. Every
@@ -84,9 +91,26 @@ class AssignmentScorer:
     (the objective every strategy maximises) and its time-slack fraction (the
     tie-break the final pass maximises — see :func:`_refine_slack`). They share a
     cache entry because they come from the same ``simulate_race`` call, so slack
-    costs no extra simulations at all. ``party_points`` keeps its exact previous
-    contract — an ``int``, identical to ``simulate_race(...).points`` — so every
-    strategy, ``src.signup``, and the existing tests are untouched.
+    costs no extra simulations at all.
+
+    THE OBJECTIVE IS NOW ``credit_points``, A FLOAT (game patch 2026-08-11). It was
+    ``simulate_race(...).points`` — an ``int``, a step function of the tier banked.
+    Partial-tier credit made the score continuous, so :meth:`party_points` returns a
+    ``float`` and callers must compare against ``config.OPT_POINTS_EPS`` rather than
+    against 0. Two consequences worth stating plainly, because a great deal of this
+    module's design was built on the old contract:
+
+    * The plateaus are gone. ``research/risk-aware-objective.md`` R1 predicted this
+      would make the existing search *strictly better* — "a move that buys 40 seconds
+      toward the next tier is currently invisible; under Model 2 it is a positive
+      delta" — so no constructor or refiner needs restructuring, only its comparisons.
+    * Exact ties are gone with them, which is why :func:`_refine_slack` and
+      ``signup._safety_swaps`` are re-founded on a stated points TOLERANCE instead of
+      on integer equality.
+
+    With ``config.TRIAL_PARTIAL_CREDIT_RATE`` at 0.0, ``credit_points`` is
+    ``float(points)`` bit for bit and every strategy's trajectory is identical to the
+    pre-patch code — the one-line rollback for all of it.
     """
 
     def __init__(
@@ -100,14 +124,25 @@ class AssignmentScorer:
         self.skills = skills
         self.target_scale = target_scale
         self.cap = cap
-        self._cache: dict[tuple[str, frozenset], tuple[int, float]] = {}
+        self._cache: dict[tuple[str, frozenset], tuple[float, float, int]] = {}
         # Separate, reporting-only cache — see party_probability. None is a real
         # value here (no tier banked), so a sentinel marks "not yet computed".
         self._prob_cache: dict[tuple[str, frozenset], Optional[float]] = {}
         self.sim_calls = 0
 
-    def _evaluate(self, skill_idx: int, member_ids) -> tuple[int, float]:
-        """``(points, time_slack_fraction)`` for one party, memoised."""
+    def _evaluate(self, skill_idx: int, member_ids) -> tuple[float, float, int]:
+        """``(credit_points, time_slack_fraction, tier_reached)``, memoised.
+
+        All three are read off the SAME ``simulate_race`` call, and partial-tier credit
+        is computed inside the race from terms it already had, so this remains exactly
+        one simulation per distinct party — ``sim_calls`` is unchanged by the patch.
+
+        ``tier_reached`` joined the tuple on 2026-08-11 because the safety passes need
+        to know which trials actually BANKED a tier, and since partial credit they can
+        no longer infer it from the points: a party 30% into tier 1 scores 15 credit
+        points while banking nothing at all. Points > 0 used to mean "banked"; now only
+        the tier does.
+        """
         skill = self.skills[skill_idx]
         key = (skill, frozenset(member_ids))
         cached = self._cache.get(key)
@@ -116,12 +151,22 @@ class AssignmentScorer:
         party = [self.members[i] for i in key[1]]
         self.sim_calls += 1
         result = simulate_race(party, skill, self.target_scale)
-        value = (result.points, time_slack_fraction(result))
+        value = (
+            result.credit_points,
+            time_slack_fraction(result),
+            result.tier_reached,
+        )
         self._cache[key] = value
         return value
 
-    def party_points(self, skill_idx: int, member_ids) -> int:
-        """Points for the party ``member_ids`` running ``skills[skill_idx]``."""
+    def party_points(self, skill_idx: int, member_ids) -> float:
+        """Credit points for the party ``member_ids`` running ``skills[skill_idx]``.
+
+        Includes partial-tier credit, and is therefore a ``float``: compare deltas
+        against ``config.OPT_POINTS_EPS``, never against 0. Identical to
+        ``float(simulate_race(...).points)`` when
+        ``config.TRIAL_PARTIAL_CREDIT_RATE`` is 0.0.
+        """
         return self._evaluate(skill_idx, member_ids)[0]
 
     def party_slack(self, skill_idx: int, member_ids) -> float:
@@ -131,6 +176,14 @@ class AssignmentScorer:
         cache entry as :meth:`party_points`.
         """
         return self._evaluate(skill_idx, member_ids)[1]
+
+    def party_tier(self, skill_idx: int, member_ids) -> int:
+        """Highest tier this party actually BANKED (0 if none). Free, same cache entry.
+
+        The honest test for "does this trial have a margin to protect?". Since partial
+        credit, ``party_points > 0`` no longer answers that — see :meth:`_evaluate`.
+        """
+        return self._evaluate(skill_idx, member_ids)[2]
 
     def party_probability(self, skill_idx: int, member_ids) -> Optional[float]:
         """P(this party actually holds its tier). REPORTING ONLY — never the objective.
@@ -163,7 +216,7 @@ class AssignmentScorer:
         self._prob_cache[key] = value
         return value
 
-    def total_points(self, parties: Parties) -> int:
+    def total_points(self, parties: Parties) -> float:
         """Total points across all parties (cache-backed, cheap to re-call)."""
         return sum(
             self.party_points(s, parties[s]) for s in range(len(self.skills))
@@ -270,7 +323,7 @@ def _construct_marginal_greedy(
     base = [scorer.party_points(s, parties[s]) for s in range(S)]
 
     while unassigned:
-        best: Optional[tuple[int, int, int]] = None  # (gain, member, slot)
+        best: Optional[tuple[float, int, int]] = None  # (gain, member, slot)
         for s in range(S):
             if len(parties[s]) >= cap:
                 continue
@@ -278,9 +331,13 @@ def _construct_marginal_greedy(
                 gain = scorer.party_points(s, parties[s] | {m}) - base[s]
                 if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
                     best = (gain, m, s)
-        # Halt only when the best available placement would STRICTLY lower
-        # points; gain-0 placements are kept to cross step-function plateaus.
-        if best is None or best[0] < 0:
+        # Halt only when the best available placement would STRICTLY lower points.
+        # Pre-2026-08-11 the objective was a step function of the tier, so gain-0
+        # placements were common and had to be kept in order to cross those plateaus;
+        # partial credit has turned the plateaus into slopes, so an exact zero is now
+        # rare and this tolerance is float-noise insurance rather than a
+        # plateau-crossing device.
+        if best is None or best[0] < -config.OPT_POINTS_EPS:
             break
         _, m, s = best
         parties[s].add(m)
@@ -380,10 +437,10 @@ def _run_genetic(
                 parties[chrom[m]].add(m)
         return parties
 
-    def fitness(chrom: list[int]) -> int:
+    def fitness(chrom: list[int]) -> float:
         return scorer.total_points(to_parties(chrom))
 
-    def tournament(scored: list[tuple[int, list[int]]]) -> list[int]:
+    def tournament(scored: list[tuple[float, list[int]]]) -> list[int]:
         k = config.OPT_GA_TOURNAMENT
         picks = [rng.randrange(len(scored)) for _ in range(k)]
         best_i = min(picks, key=lambda i: (-scored[i][0], i))
@@ -448,8 +505,8 @@ def _refine_genetic(
 # ---------------------------------------------------------------------------
 def _relocate_delta(
     scorer: AssignmentScorer, parties: Parties, m: int, a: int, b: int
-) -> int:
-    """Δpoints of moving member ``m`` from slot ``a`` to slot ``b``.
+) -> float:
+    """Δcredit-points of moving member ``m`` from slot ``a`` to slot ``b``.
 
     ``a`` or ``b`` may be ``-1`` (the bench), which scores 0. Only the two
     touched parties are (re)scored — both via the cache.
@@ -470,8 +527,8 @@ def _swap_delta(
     a: int,
     m2: int,
     b: int,
-) -> int:
-    """Δpoints of swapping ``m1`` (in slot ``a``) with ``m2`` (in slot ``b``)."""
+) -> float:
+    """Δcredit-points of swapping ``m1`` (in slot ``a``) with ``m2`` (in slot ``b``)."""
     before = scorer.party_points(a, parties[a]) + scorer.party_points(
         b, parties[b]
     )
@@ -501,7 +558,11 @@ def _refine_hill_climb(
 
     for _ in range(config.OPT_HILLCLIMB_MAX_ITERS):
         assigned = {m: s for s in range(S) for m in parties[s]}
-        best_delta = 0
+        # Was 0: with an integer objective "strictly improving" was exact. The
+        # objective is continuous now, so a move must beat the incumbent by more than
+        # float noise (see config.OPT_POINTS_EPS and trials._prepare_member on why an
+        # ULP is not academic here).
+        best_delta = config.OPT_POINTS_EPS
         best_move: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
 
         # Relocations (including to/from the bench).
@@ -549,7 +610,7 @@ def _refine_hill_climb(
 
 def _anneal_once(
     parties: Parties, scorer: AssignmentScorer, rng: random.Random
-) -> tuple[Parties, int]:
+) -> tuple[Parties, float]:
     """One annealing run from ``parties``; returns (best_parties, best_points).
 
     Geometric cooling from ``OPT_SA_T_START`` to ``OPT_SA_T_END`` over
@@ -586,7 +647,9 @@ def _anneal_once(
                 continue
             b = rng.choice(choices)
             delta = _relocate_delta(scorer, parties, m, a, b)
-            if delta >= 0 or rng.random() < math.exp(delta / temp):
+            if delta >= -config.OPT_POINTS_EPS or rng.random() < math.exp(
+                delta / temp
+            ):
                 if a >= 0:
                     parties[a].discard(m)
                 if b >= 0:
@@ -602,14 +665,16 @@ def _anneal_once(
             if a == b or m1 == m2:
                 continue
             delta = _swap_delta(scorer, parties, m1, a, m2, b)
-            if delta >= 0 or rng.random() < math.exp(delta / temp):
+            if delta >= -config.OPT_POINTS_EPS or rng.random() < math.exp(
+                delta / temp
+            ):
                 parties[a].discard(m1)
                 parties[a].add(m2)
                 parties[b].discard(m2)
                 parties[b].add(m1)
                 cur += delta
 
-        if cur > best:
+        if cur > best + config.OPT_POINTS_EPS:
             best = cur
             best_parties = [set(p) for p in parties]
     return best_parties, best
@@ -629,7 +694,7 @@ def _refine_sa(
     best = scorer.total_points(best_parties)
     for _ in range(max(1, config.OPT_SA_RESTARTS)):
         cand, cand_pts = _anneal_once(parties, scorer, rng)
-        if cand_pts > best:
+        if cand_pts > best + config.OPT_POINTS_EPS:
             best = cand_pts
             best_parties = cand
     return best_parties
@@ -719,15 +784,20 @@ def _run_ensemble(scorer: AssignmentScorer, seed: int) -> Parties:
     Ties are broken by a canonical party key so the winner is stable run-to-run.
     """
     best_parties: Optional[Parties] = None
-    best = -1
+    best = -math.inf
     for i, pipe in enumerate(config.OPT_ENSEMBLE_PIPELINES):
         parties = _run_pipeline(scorer, pipe, random.Random(seed + 1 + i))
         pts = scorer.total_points(parties)
+        # Float-safe since the objective became continuous: "strictly better" needs the
+        # epsilon, and "tied" is a band rather than an equality. Two restarts that land
+        # on the same assignment still tie exactly; two different assignments within
+        # OPT_POINTS_EPS are treated as tied and settled by the canonical party key, so
+        # the winner stays stable run to run.
         if (
             best_parties is None
-            or pts > best
+            or pts > best + config.OPT_POINTS_EPS
             or (
-                pts == best
+                abs(pts - best) <= config.OPT_POINTS_EPS
                 and _party_sort_key(parties) < _party_sort_key(best_parties)
             )
         ):
@@ -751,28 +821,42 @@ def run_strategy(
 
 
 # ---------------------------------------------------------------------------
-# Final courtesy pass: seat the leftover bench where it does no harm
+# Final inclusion pass: seat the leftover bench, at a stated price
 # ---------------------------------------------------------------------------
 def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
-    """Seat still-benched members in parties with room, never lowering points.
+    """Seat still-benched members in parties with room, for at most a stated cost.
 
-    A no-regret pass applied AFTER the search has settled — outside any strategy,
-    so the bake-off still measures strategies on their own merits. Members the
-    search left benched are offered a seat in any non-full party where they do
-    not *reduce* that party's points (Δ >= 0). Because points are a STEP function
-    of tier, a member who crosses no threshold contributes exactly zero — no harm
-    done — so they may as well come along for the ride and share in the reward.
-    Members who would only inflate a party's effective target everywhere (Δ < 0
-    in every open slot) stay benched.
+    A pass applied AFTER the search has settled — outside any strategy, so the
+    bake-off still measures strategies on their own merits. Members the search left
+    benched are offered a seat in any non-full party where they cost no more than
+    ``config.TRIAL_FILL_MAX_POINT_COST`` guild points (0.0 by default, i.e. no seat
+    that costs anything).
 
-    The search itself never makes these moves: hill-climb and SA apply only
-    STRICT improvements, so a benched member whose best placement is Δ == 0 is
-    never seated by them — this pass exists to give those riders a seat.
+    WHY THIS PASS CHANGED CHARACTER ON 2026-08-11. It used to be a free lunch, and
+    said so: points were a STEP function of the tier, so "a member who crosses no
+    threshold contributes exactly zero — no harm done — so they may as well come along
+    for the ride". Hill-climb and SA apply only STRICT improvements and would never
+    seat a Δ == 0 rider, so this pass existed purely to give those riders a seat that
+    cost the guild nothing.
+
+    Partial-tier credit abolished the free lunch. Every seat now raises the work target
+    of *every* tier by 1% and moves the score measurably, so:
+
+    * the search ALREADY seats everyone worth seating — a beneficial rider is now a
+      strict improvement, which hill-climb takes on its own; and
+    * what is left for this pass is the genuinely unprofitable rider, which is no
+      longer a courtesy but a PURCHASE.
+
+    So the pass survives as an explicit, priced subsidy rather than a no-regret
+    tidy-up, and ``TRIAL_FILL_MAX_POINT_COST`` is the guild's dial for it. At the
+    default 0.0 it seats only members who do not cost points at all, which is the
+    honest continuation of the old promise; raise it to buy stragglers a share of the
+    reward at a cost the sign-up page prints.
 
     Deterministic: repeatedly seats the (member, slot) with the greatest true
-    Δpoints (>= 0), lowest member then lowest slot index breaking ties (matching
-    :func:`_construct_marginal_greedy`), until no benched member can be placed
-    without lowering some party's points. Cache-backed, so it stays cheap.
+    Δpoints, lowest member then lowest slot index breaking ties (matching
+    :func:`_construct_marginal_greedy`), until every remaining benched member would
+    cost more than the subsidy allows. Cache-backed, so it stays cheap.
     """
     parties = [set(p) for p in parties]
     S = len(scorer.skills)
@@ -783,7 +867,7 @@ def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
     benched = set(range(len(scorer.members))) - assigned
 
     while benched:
-        best: Optional[tuple[int, int, int]] = None  # (gain, member, slot)
+        best: Optional[tuple[float, int, int]] = None  # (gain, member, slot)
         for s in range(S):
             if len(parties[s]) >= cap:
                 continue
@@ -792,9 +876,11 @@ def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
                 gain = scorer.party_points(s, parties[s] | {m}) - base
                 if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
                     best = (gain, m, s)
-        # Halt once the best available seat would STRICTLY lower points; Δ == 0
-        # riders are welcomed aboard (they never hurt).
-        if best is None or best[0] < 0:
+        # Halt once the best available seat would cost more than the guild is
+        # willing to pay. At TRIAL_FILL_MAX_POINT_COST == 0.0 this is "Δ >= 0", the
+        # pre-patch rule; the epsilon keeps a float-noise Δ from reading as a cost.
+        floor = -config.TRIAL_FILL_MAX_POINT_COST - config.OPT_POINTS_EPS
+        if best is None or best[0] < floor:
             break
         _, m, s = best
         parties[s].add(m)
@@ -803,44 +889,89 @@ def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
 
 
 # ---------------------------------------------------------------------------
-# Final safety pass: buy time margin, never points
+# Final safety pass: buy time margin, at a stated price in points
 # ---------------------------------------------------------------------------
+# Float-noise guard on the MARGIN comparison, the counterpart of
+# config.OPT_POINTS_EPS on the points. Margins are fractions of the hour, so a real
+# improvement is many orders of magnitude larger than this; the epsilon exists only so
+# that re-summing the same rosters in a different order cannot register as a "rise" and
+# send the pass round another iteration.
+_SLACK_EPS = 1e-12
+
+
+def _min_banking(tiers: list[int], slack: list[float]) -> float:
+    """Thinnest margin among the trials that actually BANKED a tier; 0.0 if none.
+
+    Trials that banked nothing are EXCLUDED rather than counted as 0.0. Including them
+    would peg the minimum at zero and blind a max-min search to every real improvement
+    elsewhere — the lesson ``signup._slack_key`` already recorded, applied here so the
+    two safety passes agree.
+
+    Note the test is the TIER, not the points. Before partial credit the two were
+    interchangeable (``points > 0`` iff a tier was banked); a party 30% into tier 1 now
+    scores 15 credit points while banking nothing, so only the tier answers the
+    question.
+    """
+    banking = [q for t, q in zip(tiers, slack) if t >= 1]
+    return min(banking) if banking else 0.0
 def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
-    """Move members to widen the time margin, WITHOUT changing the points.
+    """Move members to lift the THINNEST trial's time margin, for almost no points.
 
-    THE PROBLEM. ``points`` is a step function of the tier reached, so the search
-    is blind to *how narrowly* a tier was held. Measured on the live SC roster
-    (2026-07-31, research/risk-aware-objective.md): 25 assignments all scoring
-    exactly 4900 points held their last tier by margins ranging from 100 seconds
-    to 560 out of the 3600-second budget. A 100-second margin is 2.8% — thinner
-    than the error on the model's own constants, so the difference between those
-    assignments is the difference between a tier and a coin flip. Nothing in the
-    objective distinguishes them, so which one ships is luck.
+    THE ORIGINAL PROBLEM. ``points`` was a step function of the tier reached, so the
+    search was blind to *how narrowly* a tier was held. Measured on the live SC roster
+    (2026-07-31, research/risk-aware-objective.md): 25 assignments all scoring exactly
+    4900 points held their last tier by margins ranging from 100 seconds to 560 out of
+    the 3600-second budget. A 100-second margin is 2.8% — thinner than the error on the
+    model's own constants — so which of those assignments shipped was luck.
 
-    THE PASS. Best-improvement local search over the SAME neighbourhood as
-    :func:`_refine_hill_climb` (relocate, including to/from the bench, plus swap),
-    ranked on the lexicographic key::
+    WHAT PARTIAL CREDIT CHANGED (2026-08-11), because it is most of the original
+    argument. The margin is no longer invisible to the objective: progress into the
+    next tier IS the time left over, so ``credit_points`` now prices the margin
+    linearly and the search walks off the buzzer by itself. Two things follow:
 
-        (total_points, min_slack_over_trials, sum_slack_over_trials)
+    * The pass's original justification is largely spent. Its remaining job is the part
+      partial credit still cannot see: the objective is a **sum** over trials while risk
+      is a **minimum** over them, so a lineup can bank a comfortable total while one
+      trial sits on the boundary. This pass is the max-min correction to a max-sum
+      search, and nothing else in the pipeline performs it.
+    * Its old mechanism no longer works. It ranked on
+      ``(total_points, min_slack, sum_slack)`` with the points "compared as exact ints,
+      so it cannot trade a tier for margin" — a guarantee that came free from
+      integrality. With a continuous objective exact ties barely exist, and that key
+      would quietly degenerate into a duplicate of the hill-climb.
 
-    ``total_points`` FIRST and compared as the exact ``int`` it always was, so a
-    move that would cost a tier can never be accepted — the point total this pass
-    returns is provably the one it was given (or better, if it stumbles on a gain
-    the main search missed). ``min`` before ``sum`` deliberately: the aim is to get
-    the *thinnest* trial off the 3600-second boundary, not to pile margin onto a
-    trial that is already comfortable. A consequence worth knowing: because this is
-    a max-min, the SUM of the margins may legitimately FALL while the minimum rises
-    — lifting the knife-edge trial is the goal, and spending another trial's surplus
-    to do it is a good trade, not a regression.
+    THE PASS, RE-FOUNDED. Best-improvement local search over the SAME neighbourhood as
+    :func:`_refine_hill_climb` (relocate, including to/from the bench, plus swap). A
+    move is ADMISSIBLE iff both hold:
 
-    TERMINATION: every accepted move strictly increases a bounded lexicographic
-    key over a finite state space, so no move can repeat and no cycle can form.
+    * the total falls by at most ``config.OPT_SLACK_POINTS_TOLERANCE`` (0.0 by default,
+      so by default it may not fall at all — the old guarantee, now stated rather than
+      inherited from the type system); and
+    * the thinnest margin **strictly rises**.
+
+    Admissible moves are ranked ``(min_slack, sum_slack, total_points)``: lift the
+    thinnest trial as far as possible, break ties on total margin, and prefer the
+    variant that also keeps the most points.
+
+    Both conditions are deliberate, and both were learned in ``signup._safety_swaps``,
+    whose two-condition form this now matches. Requiring the minimum to rise *strictly*
+    is what stops a move being accepted on ``sum_slack`` alone — a live probe once
+    produced five such moves, every one leaving the thin trial exactly where it was.
+    Unifying the two passes also removes an asymmetry the repo had already documented
+    and regretted: the sign-up pass took its minimum over the trials that actually
+    BANK a tier, while this one included a non-banking trial's 0.0 and let it peg the
+    minimum, blinding the max-min to every real improvement elsewhere. This pass now
+    does the same, via :meth:`AssignmentScorer.party_tier` — and note that since
+    partial credit, "banked a tier" can no longer be inferred from "scored points".
+
+    TERMINATION: every accepted move strictly raises a bounded quantity (the minimum
+    margin) over a finite state space, so no state can repeat and no cycle can form.
     ``OPT_SLACK_MAX_ITERS`` is therefore a bound on worst-case build time, not a
     correctness requirement.
 
-    COST: slack rides in the scorer's existing cache entry, so this adds no new
-    simulations for any party the search already visited. Deterministic — moves are
-    scanned in a fixed order and ties fall to the lowest indices.
+    COST: points, slack and tier all ride in the scorer's existing cache entry, so this
+    adds no new simulations for any party the search already visited. Deterministic —
+    moves are scanned in a fixed order and ties fall to the lowest indices.
     """
     S = len(scorer.skills)
     cap = scorer.cap
@@ -850,18 +981,41 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
     for _ in range(config.OPT_SLACK_MAX_ITERS):
         pts = [scorer.party_points(s, parties[s]) for s in range(S)]
         slack = [scorer.party_slack(s, parties[s]) for s in range(S)]
-        base_key = (sum(pts), min(slack), sum(slack))
+        tiers = [scorer.party_tier(s, parties[s]) for s in range(S)]
+        base_total = sum(pts)
+        base_min = _min_banking(tiers, slack)
+        # The most the total may fall. Stated once, here, so the pass's price is a
+        # config decision rather than an artefact of how points are represented.
+        floor = (
+            base_total
+            - config.OPT_SLACK_POINTS_TOLERANCE
+            - config.OPT_POINTS_EPS
+        )
         assigned = {m: s for s in range(S) for m in parties[s]}
 
-        def key_with(*changed: tuple[int, set]) -> tuple:
-            """The key after replacing the given slots' rosters (bench: omitted)."""
-            p, q = list(pts), list(slack)
+        def state_with(*changed: tuple[int, set]) -> tuple[float, float, float]:
+            """``(total, min_banking_slack, sum_slack)`` after replacing those slots."""
+            p, q, t = list(pts), list(slack), list(tiers)
             for s, ids in changed:
                 p[s] = scorer.party_points(s, ids)
                 q[s] = scorer.party_slack(s, ids)
-            return (sum(p), min(q), sum(q))
+                t[s] = scorer.party_tier(s, ids)
+            return sum(p), _min_banking(t, q), sum(q)
 
-        best_key = base_key
+        def rank(state: tuple[float, float, float]) -> Optional[tuple]:
+            """Rank key for an ADMISSIBLE move, or None if it is not admissible.
+
+            Admissible = costs at most the tolerance AND strictly lifts the thinnest
+            banking trial. Ranked thinnest-first, then total margin, then points.
+            """
+            total, min_slack, sum_slack = state
+            if total < floor:
+                return None
+            if min_slack <= base_min + _SLACK_EPS:
+                return None
+            return (min_slack, sum_slack, total)
+
+        best_key: Optional[tuple] = None
         best_move: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
 
         # Relocations (including to and from the bench).
@@ -877,8 +1031,8 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
                     changed.append((a, parties[a] - {m}))
                 if b >= 0:
                     changed.append((b, parties[b] | {m}))
-                key = key_with(*changed)
-                if key > best_key:
+                key = rank(state_with(*changed))
+                if key is not None and (best_key is None or key > best_key):
                     best_key = key
                     best_move = ("R", m, a, b)
 
@@ -890,11 +1044,13 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
                 m2, b = assigned_items[j]
                 if a == b:
                     continue
-                key = key_with(
-                    (a, (parties[a] - {m1}) | {m2}),
-                    (b, (parties[b] - {m2}) | {m1}),
+                key = rank(
+                    state_with(
+                        (a, (parties[a] - {m1}) | {m2}),
+                        (b, (parties[b] - {m2}) | {m1}),
+                    )
                 )
-                if key > best_key:
+                if key is not None and (best_key is None or key > best_key):
                     best_key = key
                     best_move = ("S", m1, a, m2, b)
 
@@ -944,20 +1100,29 @@ def optimize(
 
     scorer = AssignmentScorer(members, skills, target_scale, cap)
     parties = run_strategy(scorer, strategy, seed)
-    # Safety pass: among the many assignments that score these same points, take
-    # the one that holds its tiers by the widest time margin (_refine_slack).
-    # Points-preserving by construction, so it can only change WHICH optimum
-    # ships, never how many points it is worth. OPT_SLACK_PASS = False disables.
+    # Inclusion pass, then the safety pass. ORDER REVERSED 2026-08-11, and the reversal
+    # is forced by partial credit.
+    #
+    # It used to run the other way round — safety first, inclusion LAST — on the
+    # argument that "inclusion outranks margin": the safety pass would bench a member
+    # to buy margin (each head is 1% of the work target) and on the live LI roster it
+    # cut three, and re-seating them afterwards cost 1.2pp of the minimum margin
+    # (634s -> 591s, measured 2026-07-31) and NO POINTS AT ALL. That last clause was
+    # the whole justification, and partial credit has retired it: a re-seated rider now
+    # moves the score, so seating one after the safety pass would spend points the
+    # safety pass had just been forbidden to spend, silently and outside its budget.
+    #
+    # Running inclusion FIRST keeps every decision in the currency it belongs to:
+    # _fill_bench decides who travels, on points, against its own stated subsidy
+    # (TRIAL_FILL_MAX_POINT_COST); _refine_slack then chooses the safest arrangement of
+    # whoever is aboard, against its own stated tolerance. Neither can raid the other's
+    # budget.
+    parties = _fill_bench(parties, scorer)
+    # Safety pass: among the arrangements worth (almost) these same points, take the
+    # one whose THINNEST trial has the most time to spare. OPT_SLACK_PASS = False
+    # disables it; OPT_SLACK_POINTS_TOLERANCE = 0.0 forbids it from spending anything.
     if config.OPT_SLACK_PASS:
         parties = _refine_slack(parties, scorer)
-    # Courtesy pass: seat any leftover bench where it does not lower points, so
-    # stragglers come along for the ride rather than sit idle.
-    # DELIBERATELY LAST, so inclusion outranks margin. The safety pass will bench a
-    # member to buy margin (the headcount penalty is 1% of the target each), and on
-    # the live LI roster it cut three; re-seating them afterwards costs only 1.2pp
-    # of the minimum margin (634s -> 591s, measured 2026-07-31) and no points at
-    # all, which is a price worth paying to keep everyone in the reward.
-    parties = _fill_bench(parties, scorer)
 
     assigned: set[int] = set()
     party_map: dict[str, list[MemberRow]] = {}

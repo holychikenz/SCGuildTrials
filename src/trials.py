@@ -609,6 +609,92 @@ def points_for_tier(tier_reached: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Partial-tier credit (game patch 2026-08-11)
+# ---------------------------------------------------------------------------
+def tier_progress_fraction(result: "TrialResult") -> float:
+    """How far into the first UNCLEARED tier the party got, as a fraction of it.
+
+    In ``[0, 1)``. The patch credits this progress
+    (``config.TRIAL_PARTIAL_CREDIT_RATE`` of a tier per unit), so it is the term that
+    removed the objective's degeneracy — see that constant.
+
+    COSTS NOTHING. :func:`simulate_race` already records the failed tier with its
+    ``time_to_clear``, and :func:`tier_clear_seconds` already reports the clock at the
+    last banked tier, so the fraction is
+    ``(budget - banked_at) / time_to_clear(failed tier)`` — arithmetic on numbers the
+    race has already produced. ``research/risk-aware-objective.md`` names exactly this:
+    "the information needed for every model below is already in the return value and is
+    being discarded by ``.points``".
+
+    Returns 0.0 when nothing was in progress: the party could not move at all (the
+    failed step carries ``time_to_clear is None``), or the race ran to ``_MAX_TIER``
+    and there is no failed step to be part-way through.
+
+    NB :func:`simulate_race` computes the same number inline, where ``cumulative`` and
+    ``ttc`` are already in hand; this is the form for reading it back off a finished
+    result (the pages, the sign-up planner, and the tests).
+    """
+    budget = config.TRIAL_TIME_BUDGET_SECONDS
+    banked = tier_clear_seconds(result) or 0.0
+    for step in result.timeline:
+        if step.cleared:
+            continue
+        if step.time_to_clear is None or step.time_to_clear <= 0:
+            return 0.0
+        return _clamp((budget - banked) / step.time_to_clear, 0.0, 1.0)
+    return 0.0
+
+
+def credit_tiers(
+    tier_reached: int,
+    progress_fraction: float,
+    rate: Optional[float] = None,
+) -> float:
+    """``tier_reached + rate * progress_fraction`` — the tier credit a trial earns.
+
+    ``rate`` defaults to ``config.TRIAL_PARTIAL_CREDIT_RATE``; at 0.0 this is exactly
+    ``float(tier_reached)`` and the whole partial-credit change vanishes (the one-line
+    rollback).
+    """
+    if rate is None:
+        rate = config.TRIAL_PARTIAL_CREDIT_RATE
+    return tier_reached + rate * progress_fraction
+
+
+def points_for_credit(tier_reached: int, credit: float) -> float:
+    """Guild points for ``credit`` tiers of progress, having banked ``tier_reached``.
+
+    The partial-credit generalisation of :func:`points_for_tier`, and equal to it
+    exactly (as a float) when ``credit == tier_reached``.
+
+    ``config.TRIAL_PARTIAL_CREDIT_BASE_ON_PARTIAL`` decides the one genuinely
+    unconfirmed case: whether the flat ``TRIAL_POINTS_BASE`` is awarded to a party that
+    has completed NO tier but made progress toward one. The default (False) withholds
+    it, because the shipped schedule's ``points(0) == 0`` reads the base as a reward for
+    completing a tier rather than for approaching one — see the constant.
+    """
+    if credit <= 0:
+        return 0.0
+    if tier_reached < 1 and not config.TRIAL_PARTIAL_CREDIT_BASE_ON_PARTIAL:
+        return config.TRIAL_POINTS_PER_TIER * credit
+    return config.TRIAL_POINTS_BASE + config.TRIAL_POINTS_PER_TIER * credit
+
+
+def points_for_result(
+    result: "TrialResult", rate: Optional[float] = None
+) -> float:
+    """Guild points for ``result`` INCLUDING partial-tier credit.
+
+    ``== float(points_for_tier(result.tier_reached))`` exactly when ``rate`` (or
+    ``config.TRIAL_PARTIAL_CREDIT_RATE``) is 0.0.
+    """
+    fraction = tier_progress_fraction(result)
+    return points_for_credit(
+        result.tier_reached, credit_tiers(result.tier_reached, fraction, rate)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Simulation result types
 # ---------------------------------------------------------------------------
 @dataclass
@@ -622,6 +708,11 @@ class TierStep:
     time_to_clear: Optional[float]   # None when the party rate is 0
     cumulative_time: Optional[float]  # would-be cumulative including this tier
     cleared: bool
+    # Fraction of THIS tier's work completed when the hour ran out. Set on the first
+    # UNCLEARED tier only (the one the party was part-way through); None on every
+    # cleared tier, which is by definition 100% done, and None when the party could
+    # not move at all. This is the term the 2026-08-11 patch pays partial credit on.
+    progress_fraction: Optional[float] = None
 
 
 @dataclass
@@ -644,9 +735,23 @@ class TrialResult:
     skill: str
     party_size: int
     tier_reached: int
+    # DELIBERATELY UNCHANGED by the 2026-08-11 patch: the integer, step-function award
+    # for the tier actually banked (points_for_tier). Every page column, every JSON
+    # consumer and every test that pins the confirmed schedule reads this. The
+    # partial-credit score lives beside it in ``credit_points`` so that turning the
+    # patch off is one config line and turning it on breaks nothing that was already
+    # true.
     points: int
     roster: list[RosterEntry] = field(default_factory=list)
     timeline: list[TierStep] = field(default_factory=list)
+    # How far into the first uncleared tier the party got, in [0, 1) — the same number
+    # as tier_progress_fraction(self), computed inline by simulate_race where the
+    # cumulative time and time-to-clear are already in hand.
+    partial_fraction: float = 0.0
+    # Guild points INCLUDING partial-tier credit: the objective the optimizer
+    # maximises. Equal to float(points) exactly when
+    # config.TRIAL_PARTIAL_CREDIT_RATE is 0.0.
+    credit_points: float = 0.0
     # P(this tier actually holds), filled in by run_week for the SHIPPED races
     # only — see clear_probability for why simulate_race does not compute it.
     # None means "not computed" or "no tier banked"; the page renders both as "—".
@@ -702,6 +807,7 @@ def simulate_race(
     timeline: list[TierStep] = []
     cumulative = 0.0
     tier_reached = 0
+    partial_fraction = 0.0
 
     # Tier-independent per-member factors, computed once for the whole race.
     prepared = [
@@ -743,6 +849,15 @@ def simulate_race(
         ttc = eff_target / party_rate
         would_be = cumulative + ttc
         cleared = would_be <= budget
+        # Partial progress into the tier the buzzer interrupted, which the 2026-08-11
+        # patch pays credit on. ``cumulative`` is still the time banked by the last
+        # CLEARED tier at this point (it is only advanced below), so this is the share
+        # of THIS tier's work the party completed in the time that was left. Computed
+        # here rather than by walking the timeline afterwards because both terms are
+        # already in hand — the optimizer runs this ~87k times per pipeline.
+        progress = (
+            None if cleared else _clamp((budget - cumulative) / ttc, 0.0, 1.0)
+        )
         timeline.append(
             TierStep(
                 tier=tier,
@@ -752,9 +867,11 @@ def simulate_race(
                 time_to_clear=ttc,
                 cumulative_time=would_be,
                 cleared=cleared,
+                progress_fraction=progress,
             )
         )
         if not cleared:
+            partial_fraction = progress or 0.0
             break
         cumulative = would_be
         tier_reached = tier
@@ -799,6 +916,10 @@ def simulate_race(
         points=points_for_tier(tier_reached),
         roster=roster,
         timeline=timeline,
+        partial_fraction=partial_fraction,
+        credit_points=points_for_credit(
+            tier_reached, credit_tiers(tier_reached, partial_fraction)
+        ),
     )
 
 
@@ -1085,6 +1206,9 @@ class WeekResult:
     member_count: int
     total_points: int
     strategy: str = "random"
+    # Total INCLUDING partial-tier credit — the quantity the optimizer maximised.
+    # Equals float(total_points) when config.TRIAL_PARTIAL_CREDIT_RATE is 0.0.
+    total_credit_points: float = 0.0
     trials: list[TrialResult] = field(default_factory=list)
     bench: list[str] = field(default_factory=list)
     # Per drawn skill, the SKILL LEVELS the guild's building grants every member
@@ -1106,6 +1230,7 @@ class WeekResult:
             "target_scale": self.target_scale,
             "member_count": self.member_count,
             "total_points": self.total_points,
+            "total_credit_points": self.total_credit_points,
             "strategy": self.strategy,
             "trials": [t.to_dict() for t in self.trials],
             "bench": self.bench,
@@ -1180,6 +1305,7 @@ def run_week(
         target_scale=target_scale,
         member_count=len(members),
         total_points=sum(t.points for t in trials),
+        total_credit_points=sum(t.credit_points for t in trials),
         strategy=strategy,
         trials=trials,
         bench=[m.name for m in assignment.bench],
