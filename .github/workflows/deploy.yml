@@ -28,7 +28,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The suite has never gated a deploy: until now this workflow ran only
+  # `python -m src.build`, so a logic regression that did not CRASH the build
+  # shipped silently to Pages. That was tolerable while the objective was an
+  # integer step function -- most mistakes moved a tier and were visible on the
+  # page. The 2026-08-11 partial-credit migration makes the objective continuous
+  # and rewrites ~15 exact-comparison sites (`== base_points`, `gain >= 0`,
+  # `delta > best`), several of which fail by going QUIET rather than by raising:
+  # signup._safety_swaps compares floats for equality and would simply publish an
+  # empty swap list. Those are exactly the regressions only pytest catches, so the
+  # tests now run first and the build does not start unless they pass.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Same provisioning as the build job below, for the same reasons (and the
+      # cache is shared between them).
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Run tests
+        # --extra dev is the OPPOSITE of the build job's --no-dev: pytest lives in
+        # the [dev] extras. scipy/numpy come with it and are used only by the
+        # bake-off's optional contestant, never by the shipped optimizer.
+        run: uv run --extra dev python -m pytest tests/ -q
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
