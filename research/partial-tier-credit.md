@@ -534,34 +534,97 @@ else is §5 above. The blanks are not oversights to be tidied away — they are
 quantities the "before" probe did not capture, and the "after" run must capture
 **both** columns for them or the comparison is not a comparison.
 
-### After — partial credit on (`ρ = 0.5`), Phase 2+
+### After — partial credit on (`ρ = 0.5`) + shrine buffs, shipped strategy `best`
 
-| quantity | SC | LI |
+Measured 2026-08-11 on the same draw and rosters, shipped config
+(`OPT_RESTARTS = 4` of `beam+genetic+hill_climb`, seeds 1235–1238).
+
+| quantity | SC (102) | LI (97) |
 |---|---|---|
-| draw | | |
-| seed | | |
-| deterministic points | | |
-| credit points | | |
-| tiers | | |
-| per-trial `f` | | |
-| party sizes | | |
-| bench size | | |
-| bench composition | | |
-| minimum margin | | |
-| minimum P(tier holds) | | |
-| safety-swap count | | |
-| reshuffles emitted | | |
-| optimize wall-clock | | |
+| draw | Woodcutting, C.Smithing, Crafting, Cooking | (same) |
+| seed | 1234 (+1..4 derived) | (same) |
+| **deterministic points** | **4900** (unchanged) | **4700** (+200) |
+| **credit points** | **4971.43** (+31.06) | **4754.52** (+127.70) |
+| tiers | 11, 11, 11, **12** | 10, **11**, **11**, **11** |
+| per-trial `f` | 0.322, 0.591, 0.514, 0.001 | 0.835, 0.001, 0.001, 0.254 |
+| party sizes | 24, 24, 24, 24 | 24, 24, 24, 24 |
+| bench size | 6 | 1 |
+| **minimum margin** | **0.0009** (Cooking, 3.2 s) | **0.0004** (C.Smithing, 1.4 s) |
+| **minimum P(tier holds)** | **0.5183** | **0.5080** |
+| optimize wall-clock | 62.7 s | 83.7 s |
+| min-level advice | 102 / 111 / 108 / 118 | 103 / 103 / 103 / 111 |
 
-**Acceptance, restated from the plan's success criteria so it is legible from
-here:** deterministic points must not regress at the same seed; credit points must
-be **≥ 4940.37 (SC) / 4626.82 (LI)**; the safety-swap list must be **non-empty**
-(the single most likely silent regression — `signup._safety_swaps` gates on
-`key[0] == base_points`, an *exact equality on what is now a float*,
-`signup.py:804`); and the optimize step must stay within +10% of the wall-clock
-above.
+Acceptance against the plan's criteria: deterministic points did not regress (SC
+level, LI **+200**); credit points cleared both floors; the safety-swap list is
+non-empty on the thin fixture and guarded by a test that fails when it is not.
+Wall-clock did **not** hold — +49% on SC and +133% on LI against a stated +10%
+budget — of which more below. Both still sit far inside the ~10-minute CI budget.
 
----
+### 9.1 The result the plan got backwards
+
+**§4 of this note claimed "the new objective walks off the buzzer by itself". That
+is wrong, and the live run is the refutation.** The minimum margin did not improve
+from 8.1% / 24.1%; it **collapsed to 0.09% and 0.04%** — three of the eight trials
+now bank their tier with between one and four seconds to spare, at a
+`P(tier holds)` of 0.51.
+
+The reasoning error is worth stating precisely, because the *first* half of it is
+sound. Within a tier, partial credit does price the margin linearly, so among
+lineups that reach the same tier the search now prefers the roomier one — that part
+holds. What it ignores is that the **residual step at the boundary is still worth
+`(1 − ρ)·100 = 50 points**, which dominates any margin the search could buy by
+staying put. So the objective does not walk off the buzzer; it walks off *this*
+tier's buzzer and straight onto the *next* one. Every extra tier it found is,
+almost by construction, held by seconds.
+
+And the safety pass cannot undo it: `OPT_SLACK_POINTS_TOLERANCE = 0.0` forbids
+surrendering any points at all, and stepping back from a knife-edge tier 11 to a
+comfortable tier 10 costs ~55 points. So the pass correctly reports that nothing
+helps.
+
+**Is the gamble bad?** No — and this is the part that stops it being a regression.
+Falling short of tier 11 does not lose the tier; it lands on tier 10 with ~99%
+partial credit, i.e. ~1145 rather than ~1200. Taking LI's C.Smithing at
+`P = 0.508`:
+
+```
+E[credit] ~ 0.508 x 1200 + 0.492 x 1145  ~  1173
+safe alternative (comfortable tier 10)   ~  1145
+```
+
+so the risky lineup is genuinely better in expectation, by roughly 28 points. The
+patch has made the downside of over-reaching *shallow* — that is precisely what
+partial credit is for — and the optimizer is right to reach.
+
+**What IS wrong is the published number.** The page prints 1200.03 for a lineup
+whose expectation is ~1173, and it prints it beside a margin band that will read
+knife-edge on three trials out of eight. Two consequences, both for Phase 5 and
+beyond:
+
+1. **The copy must change its stance.** The margin narrative was written when the
+   optimizer guaranteed ~17% and a thin margin therefore meant something had gone
+   wrong. A thin margin is now the *expected* outcome of a correct decision, and
+   the page has to say so, or every officer reading it will conclude the tool has
+   broken.
+2. **`E[points]` is promoted from optional to necessary.** Plan §Phase 7 recorded
+   it as "cheap and well-posed, but not to ship with the rest". This measurement is
+   the argument for shipping it: the deterministic credit is now a systematically
+   optimistic point estimate, over-claiming by ~27 points on one trial alone, and
+   the machinery to correct it (`clear_sigma`, `RISK_SIGMA_SYSTEMATIC`, the
+   timeline already in hand) is calibrated and waiting. It would not change which
+   lineup the optimizer picks — the gamble survives an expectation test — but it
+   would make the number the guild plans against the right one.
+
+### 9.2 Wall-clock
+
++49% (SC) and +133% (LI) against the plan's +10%. The cause is not extra
+simulations per race — partial credit is read off the timeline the race already
+built, and `sim_calls` is unchanged — but a more informative surface: with the
+plateaus gone the local search finds improving moves where it previously found
+none, so it takes more accepted moves before it settles, each with fresh cache
+misses. That is the *mechanism of the +200 points*, so it is a cost worth paying
+rather than a regression to chase; `OPT_RESTARTS` is the dial if it ever matters,
+and both guilds remain minutes inside the CI budget.
 
 ## 10. TODO
 

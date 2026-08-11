@@ -244,7 +244,42 @@ TRIAL_OPTIMIZER_SEED = 1234
 OPT_RESTARTS = 4
 OPT_ENSEMBLE_PIPELINES = ["beam+genetic+hill_climb"] * OPT_RESTARTS
 
-# --- BAKE-OFF RESULTS -------------------------------------------------------
+# --- POST-PATCH RE-BAKE (2026-08-11, partial-tier credit + shrine buffs) ----
+# The tables below were measured against the STEP objective. Partial credit changed
+# the objective, so the field was re-run; the shipped choice SURVIVES, and the way it
+# survived is instructive enough to record.
+#
+# A quick synthetic run (n=40, one seed) put proxy_greedy+sa+hill_climb a full tier
+# ahead of the shipped beam+genetic+hill_climb, which looked like grounds to change
+# what ships. It was not. On the LIVE rosters, at the shipped budgets, three seeds
+# (1235-1237), draw [Woodcutting, C.Smithing, Crafting, Cooking]:
+#
+#   strategy                        SC mean_cr   SC step   LI mean_cr   LI step
+#   ------------------------------------------------------------------------------
+#   beam+genetic+hill_climb  SHIPPED    4971.2      4900      4754.0      4700
+#   beam+hill_climb                     4971.1      4900      4754.1      4700
+#   proxy_greedy+hill_climb             4970.7      4900      4752.6      4700
+#   marginal_greedy+sa+hill_climb       4970.3      4900      4753.3      4700
+#   proxy_greedy+sa+hill_climb          4970.2      4900      4754.4      4700
+#
+# EVERY candidate reaches the SAME deterministic tiers on both guilds; they differ by
+# under half a point of credit out of ~4900, which is noise. So the synthetic table
+# misled us for the second time in this file's history, and in the same way — see
+# "WHY THE SYNTHETIC TABLE ABOVE MISLED US" below, written after the first time.
+#
+# Worth noting for a future trim: beam+hill_climb matches the shipped pipeline on
+# both guilds at 12-14s against 18-21s. Not a reason to churn today, but it is the
+# cheaper horse if the optimize step ever needs to come down.
+#
+# WHAT DID CHANGE, and it is the headline of the whole migration: on LI the
+# deterministic total rose 4500 -> 4700 (+200, two whole tiers) at the same seed,
+# because the plateaus the search used to grope across became slopes it can walk.
+# research/risk-aware-objective.md R1 predicted exactly this ("smoothing the
+# objective should make the existing search strictly better"). SC held at 4900.
+# The price is a collapsed time margin — see research/partial-tier-credit.md §9.1,
+# which is required reading before anyone touches OPT_SLACK_POINTS_TOLERANCE.
+#
+# --- BAKE-OFF RESULTS (PRE-PATCH — step objective) --------------------------
 # `python -m src.optimize_bakeoff` — synthetic roster n=86, seeds 1-3, at the
 # budgets set below (SA 50k iters x2 restarts, GA pop 100 x 200 gens, beam 16).
 # Points PRIMARY (higher = better); time is per-run wall-clock on the dev box.
