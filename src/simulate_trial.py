@@ -231,6 +231,87 @@ def simulate(
 
 
 # ---------------------------------------------------------------------------
+# Partial-tier credit, validated against the rolled dice (patch 2026-08-11)
+# ---------------------------------------------------------------------------
+def credit_from_taus(
+    taus: np.ndarray, budget: float, rate: Optional[float] = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-run ``(tier_banked, progress_fraction, credit_points)`` from clear times.
+
+    ``taus`` is the ``(runs, tiers)`` matrix :func:`simulate` returns. For each run the
+    tier banked is the last one cleared inside ``budget``, and the progress into the
+    next is the share of ITS clearing interval that the remaining time covers::
+
+        f = (budget - tau_T) / (tau_{T+1} - tau_T)
+
+    which is the same quantity ``trials.tier_progress_fraction`` derives from the
+    deterministic timeline, expressed in realised times instead of nominal ones. That
+    correspondence is the point: it lets the credit the model publishes be checked
+    against dice rather than argued about.
+
+    A run whose next tier never completed inside the simulator's horizon has no
+    interval to divide by, so its progress is recorded as 0.0 — conservative, and it
+    only bites on runs already far past the buzzer.
+    """
+    if rate is None:
+        rate = config.TRIAL_PARTIAL_CREDIT_RATE
+    banked = np.nansum(np.where(np.isfinite(taus), taus <= budget, False), axis=1)
+    banked = banked.astype(np.int64)
+    runs, n_tiers = taus.shape
+    frac = np.zeros(runs, dtype=np.float64)
+    for i in range(runs):
+        t = banked[i]
+        if t >= n_tiers:
+            continue                      # ran off the top of the matrix
+        start = taus[i, t - 1] if t >= 1 else 0.0
+        end = taus[i, t]                  # the tier that did NOT complete in time
+        if not np.isfinite(end) or end <= start:
+            continue
+        frac[i] = min(1.0, max(0.0, (budget - start) / (end - start)))
+    credit = np.where(
+        (banked >= 1) | (frac > 0),
+        config.TRIAL_POINTS_BASE * ((banked >= 1) | bool(
+            config.TRIAL_PARTIAL_CREDIT_BASE_ON_PARTIAL
+        ))
+        + config.TRIAL_POINTS_PER_TIER * (banked + rate * frac),
+        0.0,
+    )
+    return banked, frac, credit
+
+
+def report_partial_credit(
+    sim: np.ndarray, ref, budget: float
+) -> None:
+    """Print the realised credit distribution beside the figure the page publishes.
+
+    THE POINT OF THIS BLOCK. The site publishes a DETERMINISTIC score — the credit the
+    party earns if every die falls at its expectation. Partial-tier credit made that
+    number continuous, which is a large improvement, but it did not make it an
+    expectation. This says how far apart the two are, and in which direction.
+
+    The deterministic figure is systematically OPTIMISTIC about the banked tier and
+    pessimistic about nothing, because clearing time is convex in the rate shock: a run
+    that goes badly loses a whole tier's step, while a run that goes well gains only
+    partial credit toward the next. Reporting both is the honest form of
+    ``research/risk-aware-objective.md`` Model 2 without adopting it as the objective.
+    """
+    banked, frac, credit = credit_from_taus(sim, budget)
+    det_tier = ref.tier_reached
+    print(f"\npartial-tier credit at the buzzer ({len(sim):,} runs):")
+    print(f"   deterministic          tier {det_tier}, "
+          f"{ref.partial_fraction:.1%} into the next, {ref.credit_points:,.1f} pts")
+    print(f"   simulated mean         tier {banked.mean():.3f}, "
+          f"{frac.mean():.1%} into the next, {credit.mean():,.1f} pts")
+    print(f"   simulated median       {np.median(credit):,.1f} pts   "
+          f"p10 {np.percentile(credit, 10):,.1f}   p90 {np.percentile(credit, 90):,.1f}")
+    shortfall = ref.credit_points - credit.mean()
+    print(f"   deterministic is {shortfall:+,.1f} pts vs the expectation "
+          f"({shortfall / ref.credit_points:+.2%})")
+    holds = float((banked >= det_tier).mean())
+    print(f"   P(banks the credited tier {det_tier}) = {holds:.4f}")
+
+
+# ---------------------------------------------------------------------------
 # The analytic model being audited
 # ---------------------------------------------------------------------------
 def phi(z: np.ndarray | float) -> np.ndarray | float:
@@ -489,6 +570,9 @@ def main(argv: Optional[list[str]] = None) -> int:
           f"   ratio {s_emp / s_ana:.4f}")
     print(f"mean tau: simulated {col[finite].mean():.1f}s  "
           f"deterministic {taus_det[top - 1]:.1f}s")
+
+    # Partial-tier credit against the dice (patch 2026-08-11).
+    report_partial_credit(sim, ref, budget)
 
     h = os.path.join(outdir, f"{args.skill.lower()}_clear_time.png")
     p_emp = plot_histogram(col, top, taus_det[top - 1], s_ana, budget, h, args.skill)

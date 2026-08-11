@@ -997,3 +997,32 @@ def test_minimum_absent_leaves_the_plan_untouched():
         for k in ("generated_at", "week_date"):
             plain.pop(k, None), again.pop(k, None)
         assert again == plain
+
+
+def test_the_safety_swap_list_is_not_silently_empty():
+    """THE GUARD AGAINST THE MOST LIKELY SILENT REGRESSION IN THIS MIGRATION.
+
+    _safety_swaps admitted a move only when `key[0] == base_points`. Once partial-tier
+    credit made the score continuous that equality matched essentially nothing, so the
+    list would have come out EMPTY, the page would have printed "None found", and NOT
+    ONE existing test would have failed -- every assertion about the moves is written as
+    a loop over them, and a loop over nothing passes.
+
+    So this asserts the list is populated on a fixture built to need it, which is the
+    one thing those loops cannot do for themselves.
+    """
+    members, picks, draw = _thin_scenario()
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4,
+    )
+    assert p.min_slack_fraction is not None
+    assert p.min_slack_fraction < config.SLACK_THIN, (
+        "_thin_scenario must still be thin, or it is testing nothing"
+    )
+    assert p.safety_swaps, (
+        "no safety swaps found on the thin fixture -- the admissibility test has "
+        "stopped matching; see config.SIGNUP_SAFETY_POINTS_TOLERANCE"
+    )
+    # And the ladder must actually climb.
+    assert p.safety_min_slack is not None
+    assert p.safety_min_slack > p.min_slack_fraction

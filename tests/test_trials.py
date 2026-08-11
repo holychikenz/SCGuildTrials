@@ -915,3 +915,133 @@ def test_min_level_advice_is_none_for_a_party_with_no_levels():
     advice = trials.advise_min_level([blank], [blank], "Foraging")
     assert advice.suggested is None
     assert advice.would_exclude == 0
+
+
+# ---------------------------------------------------------------------------
+# Partial-tier credit (patch 2026-08-11)
+# ---------------------------------------------------------------------------
+def _ramp_party(shift=0, n=20):
+    """A party whose Foraging levels descend, shifted wholesale by ``shift``."""
+    levels = [130, 128, 126, 124, 122, 120, 118, 116, 114, 112,
+              110, 108, 105, 102, 100, 98, 95, 92, 90, 88]
+    return [_member(f"r{i}", {"Foraging": min(200, L + shift)})
+            for i, L in enumerate(levels[:n])]
+
+
+def test_progress_fraction_matches_the_failed_tiers_share_of_its_target():
+    r = trials.simulate_race(_ramp_party(), "Foraging")
+    budget = config.TRIAL_TIME_BUDGET_SECONDS
+    failed = next(s for s in r.timeline if not s.cleared)
+    banked = trials.tier_clear_seconds(r) or 0.0
+    assert r.partial_fraction == pytest.approx(
+        (budget - banked) / failed.time_to_clear
+    )
+    assert 0.0 <= r.partial_fraction < 1.0
+    # The inline value simulate_race computes and the read-back helper must agree
+    # EXACTLY -- they are two expressions of one quantity and a drift between them
+    # would put the page and the optimizer on different numbers.
+    assert trials.tier_progress_fraction(r) == r.partial_fraction
+    # Only the failed step carries a progress figure.
+    assert failed.progress_fraction == r.partial_fraction
+    assert all(s.progress_fraction is None for s in r.timeline if s.cleared)
+
+
+def test_progress_fraction_is_zero_when_nothing_was_in_progress():
+    # An empty party: no tier attempted at all.
+    empty = trials.simulate_race([], "Foraging")
+    assert empty.partial_fraction == 0.0 and empty.credit_points == 0.0
+    # A party that cannot move: the failed step has no time_to_clear to divide by.
+    blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
+    stuck = trials.simulate_race([blank], "Foraging")
+    assert stuck.partial_fraction == 0.0 and stuck.credit_points == 0.0
+
+
+def test_credit_points_reduce_to_the_step_function_when_the_rate_is_zero(monkeypatch):
+    """The one-line rollback, asserted rather than asserted-in-a-comment."""
+    monkeypatch.setattr(config, "TRIAL_PARTIAL_CREDIT_RATE", 0.0)
+    for n in range(1, 21):
+        r = trials.simulate_race(_ramp_party(n=n), "Foraging")
+        assert r.credit_points == float(r.points)
+        assert trials.points_for_result(r) == float(
+            trials.points_for_tier(r.tier_reached)
+        )
+
+
+def test_credit_points_are_monotone_in_party_throughput():
+    """Stronger is never worth less -- including ACROSS tier boundaries.
+
+    The precondition for trials._cheapest_bumping_level's binary search, and the
+    reason partial credit does not punish a party for crossing a boundary: completing
+    a tier gains TRIAL_POINTS_PER_TIER while surrendering at most rate*PER_TIER of
+    partial credit, so with rate <= 1 the step always dominates the loss.
+    """
+    previous = None
+    for shift in range(-40, 35, 5):
+        value = trials.simulate_race(_ramp_party(shift), "Foraging").credit_points
+        if previous is not None:
+            assert value >= previous - 1e-9, f"non-monotone at shift={shift}"
+        previous = value
+
+
+def test_crossing_a_tier_boundary_raises_points_by_at_least_the_residual_step():
+    """The cliff is HALVED by partial credit, not removed -- which is why the
+    sign-up planner's compound-reshuffle machinery still has work to do."""
+    residual = config.TRIAL_POINTS_PER_TIER * (1 - config.TRIAL_PARTIAL_CREDIT_RATE)
+    seen = 0
+    previous = None
+    for shift in range(-40, 35, 1):
+        r = trials.simulate_race(_ramp_party(shift), "Foraging")
+        if previous is not None and r.tier_reached > previous[0]:
+            assert r.credit_points - previous[1] >= residual - 1e-9
+            seen += 1
+        previous = (r.tier_reached, r.credit_points)
+    assert seen >= 3, "the sweep must actually cross some boundaries"
+
+
+def test_the_marginal_member_is_no_longer_worth_exactly_nothing():
+    """The degeneracy that shaped the optimizer, and its replacement.
+
+    Under the step objective almost every candidate scored an identical zero -- which
+    is what justified seating them all for free. NOT literally every one: a strong
+    enough addition could always cross a tier boundary, and this fixture sits near one,
+    so the honest claim is that the step objective is blind across a broad PLATEAU while
+    partial credit resolves every candidate distinctly.
+    """
+    party = _ramp_party()
+    base = trials.simulate_race(party, "Foraging")
+    levels = (140, 120, 110, 100, 90, 80, 70, 60, 50, 40, 30, 20, 10)
+    step, credit = [], []
+    for level in levels:
+        cand = _member("cand", {"Foraging": level})
+        r = trials.simulate_race(party + [cand], "Foraging")
+        step.append(r.points - base.points)
+        credit.append(r.credit_points - base.credit_points)
+
+    # THE PLATEAU: the step objective cannot tell most of these candidates apart, and
+    # scores the great majority at exactly nothing.
+    assert step.count(0) >= len(levels) - 2, step
+    assert len(set(step)) <= 2, step
+
+    # THE SLOPE: partial credit resolves all thirteen, strictly ordered by strength,
+    # with exactly one sign change -- the break-even a seat now has to clear.
+    assert all(a > b for a, b in zip(credit, credit[1:])), credit
+    signs = [d > 0 for d in credit]
+    assert signs[0] is True and signs[-1] is False
+    assert sum(1 for a, b in zip(signs, signs[1:]) if a != b) == 1
+    assert len(set(credit)) == len(credit)
+
+
+def test_credit_points_are_deterministic_and_order_independent():
+    """No dependence on party iteration order.
+
+    trials._prepare_member records that a one-ULP change in a party rate once left SC
+    on the same points while reshuffling every party for no gain, so this is not
+    academic: a float objective that varied with roster order would make the whole
+    search irreproducible.
+    """
+    party = _ramp_party()
+    first = trials.simulate_race(party, "Foraging").credit_points
+    assert trials.simulate_race(list(party), "Foraging").credit_points == first
+    assert trials.simulate_race(
+        list(reversed(party)), "Foraging"
+    ).credit_points == first

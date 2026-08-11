@@ -742,12 +742,23 @@ def p_from_margin(margin: float, sigma: float, bias: float = 0.0) -> float:
 
 
 def expected_points(cal: TrialCalibration) -> float:
-    """E[points] from the empirical survival curve (research §3).
+    """E[STEP points] from the empirical survival curve (research §3).
 
     ``points(T) = 100 + 100*T``, and the tier events are NESTED (any shock that
     raises rates can only move a tier from not-cleared to cleared), so
     ``E[points] = BASE * S(1) + PER_TIER * sum_t S(t)`` — no need for the tier
     distribution itself.
+
+    DELIBERATELY STILL THE STEP FORM after the 2026-08-11 patch. Partial-tier credit
+    adds ``PER_TIER * rate * E[f]``, and ``E[f]`` is NOT recoverable from the survival
+    curve: the curve records WHETHER each tier was cleared, not how far into the next
+    one the party had got when the hour ran out. Estimating it properly needs realised
+    clearing TIMES — which is what ``src/simulate_trial.py`` now reports, by rolling
+    every die (see its ``report_partial_credit``).
+
+    Keeping the two apart matters for reading the report: this figure is directly
+    comparable to the pre-patch campaign's numbers, and a credit-inclusive one would
+    not be.
     """
     s = cal.p_empirical
     if not s:
@@ -942,6 +953,32 @@ def scenario_buffs_lapsed(parties: list[list[Seat]], reps: int, seed: int):
         config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = original_prod
 
 
+def scenario_shrines_off(parties: list[list[Seat]], reps: int, seed: int):
+    """The guild shrine buffs NOT applying inside trials: a discrete either/or.
+
+    The patch says "Shrine buffs now apply inside guild Trials", and Force (efficiency)
+    and Tempo (action speed) are modelled accordingly. Two things about that are
+    unconfirmed, and both are REGIMES rather than Gaussians, so they belong here beside
+    the buff-lapse scenario rather than smeared into sigma:
+
+      * whether the buffs really do reach a skilling trial (the note says so, but no
+        capture yet shows the resolved figure), and
+      * whether the multiplier follows the SHRINE level — which the guild's building map
+        records — or the separately-purchased BUFF level, which no capture holds at all
+        (research/guild-shrines.md §6).
+
+    Switching them off takes the conservative end of both questions at once. At the live
+    levels the effect is small (Force 1 + Tempo 1 is +0.005 on each channel), so a large
+    movement in this line would itself be the finding.
+    """
+    original = config.SHRINE_BUFFS_APPLY_IN_TRIALS
+    try:
+        config.SHRINE_BUFFS_APPLY_IN_TRIALS = False
+        return [run_trial(p, DEFAULT, reps, seed) for p in parties]
+    finally:
+        config.SHRINE_BUFFS_APPLY_IN_TRIALS = original
+
+
 # ---------------------------------------------------------------------------
 # Validating the aleatoric term against a DIRECT action-level simulation
 # ---------------------------------------------------------------------------
@@ -1101,6 +1138,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"{'ALL (combined)':<22} {combined}")
 
     print("\n=== scenario: community buffs lapsed (regime, not sigma) ===")
+    shrines = scenario_shrines_off(parties, max(1000, args.reps // 4), args.seed)
+    print(
+        "\n=== scenario: guild shrine buffs NOT applying in trials ==="
+    )
+    print(f"   tiers {[c.model_tier for c in shrines]}"
+          f"   E[points] {sum(expected_points(c) for c in shrines):.1f}")
+
     lapsed = scenario_buffs_lapsed(parties, max(1000, args.reps // 4), args.seed)
     report(lapsed, DEFAULT)
     print(f"  deterministic total under lapse "

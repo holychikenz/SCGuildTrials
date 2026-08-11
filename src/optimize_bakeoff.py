@@ -5,7 +5,11 @@ Runnable: ``python -m src.optimize_bakeoff [--live] [--seeds N] [--csv]``
 Each strategy is run against the same roster(s) and the same per-strategy seed
 sequence, and judged on:
 
-  * **points**  — total guild points (mean and worst-case across seeds); PRIMARY
+  * **credit points** — the objective the strategies maximise, partial-tier credit
+    included (mean and worst-case across seeds); PRIMARY
+  * **step points** — the integer award for the tiers actually banked, reported
+    alongside so a strategy cannot win by farming partial progress while banking
+    fewer tiers
   * **time_ms** — wall-clock per run (mean)
   * **sims**    — genuine simulate_race calls (cache misses); the oracle-call
                   "how quickly" axis, free of wall-clock noise
@@ -33,6 +37,7 @@ from typing import Optional
 from . import config
 from .optimizer import AssignmentScorer, optimize, run_strategy
 from .reader import MemberRow, SkillEntry
+from .trials import simulate_race
 
 # Strategy field for the bake-off. Constructors alone, plus constructor+refiner
 # pairings, so the table shows both raw seeds and what refinement buys.
@@ -162,9 +167,24 @@ def _scipy_lap_parties(
 # ---------------------------------------------------------------------------
 @dataclass
 class Row:
+    """One strategy's aggregate over the seeds.
+
+    TWO point columns since the 2026-08-11 patch, and both are needed. ``credit`` is
+    the objective the strategies actually maximise (partial-tier credit included);
+    ``step`` is the integer award for the tiers banked, which is what the guild sees
+    in game. Ranking on the objective alone would hide a strategy that farms partial
+    progress while banking fewer tiers, and ranking on the step total alone would be
+    blind to the improvement the patch introduced —
+    ``research/risk-aware-objective.md`` R7 asked for exactly this pairing:
+    "it must report deterministic points, E[points], and P(>= deterministic tier) per
+    strategy, so the change can be proven not to cost tiers."
+    """
+
     strategy: str
-    mean_points: float
-    min_points: int
+    mean_credit: float
+    min_credit: float
+    mean_step: float
+    min_step: int
     mean_ms: float
     mean_sims: float
 
@@ -174,8 +194,12 @@ def _run_one(
     skills: list[str],
     strategy: str,
     seed: int,
-) -> tuple[int, float, int]:
-    """Run one strategy once; return (points, elapsed_ms, sim_calls)."""
+) -> tuple[float, int, float, int]:
+    """Run one strategy once; return (credit_points, step_points, ms, sim_calls).
+
+    The step total is recomputed from the winning parties rather than read off the
+    scorer, whose cache holds only the objective.
+    """
     scorer = AssignmentScorer(
         members, skills, config.TARGET_SCALE, config.TRIAL_PARTY_CAP
     )
@@ -185,8 +209,16 @@ def _run_one(
     else:
         parties = run_strategy(scorer, strategy, seed)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    points = scorer.total_points(parties)
-    return points, elapsed_ms, scorer.sim_calls
+    credit = scorer.total_points(parties)
+    step = sum(
+        simulate_race(
+            [members[i] for i in sorted(parties[s])],
+            skills[s],
+            config.TARGET_SCALE,
+        ).points
+        for s in range(len(skills))
+    )
+    return credit, step, elapsed_ms, scorer.sim_calls
 
 
 def bake_off(
@@ -198,37 +230,45 @@ def bake_off(
     """Run every strategy over every seed; return aggregated rows (best first)."""
     rows: list[Row] = []
     for strat in strategies:
-        pts: list[int] = []
+        credit: list[float] = []
+        step: list[int] = []
         ms: list[float] = []
         sims: list[int] = []
         for sd in seeds:
-            p, t, s = _run_one(members, skills, strat, sd)
-            pts.append(p)
+            c, st, t, s = _run_one(members, skills, strat, sd)
+            credit.append(c)
+            step.append(st)
             ms.append(t)
             sims.append(s)
         rows.append(
             Row(
                 strategy=strat,
-                mean_points=statistics.mean(pts),
-                min_points=min(pts),
+                mean_credit=statistics.mean(credit),
+                min_credit=min(credit),
+                mean_step=statistics.mean(step),
+                min_step=min(step),
                 mean_ms=statistics.mean(ms),
                 mean_sims=statistics.mean(sims),
             )
         )
-    rows.sort(key=lambda r: (-r.mean_points, r.mean_ms))
+    # Ranked on the OBJECTIVE (credit), which is what the strategies optimise; the
+    # step columns are there to catch a strategy that wins on credit while banking
+    # fewer tiers, which the objective alone cannot see.
+    rows.sort(key=lambda r: (-r.mean_credit, r.mean_ms))
     return rows
 
 
 def _print_table(title: str, rows: list[Row]) -> None:
     print(f"\n=== {title} ===")
     print(
-        f"{'strategy':<28} {'mean_pts':>9} {'min_pts':>8} "
-        f"{'mean_ms':>9} {'mean_sims':>10}"
+        f"{'strategy':<28} {'mean_cr':>9} {'min_cr':>9} {'mean_st':>8} "
+        f"{'min_st':>7} {'mean_ms':>9} {'mean_sims':>10}"
     )
-    print("-" * 68)
+    print("-" * 84)
     for r in rows:
         print(
-            f"{r.strategy:<28} {r.mean_points:>9.1f} {r.min_points:>8d} "
+            f"{r.strategy:<28} {r.mean_credit:>9.1f} {r.min_credit:>9.1f} "
+            f"{r.mean_step:>8.1f} {r.min_step:>7d} "
             f"{r.mean_ms:>9.1f} {r.mean_sims:>10.0f}"
         )
 
