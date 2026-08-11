@@ -606,14 +606,45 @@ beyond:
    wrong. A thin margin is now the *expected* outcome of a correct decision, and
    the page has to say so, or every officer reading it will conclude the tool has
    broken.
-2. **`E[points]` is promoted from optional to necessary.** Plan §Phase 7 recorded
-   it as "cheap and well-posed, but not to ship with the rest". This measurement is
-   the argument for shipping it: the deterministic credit is now a systematically
-   optimistic point estimate, over-claiming by ~27 points on one trial alone, and
-   the machinery to correct it (`clear_sigma`, `RISK_SIGMA_SYSTEMATIC`, the
-   timeline already in hand) is calibrated and waiting. It would not change which
-   lineup the optimizer picks — the gamble survives an expectation test — but it
-   would make the number the guild plans against the right one.
+2. **`E[points]` is promoted from optional to necessary — and has now shipped.**
+   Plan §Phase 7 recorded it as "cheap and well-posed, but not to ship with the
+   rest". This measurement was the argument for shipping it, and
+   `trials.expected_credit_points` now does
+   (`config.RISK_EXPECTED_POINTS`). It does **not** enter the objective: optimising
+   it would pick the same parties, because the gamble it prices survives its own
+   test. It exists so the published figure is the right one.
+
+### 9.3 E[points], measured
+
+Same rosters and draw, `RISK_LOOKAHEAD_TIERS = 3`, 81-node grid over ±5σ:
+
+| trial | tier | margin | P(holds) | deterministic | **E[points]** | over-claim |
+|---|---|---|---|---|---|---|
+| SC Woodcutting | 11 | 0.1734 | 1.000 | 1216.08 | 1216.10 | −0.02 |
+| SC C.Smithing | 11 | 0.2576 | 1.000 | 1229.57 | 1229.59 | −0.02 |
+| SC Crafting | 11 | 0.2299 | 1.000 | 1225.71 | 1225.73 | −0.02 |
+| **SC Cooking** | 12 | **0.0009** | **0.518** | 1300.07 | **1275.72** | **+24.34** |
+| **SC total** | | | | **4971.43** | **4947.15** | **+24.28 (+0.49%)** |
+| LI Woodcutting | 10 | 0.3311 | 1.000 | 1142.94 | 1143.25 | −0.31 |
+| **LI C.Smithing** | 11 | **0.0000** | **0.500** | 1200.00 | **1175.71** | **+24.29** |
+| **LI Crafting** | 11 | **0.0001** | **0.502** | 1200.01 | **1175.61** | **+24.40** |
+| LI Cooking | 11 | 0.1363 | 1.000 | 1211.72 | 1211.74 | −0.02 |
+| **LI total** | | | | **4754.67** | **4706.31** | **+48.36 (+1.02%)** |
+
+Three things to read off it.
+
+* **A knife-edge tier over-claims by ~24 points**, close to §9.1's ~28 estimate from
+  first principles. Not ~50: the coin flip is not between "tier 11" and "nothing",
+  it is between tier 11 and tier 10-plus-99%-credit, and the patch is what made that
+  downside shallow.
+* **A comfortable trial over-claims by ~0.02, and the sign is NEGATIVE** — the
+  expectation slightly *exceeds* the deterministic score, because a favourable shock
+  buys extra partial credit while an unfavourable one has a comfortable margin to eat
+  into first. The asymmetry is real and it is in the guild's favour when margins are
+  wide.
+* **LI's expectation (4706.31) sits barely above its banked step total (4700)**,
+  which is the honest one-line summary of a lineup holding two tiers on coin flips:
+  in expectation the guild should plan on roughly its banked tiers and nothing more.
 
 ### 9.2 Wall-clock
 

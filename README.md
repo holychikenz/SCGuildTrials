@@ -48,10 +48,37 @@ still works if you prefer a classic venv.
 `src/trials.py` models each weekly skilling trial as a cumulative tier race and
 scores it in guild points; `src/optimizer.py` assigns members across the week's
 **4 trials to maximise total points**. The objective is non-linear and
-non-separable — points are a step function of the tier reached, and the 1%
-per-member headcount penalty means a weak member can *lower* a party's tier, so
+non-separable — it is piecewise linear with a step at every tier boundary, and the
+1% per-member headcount penalty means a weak member can *lower* a party's score, so
 party size is itself a decision. Every strategy is therefore judged against the
 real `simulate_race` oracle (memoised in `AssignmentScorer`).
+
+### Partial-tier credit (game patch 2026-08-11)
+
+The game now credits progress into the tier a party did **not** finish, at half
+rate — `0.5% credit per 1% progress` — so a trial is worth
+`100 + 100 × (T + 0.5·f)`. Each tier is therefore a **ramp of 50 points followed by
+a step of 50** at the boundary: the old 100-point cliff halved, not abolished.
+
+This is the most consequential change the project has absorbed, because the old
+cliff is what much of the optimizer was shaped around. Before it, a member who
+crossed no threshold was worth *exactly* zero, so a marginal seat was free and
+`_fill_bench` could call it "no harm done"; exact integer ties existed in
+abundance, which is what let the safety passes promise "the same points". Neither
+is true now. `research/risk-aware-objective.md` R1 had written the migration down in
+advance and called the smoothing a "happy accident" that would make the existing
+search strictly better — which it was: on the live Lactose Intolerance roster the
+deterministic total rose **4500 → 4700**, two whole tiers, at the same seed.
+
+`TRIAL_PARTIAL_CREDIT_RATE = 0.0` restores the pre-patch step function bit for bit
+(a one-line rollback, pinned by a test). `research/partial-tier-credit.md` carries
+the derivation, the measurements and the open questions.
+
+Guild **shrine buffs** now apply inside trials too — Shrine of Force grants
+efficiency and Shrine of Tempo action speed, +0.005 per level each; the other three
+buff loot and XP and must never touch the rate model. `research/guild-shrines.md`
+has the game data, both cost ladders, and the verdict that buildings dominate
+shrines as an investment by an order of magnitude.
 
 The shipped default is the ensemble strategy `"best"`
 (`config.TRIAL_OPTIMIZER_STRATEGY`): it runs several strong pipelines — including
@@ -60,18 +87,33 @@ a **beam-search-seeded genetic algorithm** — and returns the single best resul
 `# BAKE-OFF RESULTS` block in `config.py`). To restore the Phase-1 random split,
 set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 
-### The safety pass (why the optimum is not on the buzzer)
+### The safety pass, and why the optimum IS now on the buzzer
 
-Points are a *step* function of the tier reached, so the search cannot see how
-narrowly a tier was held — and on live data it routinely held one by seconds. A
-final pass (`optimizer._refine_slack`) therefore picks, from among the many
-assignments scoring those same points, the one whose *thinnest* trial has the most
-time to spare: it maximises `(total_points, min_margin, sum_margin)` with points
-first and compared as exact ints, so **it cannot trade a tier for margin**. On the
-2026-07-31 rosters the minimum margin went from 4.28% → 17.92% (SC) and 0.26% —
-nine seconds — → 16.41% (LI), for no change in points. `OPT_SLACK_PASS = False` is
-the one-line rollback; see `research/risk-aware-objective.md` for the measurements
-and for the probabilistic models this deliberately stops short of.
+Under the step objective the search could not see how narrowly a tier was held, so
+a final pass (`optimizer._refine_slack`) picked, from among the many assignments
+scoring the same points, the one whose *thinnest* trial had the most time to spare.
+On the 2026-07-31 rosters that lifted the minimum margin from 4.28% → 17.92% (SC)
+and from 0.26% — nine seconds — to 16.41% (LI), for no change in points.
+
+**Partial credit reversed that outcome, and deliberately.** Completing a tier is
+still worth a 50-point step, which dwarfs anything a wider margin is worth, so the
+optimizer now *reaches* for tiers it can only just hold — and it should, because
+falling short no longer forfeits the tier: the party lands on the one below with
+almost all of its progress credited. Measured live, three of eight trials now bank
+their tier with 1–4 seconds to spare at `P(holds) ≈ 0.51`, and that reaching is
+what bought LI its two extra tiers. The safety pass survives with a narrower job —
+the objective is a *sum* over trials while risk is a *minimum* over them, so it is
+the max-min correction to a max-sum search — re-founded on a stated points
+tolerance (`OPT_SLACK_POINTS_TOLERANCE`) now that exact ties no longer exist.
+
+Because the deterministic score prices a coin-flip tier as a certainty, the pages
+also publish **E[points]** (`trials.expected_credit_points`), the same score
+integrated over the calibrated shock. It is reporting, not the objective —
+optimising it would choose the same parties. Live, it runs 0.5–1.0% below the
+deterministic total, or about 24 points per knife-edge trial.
+`RISK_EXPECTED_POINTS = False` and `OPT_SLACK_PASS = False` are the respective
+one-line rollbacks; `research/partial-tier-credit.md` §9 has the full before/after,
+including the one prediction the implementation plan got backwards.
 
 The pass applies to the **unconstrained optimum only** (`optimizer.optimize`, i.e.
 `trials.html`). The sign-up plan locks real volunteers into the trials they ticked,
