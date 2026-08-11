@@ -16,6 +16,21 @@ of its own (only the ``Combat Trials`` block below it does)::
                                           Crafting         2
                                           Alchemy          1
 
+An OPTIONAL THIRD column carries the per-trial **minimum sign-up level** the game
+lets leaders and generals set (patch 2026-08-11). It is read when present and
+numeric and ignored otherwise, so the officers can add it whenever they like and the
+build keeps working until they do::
+
+                                          Trial Priority
+                                          Milking          3      95
+                                          Foraging         4
+                                          Crafting         2     100
+                                          Alchemy          1
+
+Here Milking and Crafting carry minimums, Foraging and Alchemy are unrestricted. An
+absent column means every trial is unrestricted, which is why absence is the feature's
+rollback: clear the cells and the constraint disappears.
+
 LEGACY layout (up to 2026-07-25) — a ``Skilling Trial Info`` banner with one
 ``Trial N`` row per drawn skill::
 
@@ -62,13 +77,15 @@ from __future__ import annotations
 import csv
 import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote
+
+from typing import Optional
 
 import requests
 
 from . import config
-from .reader import SheetStructureError, _cell
+from .reader import SheetStructureError, _cell, _to_int
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +141,16 @@ class TrialDraw:
     order the officers list them, which also drives sign-up lock precedence in
     :func:`src.signup.plan`). ``date`` is the cycle date as published on the tab
     (e.g. ``"7/24"``), carried for logging only.
+
+    ``min_levels`` maps a trial skill to the minimum sign-up level the officers have
+    set for it, or to ``None`` where they have set none. A skill absent from the map is
+    likewise unrestricted. The legacy layout has no such column and yields all-None,
+    so the constraint simply does not exist until somebody fills the cells in.
     """
 
     skills: list[str]
     date: str
+    min_levels: dict[str, Optional[int]] = field(default_factory=dict)
 
 
 def _normalise_skill(raw: str) -> str:
@@ -186,7 +209,7 @@ def fetch_assignments_csv(tab_name: str = ASSIGNMENTS_TAB) -> str:
 
 def _parse_legacy_block(
     rows: list[list[str]],
-) -> tuple[str, list[str], str] | None:
+) -> tuple[str, list[str], str, dict[str, Optional[int]]] | None:
     """Read the LEGACY ``Skilling Trial Info`` block, or ``None`` if absent.
 
     Locates the banner (col 1), reads the cycle date (col 2), then collects the
@@ -194,9 +217,12 @@ def _parse_legacy_block(
     non-trial row (e.g. the "Priority goes from 1 to 4" note) — which keeps the
     combat section out.
 
+    The legacy layout predates the per-trial minimum sign-up level, so the returned
+    minimum map is empty — every trial unrestricted.
+
     Returns:
-        ``(section_name, skills, date_cell)``, or ``None`` if the banner is not
-        on the tab at all.
+        ``(section_name, skills, date_cell, min_levels)``, or ``None`` if the banner is
+        not on the tab at all.
     """
     header_idx = None
     date_cell = ""
@@ -221,12 +247,12 @@ def _parse_legacy_block(
             continue  # tolerate a blank spacer between banner and Trial 1
         break  # some other content directly under the banner -> no draw found
 
-    return SKILLING_SECTION, skills, date_cell
+    return SKILLING_SECTION, skills, date_cell, {}
 
 
 def _parse_priority_block(
     rows: list[list[str]],
-) -> tuple[str, list[str], str] | None:
+) -> tuple[str, list[str], str, dict[str, Optional[int]]] | None:
     """Read the CURRENT ``Trial Priority`` block, or ``None`` if absent.
 
     Scans every column for the banner (its column is not fixed), then walks down
@@ -240,9 +266,16 @@ def _parse_priority_block(
     banner), so the returned date cell is empty and :func:`parse_draw` falls back
     to the tab-wide scan.
 
+    The column TWO to the right of the banner optionally carries each trial's minimum
+    sign-up level (patch 2026-08-11). It is read when it holds an integer and treated as
+    "no minimum" when blank, non-numeric or absent entirely — a deliberately forgiving
+    rule, because this cell is hand-maintained by officers and a stray note in it must
+    not fell the deploy the way a mistyped SKILL rightly does. The skill column is the
+    structural anchor and stays strict.
+
     Returns:
-        ``(section_name, skills, "")``, or ``None`` if the banner is not on the
-        tab at all.
+        ``(section_name, skills, "", min_levels)``, or ``None`` if the banner is not on
+        the tab at all.
     """
     header = None
     for i, row in enumerate(rows):
@@ -258,15 +291,20 @@ def _parse_priority_block(
 
     header_idx, col = header
     skills: list[str] = []
+    min_levels: dict[str, Optional[int]] = {}
     for row in rows[header_idx + 1:]:
         label = _cell(row, col)
         if label == "":
             if skills:
                 break  # end of the drawn-trials block
             continue  # tolerate a blank spacer between banner and first skill
-        skills.append(_normalise_skill(label))
+        skill = _normalise_skill(label)
+        skills.append(skill)
+        # Optional minimum sign-up level, two columns right of the skill. Blank,
+        # non-numeric or absent -> None -> unrestricted.
+        min_levels[skill] = _to_int(_cell(row, col + 2))
 
-    return PRIORITY_SECTION, skills, ""
+    return PRIORITY_SECTION, skills, "", min_levels
 
 
 def _find_cycle_date(rows: list[list[str]]) -> str:
@@ -325,7 +363,7 @@ def parse_draw(csv_text: str) -> TrialDraw:
             "can be used to confirm the draw by hand."
         )
 
-    section, skills, date_cell = found
+    section, skills, date_cell, min_levels = found
     if len(skills) != EXPECTED_TRIALS:
         raise SheetStructureError(
             f"Expected {EXPECTED_TRIALS} skilling trials under {section!r} in "
@@ -336,7 +374,11 @@ def parse_draw(csv_text: str) -> TrialDraw:
     # "Date: 7/24" -> "7/24"; tolerate extra whitespace and a missing prefix.
     # The priority table has no date of its own, so fall back to the tab's.
     date = date_cell.split(":", 1)[1].strip() if ":" in date_cell else date_cell.strip()
-    return TrialDraw(skills=skills, date=date or _find_cycle_date(rows))
+    return TrialDraw(
+        skills=skills,
+        date=date or _find_cycle_date(rows),
+        min_levels=min_levels,
+    )
 
 
 def load_draw(tab_name: str = ASSIGNMENTS_TAB) -> TrialDraw:

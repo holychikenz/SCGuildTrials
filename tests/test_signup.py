@@ -300,6 +300,12 @@ def test_compound_reshuffle_crosses_a_tier_plateau():
         def total_points(self, parties):
             return sum(self.party_points(s, parties[s]) for s in range(len(parties)))
 
+        def can_place(self, skill_idx, member):
+            # No minimum sign-up level in this fixture: everyone is admissible
+            # everywhere. Part of AssignmentScorer's interface since the 2026-08-11
+            # patch, and the search helpers consult it before proposing any move.
+            return True
+
     scorer = FakeScorer()
     # φ (progress potential) reads member A-strength; tier arg is irrelevant here.
     monkey = pytest.MonkeyPatch()
@@ -927,3 +933,67 @@ def test_signup_conflict_is_recorded_and_resolved_to_first_choice():
     # Locked into the first drawn choice (Foraging).
     forg = next(t for t in p.trials if t.skill == "Foraging")
     assert any(r.name == "Dupe" and r.status == "assigned" for r in forg.roster)
+
+
+# ---------------------------------------------------------------------------
+# Per-trial minimum sign-up level (patch 2026-08-11)
+# ---------------------------------------------------------------------------
+def test_a_volunteer_below_the_minimum_is_not_locked_but_is_reported():
+    """The game would refuse the sign-up, so honouring it would publish a fiction.
+
+    The sheet is written by a Tampermonkey module reading the game's own state, but it
+    can lag a minimum the officers set afterwards -- so the disagreement is real and
+    must be loud rather than silently resolved either way.
+    """
+    draw = ["Foraging", "Woodcutting"]
+    members = [
+        _member("Strong", {"Foraging": 140}),
+        _member("TooWeak", {"Foraging": 80, "Woodcutting": 140}),
+        _member("Spare", {"Woodcutting": 130}),
+    ]
+    picks = {"Strong": {"Foraging"}, "TooWeak": {"Foraging"}}
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4,
+        min_levels={"Foraging": 100},
+    )
+    foraging = next(t for t in p.trials if t.skill == "Foraging")
+    names = {r.name for r in foraging.roster}
+    assert "Strong" in names
+    assert "TooWeak" not in names, "the game would have refused this sign-up"
+    assert any("TooWeak" in msg and "Foraging" in msg for msg in p.ineligible_signups)
+    # Refused everywhere they ticked, they fall into the uncommitted pool -- so the
+    # fill pass may still recommend them for a trial they DO qualify for, which is
+    # better advice than sitting them down.
+    assert "TooWeak" in p.non_signups
+    wood = next(t for t in p.trials if t.skill == "Woodcutting")
+    assert "TooWeak" in {r.name for r in wood.roster}
+    assert foraging.min_level == 100 and wood.min_level is None
+
+
+def test_no_recommended_fill_breaches_the_minimum():
+    draw = ["Foraging", "Woodcutting"]
+    members = [
+        _member("Vol", {"Foraging": 140}),
+        _member("Weak1", {"Foraging": 60, "Woodcutting": 60}),
+        _member("Weak2", {"Foraging": 70, "Woodcutting": 70}),
+    ]
+    p = signup.plan(
+        members, {"Vol": {"Foraging"}}, optimal_total=0, optimal_summary=[],
+        draw=draw, cap=4, min_levels={"Foraging": 120},
+    )
+    foraging = next(t for t in p.trials if t.skill == "Foraging")
+    for r in foraging.roster:
+        assert r.level >= 120, r.name
+
+
+def test_minimum_absent_leaves_the_plan_untouched():
+    members, picks, draw = _scenario()
+    plain = _plan(members, picks, draw).to_dict()
+    for empty in (None, {}, {"Foraging": None, "Woodcutting": None}):
+        again = signup.plan(
+            members, picks, optimal_total=9999, optimal_summary=[], draw=draw,
+            cap=3, min_levels=empty,
+        ).to_dict()
+        for k in ("generated_at", "week_date"):
+            plain.pop(k, None), again.pop(k, None)
+        assert again == plain

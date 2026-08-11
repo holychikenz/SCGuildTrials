@@ -137,6 +137,33 @@ def _resolve_level_and_checks(
     return entry.level, entry.tool, entry.top, entry.bot, entry.house
 
 
+def member_skill_level(member: MemberRow, skill: str) -> Optional[int]:
+    """The member's own recorded level in ``skill`` (None when the sheet has no cell).
+
+    The plain reading of the sheet, with no guild buffs of any kind folded in — which
+    is what an ELIGIBILITY rule has to compare against. The game's per-trial minimum
+    sign-up level (patch 2026-08-11) gates on the character's own skill level, not on
+    the level a guild building lends them.
+    """
+    return _resolve_level_and_checks(member, skill)[0]
+
+
+def meets_min_level(
+    member: MemberRow, skill: str, min_level: Optional[int]
+) -> bool:
+    """Whether ``member`` may sign up for ``skill`` under a minimum-level rule.
+
+    ``None`` (no minimum set) admits everyone, including a member with no recorded
+    level — the constraint is the officers', and absence of it is not a licence to
+    invent one. A member with no recorded level is EXCLUDED whenever a minimum is set,
+    since an unknown level cannot be shown to meet it.
+    """
+    if min_level is None:
+        return True
+    level = member_skill_level(member, skill)
+    return level is not None and level >= min_level
+
+
 def _house_level(house: Optional[int]) -> int:
     """Resolve a member's per-skill house level for the model.
 
@@ -1290,6 +1317,70 @@ def probe_building_upgrade(
 
 
 @dataclass
+class MinLevelAdvice:
+    """The per-trial minimum sign-up level that would reproduce the model's own party.
+
+    The patch gave leaders and generals a per-trial minimum sign-up level. Read as a
+    constraint it is a nuisance; read as a LEVER it is the thing this tool has never had.
+    The model has always been able to say "these members should sit this one out", and an
+    officer has never had any way to make that happen short of asking people not to tick
+    a box. The minimum level is that mechanism, and this is the number to type into it.
+
+    ``suggested`` is simply the lowest level actually seated by the optimizer, so setting
+    it excludes exactly the members the model already declined to pick and nobody else.
+    It is advice, not a recommendation to act: a minimum also bars members from
+    volunteering in future weeks, and it cannot distinguish "too weak to help" from "too
+    weak to help *this* week alongside these particular twenty-three".
+    """
+
+    skill: str
+    current: Optional[int]        # what the officers have set, if anything
+    suggested: Optional[int]      # lowest level in the model's own party
+    party_size: int
+    # How many of the FULL roster the suggestion would bar from this trial, and how many
+    # of those the model had already benched. Where the two agree, the setting merely
+    # formalises a decision already taken; where `would_exclude` exceeds
+    # `already_benched`, it would bar members this week's model was happy to seat.
+    would_exclude: int
+    already_benched: int
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def advise_min_level(
+    members: list[MemberRow],
+    party: list[MemberRow],
+    skill: str,
+    current: Optional[int] = None,
+) -> MinLevelAdvice:
+    """Derive the minimum sign-up level that reproduces ``party`` for ``skill``."""
+    levels = [
+        lv for lv in (member_skill_level(m, skill) for m in party) if lv is not None
+    ]
+    suggested = min(levels) if levels else None
+    seated = {id(m) for m in party}
+    would_exclude = 0
+    already_benched = 0
+    if suggested is not None:
+        for m in members:
+            level = member_skill_level(m, skill)
+            if level is not None and level >= suggested:
+                continue
+            would_exclude += 1
+            if id(m) not in seated:
+                already_benched += 1
+    return MinLevelAdvice(
+        skill=skill,
+        current=current,
+        suggested=suggested,
+        party_size=len(party),
+        would_exclude=would_exclude,
+        already_benched=already_benched,
+    )
+
+
+@dataclass
 class ShrineUpgrade:
     """What one more level of a guild shrine buys across the WHOLE week's draw.
 
@@ -1483,6 +1574,11 @@ class WeekResult:
     # long that spend takes to pay for itself. Unlike the buildings, a shrine pays in
     # every trial every week — see ShrineUpgrade.
     shrine_upgrades: list[ShrineUpgrade] = field(default_factory=list)
+    # Per-trial minimum sign-up level: what the officers have set, and what would
+    # reproduce the model's own party. The lever that turns the model's bench into
+    # something the game will enforce — see MinLevelAdvice.
+    min_levels: dict[str, Optional[int]] = field(default_factory=dict)
+    min_level_advice: list[MinLevelAdvice] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -1504,6 +1600,8 @@ class WeekResult:
             "shrine_speed": self.shrine_speed,
             "shrine_efficiency": self.shrine_efficiency,
             "shrine_upgrades": [u.to_dict() for u in self.shrine_upgrades],
+            "min_levels": self.min_levels,
+            "min_level_advice": [a.to_dict() for a in self.min_level_advice],
         }
 
 
@@ -1514,6 +1612,7 @@ def run_week(
     cap: Optional[int] = None,
     target_scale: Optional[float] = None,
     strategy: Optional[str] = None,
+    min_levels: Optional[dict[str, Optional[int]]] = None,
 ) -> WeekResult:
     """Assign parties and simulate all of this week's skilling trials.
 
@@ -1530,8 +1629,19 @@ def run_week(
     if strategy is None:
         strategy = config.TRIAL_OPTIMIZER_STRATEGY
 
+    min_levels = dict(min_levels or {})
     if strategy == "random":
         assignment = random_assignment(members, skills, seed, cap)
+        # The Phase-1 control strategy does no eligibility filtering of its own, so
+        # apply the game's hard constraint here rather than publishing a party the
+        # guild could not field.
+        if any(v is not None for v in min_levels.values()):
+            for skill in skills:
+                limit = min_levels.get(skill)
+                assignment.parties[skill] = [
+                    m for m in assignment.parties[skill]
+                    if meets_min_level(m, skill, limit)
+                ]
     else:
         from .optimizer import optimize
 
@@ -1542,6 +1652,7 @@ def run_week(
             cap=cap,
             target_scale=target_scale,
             strategy=strategy,
+            min_levels=min_levels,
         )
 
     trials = [
@@ -1595,4 +1706,11 @@ def run_week(
         shrine_speed=shrine_speed,
         shrine_efficiency=shrine_efficiency,
         shrine_upgrades=shrine_upgrades,
+        min_levels=min_levels,
+        min_level_advice=[
+            advise_min_level(
+                members, assignment.parties[skill], skill, min_levels.get(skill)
+            )
+            for skill in skills
+        ],
     )

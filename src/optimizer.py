@@ -57,6 +57,7 @@ from .trials import (
     Assignment,
     clear_probability,
     guild_building_skill_levels,
+    meets_min_level,
     rate,
     simulate_race,
     time_slack_fraction,
@@ -119,11 +120,28 @@ class AssignmentScorer:
         skills: list[str],
         target_scale: float,
         cap: int,
+        min_levels: Optional[dict[str, Optional[int]]] = None,
     ) -> None:
         self.members = members
         self.skills = skills
         self.target_scale = target_scale
         self.cap = cap
+        # Per-trial minimum sign-up level (patch 2026-08-11), as the officers set it in
+        # game. Resolved ONCE into a per-slot set of admissible member indices, because
+        # every move generator in this module asks the question and it must be a set
+        # lookup rather than a level comparison in the inner loop.
+        #
+        # None / absent -> unrestricted, so an unset minimum costs nothing and the
+        # feature is inert until the officers fill the sheet cells in.
+        self.min_levels = dict(min_levels or {})
+        self._eligible: list[set[int]] = [
+            {
+                i
+                for i, member in enumerate(members)
+                if meets_min_level(member, skill, self.min_levels.get(skill))
+            }
+            for skill in skills
+        ]
         self._cache: dict[tuple[str, frozenset], tuple[float, float, int]] = {}
         # Separate, reporting-only cache — see party_probability. None is a real
         # value here (no tier banked), so a sentinel marks "not yet computed".
@@ -158,6 +176,20 @@ class AssignmentScorer:
         )
         self._cache[key] = value
         return value
+
+    def can_place(self, skill_idx: int, member: int) -> bool:
+        """Whether ``member`` is permitted in ``skills[skill_idx]`` at all.
+
+        A HARD constraint, not a preference: the game refuses the sign-up, so an
+        ineligible member is not merely a poor choice but an impossible one. Every move
+        generator consults this before proposing a placement, and :func:`optimize`
+        filters again at the boundary — see the note there on why both.
+        """
+        return member in self._eligible[skill_idx]
+
+    def eligible_members(self, skill_idx: int) -> set[int]:
+        """The admissible member indices for one trial (a copy; callers may mutate)."""
+        return set(self._eligible[skill_idx])
 
     def party_points(self, skill_idx: int, member_ids) -> float:
         """Credit points for the party ``member_ids`` running ``skills[skill_idx]``.
@@ -268,7 +300,10 @@ def _construct_random(scorer: AssignmentScorer, rng: random.Random) -> Parties:
     idx = 0
     for s in range(len(scorer.skills)):
         chunk = order[idx : idx + scorer.cap]
-        parties[s] = set(chunk)
+        # Drop anyone the trial's minimum sign-up level forbids. They are simply left
+        # out rather than replaced: this is the control strategy, and topping the party
+        # back up would quietly make it something better than random.
+        parties[s] = {m for m in chunk if scorer.can_place(s, m)}
         idx += scorer.cap
     return parties
 
@@ -291,6 +326,8 @@ def _construct_proxy_greedy(
         for s in ranked:
             if rm[m][s] <= 0:
                 break  # no positive contribution anywhere -> bench
+            if not scorer.can_place(s, m):
+                continue  # below this trial's minimum sign-up level
             if len(parties[s]) < cap:
                 parties[s].add(m)
                 break
@@ -328,6 +365,8 @@ def _construct_marginal_greedy(
             if len(parties[s]) >= cap:
                 continue
             for m in sorted(unassigned):
+                if not scorer.can_place(s, m):
+                    continue
                 gain = scorer.party_points(s, parties[s] | {m}) - base[s]
                 if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
                     best = (gain, m, s)
@@ -369,6 +408,8 @@ def _construct_beam(scorer: AssignmentScorer, rng: random.Random) -> Parties:
         for parties in beam:
             options = [parties]  # bench: no change
             for s in range(S):
+                if not scorer.can_place(s, m):
+                    continue
                 if len(parties[s]) < cap:
                     nxt = list(parties)
                     nxt[s] = parties[s] | {m}
@@ -422,6 +463,11 @@ def _run_genetic(
 
     def repair(chrom: list[int]) -> list[int]:
         chrom = list(chrom)
+        # Bench anyone the trial's minimum sign-up level forbids, BEFORE the cap trim,
+        # so an ineligible member cannot displace an eligible one from a full party.
+        for m in range(n):
+            if chrom[m] >= 0 and not scorer.can_place(chrom[m], m):
+                chrom[m] = -1
         for s in range(S):
             members_in = [m for m in range(n) if chrom[m] == s]
             if len(members_in) > cap:
@@ -571,7 +617,9 @@ def _refine_hill_climb(
             for b in range(-1, S):
                 if b == a:
                     continue
-                if b >= 0 and len(parties[b]) >= cap:
+                if b >= 0 and (
+                    len(parties[b]) >= cap or not scorer.can_place(b, m)
+                ):
                     continue
                 delta = _relocate_delta(scorer, parties, m, a, b)
                 if delta > best_delta:
@@ -585,6 +633,8 @@ def _refine_hill_climb(
             for j in range(i + 1, len(assigned_items)):
                 m2, b = assigned_items[j]
                 if a == b:
+                    continue
+                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
                     continue
                 delta = _swap_delta(scorer, parties, m1, a, m2, b)
                 if delta > best_delta:
@@ -641,7 +691,8 @@ def _anneal_once(
             choices = [
                 b
                 for b in range(-1, S)
-                if b != a and (b < 0 or len(parties[b]) < cap)
+                if b != a
+                and (b < 0 or (len(parties[b]) < cap and scorer.can_place(b, m)))
             ]
             if not choices:
                 continue
@@ -663,6 +714,8 @@ def _anneal_once(
             m1, a = rng.choice(assigned_items)
             m2, b = rng.choice(assigned_items)
             if a == b or m1 == m2:
+                continue
+            if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
                 continue
             delta = _swap_delta(scorer, parties, m1, a, m2, b)
             if delta >= -config.OPT_POINTS_EPS or rng.random() < math.exp(
@@ -873,6 +926,8 @@ def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
                 continue
             base = scorer.party_points(s, parties[s])
             for m in sorted(benched):
+                if not scorer.can_place(s, m):
+                    continue
                 gain = scorer.party_points(s, parties[s] | {m}) - base
                 if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
                     best = (gain, m, s)
@@ -1024,7 +1079,9 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
             for b in range(-1, S):
                 if b == a:
                     continue
-                if b >= 0 and len(parties[b]) >= cap:
+                if b >= 0 and (
+                    len(parties[b]) >= cap or not scorer.can_place(b, m)
+                ):
                     continue
                 changed = []
                 if a >= 0:
@@ -1043,6 +1100,8 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
             for j in range(i + 1, len(assigned_items)):
                 m2, b = assigned_items[j]
                 if a == b:
+                    continue
+                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
                     continue
                 key = rank(
                     state_with(
@@ -1081,6 +1140,7 @@ def optimize(
     cap: Optional[int] = None,
     target_scale: Optional[float] = None,
     strategy: Optional[str] = None,
+    min_levels: Optional[dict[str, Optional[int]]] = None,
 ) -> Assignment:
     """Assign ``members`` across ``skills`` to maximise total guild points.
 
@@ -1088,6 +1148,10 @@ def optimize(
     :class:`~src.trials.Assignment` (``MemberRow`` objects); members within each
     party and the bench are index-sorted so the output is stable. This is the
     Phase 2 replacement for :func:`src.trials.random_assignment`.
+
+    ``min_levels`` carries each trial's minimum sign-up level as the officers set it in
+    game (patch 2026-08-11); ``None`` or an absent skill means unrestricted, so the
+    default behaviour is exactly as before.
     """
     if seed is None:
         seed = config.TRIAL_OPTIMIZER_SEED
@@ -1098,7 +1162,7 @@ def optimize(
     if strategy is None:
         strategy = config.TRIAL_OPTIMIZER_STRATEGY
 
-    scorer = AssignmentScorer(members, skills, target_scale, cap)
+    scorer = AssignmentScorer(members, skills, target_scale, cap, min_levels)
     parties = run_strategy(scorer, strategy, seed)
     # Inclusion pass, then the safety pass. ORDER REVERSED 2026-08-11, and the reversal
     # is forced by partial credit.
@@ -1123,6 +1187,18 @@ def optimize(
     # disables it; OPT_SLACK_POINTS_TOLERANCE = 0.0 forbids it from spending anything.
     if config.OPT_SLACK_PASS:
         parties = _refine_slack(parties, scorer)
+
+    # BELT AND BRACES on the minimum sign-up level. Every move generator above already
+    # refuses an ineligible placement, and under the post-patch objective a member the
+    # game would reject is usually unattractive anyway — but "the search would not have
+    # chosen it" is a property of the search, not a guarantee about the output, and this
+    # is a HARD game constraint: a party containing an ineligible member is one the
+    # guild cannot actually field. So it is enforced once more at the boundary, where it
+    # is cheap and unconditional.
+    parties = [
+        {m for m in parties[s] if scorer.can_place(s, m)}
+        for s in range(len(skills))
+    ]
 
     assigned: set[int] = set()
     party_map: dict[str, list[MemberRow]] = {}

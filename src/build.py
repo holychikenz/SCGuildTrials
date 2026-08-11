@@ -2068,7 +2068,11 @@ def build_guild(site: "GuildSite") -> str:
             file=sys.stderr,
         )
 
-    week = trials_model.run_week(gd.members, skills=week_draw.skills)
+    week = trials_model.run_week(
+        gd.members,
+        skills=week_draw.skills,
+        min_levels=week_draw.min_levels,
+    )
     week_dict = week.to_dict()
     (out / "trials.json").write_text(
         json.dumps(week_dict, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -2099,6 +2103,7 @@ def build_guild(site: "GuildSite") -> str:
         optimal_total, optimal_summary = signup_model.optimal_from_week(week)
         plan = signup_model.plan(
             gd.members, picks, optimal_total, optimal_summary,
+            min_levels=week_draw.min_levels,
             draw=week_draw.skills,
         )
     except SheetStructureError as exc:

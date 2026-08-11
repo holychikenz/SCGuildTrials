@@ -66,6 +66,8 @@ from .reader import MemberRow, SheetStructureError, _cell, _to_bool
 from .optimizer import AssignmentScorer, _min_banking
 from .trials import (
     RosterEntry,
+    meets_min_level,
+    member_skill_level as trials_member_level,
     rate,
     simulate_race,
     clear_probability,
@@ -289,6 +291,10 @@ class SignupTrial:
     # that partial progress is credited (the objective).
     partial_fraction: float = 0.0
     credit_points: float = 0.0
+    # The minimum sign-up level the officers set for this trial in game (patch
+    # 2026-08-11), or None where they set none. Reported so the page can explain why a
+    # volunteer is missing from a party they ticked.
+    min_level: Optional[int] = None
     open_seats: int = 0  # seats still empty after fills (cap - party_size)
     roster: list[SignupRosterEntry] = field(default_factory=list)
     # Seconds elapsed when the last cleared tier finished; None if no tier held.
@@ -432,6 +438,12 @@ class SignupPlan:
     # "<signup name> ≈ <member name>" for each sign-up matched only after
     # case/space normalisation (i.e. the two sheets disagree on capitalisation).
     normalized_matches: list[str] = field(default_factory=list)
+    # "<member> ticked <trial> but is level N (minimum M)" for each volunteer whose
+    # pick their trial's minimum sign-up level forbids. The game would refuse the
+    # sign-up, so they are NOT locked in — they fall into the uncommitted pool, where
+    # they may still be recommended for a trial they do qualify for. Surfaced loudly
+    # because it means the sheet and the game disagree.
+    ineligible_signups: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -462,6 +474,7 @@ class SignupPlan:
                     "points": t.points,
                     "partial_fraction": t.partial_fraction,
                     "credit_points": t.credit_points,
+                    "min_level": t.min_level,
                     "open_seats": t.open_seats,
                     "clear_seconds": t.clear_seconds,
                     "slack_fraction": t.slack_fraction,
@@ -476,6 +489,7 @@ class SignupPlan:
             "safety_swaps": [asdict(s) for s in self.safety_swaps],
             "unmatched_signups": self.unmatched_signups,
             "normalized_matches": self.normalized_matches,
+            "ineligible_signups": self.ineligible_signups,
         }
 
 
@@ -533,6 +547,8 @@ def _fill_open_seats(
                 continue
             base = scorer.party_points(s, parties[s])
             for m in sorted(remaining):
+                if not scorer.can_place(s, m):
+                    continue  # below this trial's minimum sign-up level
                 gain = scorer.party_points(s, parties[s] | {m}) - base
                 if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
                     best = (gain, m, s)
@@ -585,7 +601,9 @@ def _single_move_climb(
             for b in range(-1, S):
                 if b == a:
                     continue
-                if b >= 0 and len(parties[b]) >= cap:
+                if b >= 0 and (
+                    len(parties[b]) >= cap or not scorer.can_place(b, m)
+                ):
                     continue
                 delta = _relocate_delta(scorer, parties, m, a, b)
                 if delta > best_delta:
@@ -598,6 +616,8 @@ def _single_move_climb(
             for j in range(i + 1, len(items)):
                 m2, b = items[j]
                 if a == b:
+                    continue
+                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
                     continue
                 delta = _swap_delta(scorer, parties, m1, a, m2, b)
                 if delta > best_delta:
@@ -698,6 +718,10 @@ def _compound_reshuffle_into(
                 if b == s:
                     continue
                 for m_in in sorted(parties[b]):
+                    if not (
+                        scorer.can_place(s, m_in) and scorer.can_place(b, m_out)
+                    ):
+                        continue
                     delta = _swap_delta(scorer, parties, m_out, s, m_in, b)
                     if delta < -config.OPT_POINTS_EPS:
                         continue  # never let any trial regress
@@ -1026,7 +1050,9 @@ def _safety_swaps(
             for b in range(-1, S):
                 if b == a:
                     continue
-                if b >= 0 and len(parties[b]) >= cap:
+                if b >= 0 and (
+                    len(parties[b]) >= cap or not scorer.can_place(b, m)
+                ):
                     continue
                 changed = []
                 if a >= 0:
@@ -1044,6 +1070,8 @@ def _safety_swaps(
             for j in range(i + 1, len(seated)):
                 m2, b = seated[j]
                 if a == b:
+                    continue
+                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
                     continue
                 key = key_with(
                     (a, (parties[a] - {m1}) | {m2}),
@@ -1153,6 +1181,7 @@ def plan(
     draw: Optional[list[str]] = None,
     cap: Optional[int] = None,
     target_scale: Optional[float] = None,
+    min_levels: Optional[dict[str, Optional[int]]] = None,
 ) -> SignupPlan:
     """Build the enforced sign-up plan and its improving-swap advice.
 
@@ -1167,8 +1196,14 @@ def plan(
         optimal_summary: per-trial ``{skill, tier_reached, points, party_size}``
             for that optimum (rendered alongside the enforced plan).
         draw / cap / target_scale: default to the shipped config values.
+        min_levels: each trial's minimum sign-up level as the officers set it in game
+            (patch 2026-08-11); None or an absent skill means unrestricted. A volunteer
+            whose pick their trial's minimum forbids is NOT locked in — the game would
+            have refused the sign-up — and is reported in
+            :attr:`SignupPlan.ineligible_signups` instead.
     """
     draw = list(draw if draw is not None else config.TRIAL_SKILLS_CURRENT)
+    min_levels = dict(min_levels or {})
     cap = cap if cap is not None else config.TRIAL_PARTY_CAP
     if target_scale is None:
         target_scale = config.TARGET_SCALE
@@ -1211,17 +1246,39 @@ def plan(
     locked: list[set[int]] = [set() for _ in draw]
     conflicts: list[str] = []
     signed_names: set[str] = set()
+    ineligible_signups: list[str] = []
     for i, m in enumerate(members):
         member_picks = _picks_for(i, m.name)
         drawn_picks = [t for t in draw if _sheet_column_for(t) in member_picks]
         if not drawn_picks:
             continue
-        if len(drawn_picks) > 1:
-            conflicts.append(
-                f"{m.name} ticked {', '.join(drawn_picks)} — locked into "
-                f"{drawn_picks[0]} (first drawn choice)."
+        # A pick the trial's minimum sign-up level forbids cannot be honoured: the game
+        # would not have accepted it, so locking them in would publish a party the guild
+        # cannot field. Drop the forbidden picks and keep any that remain.
+        allowed = [
+            t for t in drawn_picks
+            if meets_min_level(m, t, min_levels.get(t))
+        ]
+        for t in drawn_picks:
+            if t in allowed:
+                continue
+            level = trials_member_level(m, t)
+            ineligible_signups.append(
+                f"{m.name} ticked {t} but is level "
+                f"{level if level is not None else '?'} "
+                f"(minimum {min_levels.get(t)})"
             )
-        locked[draw.index(drawn_picks[0])].add(i)
+        if not allowed:
+            # Every pick refused: treat them as uncommitted, so the fill pass may still
+            # recommend them for a trial they DO qualify for rather than sitting them
+            # down for a sign-up the game rejected.
+            continue
+        if len(allowed) > 1:
+            conflicts.append(
+                f"{m.name} ticked {', '.join(allowed)} — locked into "
+                f"{allowed[0]} (first drawn choice)."
+            )
+        locked[draw.index(allowed[0])].add(i)
         signed_names.add(m.name)
 
     # A sign-up is "matched" iff its name equals a member exactly OR its
@@ -1240,7 +1297,7 @@ def plan(
     free_pool = {name_to_idx[n] for n in non_signups}
 
     # --- Fill the open seats from the uncommitted pool ---------------------
-    scorer = AssignmentScorer(members, draw, target_scale, cap)
+    scorer = AssignmentScorer(members, draw, target_scale, cap, min_levels)
     enforced, placed = _fill_open_seats(locked, scorer, free_pool, cap)
 
     # --- Build per-trial rosters (volunteers first, then recommended) ------
@@ -1289,6 +1346,7 @@ def plan(
                 points=result.points,
                 partial_fraction=result.partial_fraction,
                 credit_points=result.credit_points,
+                min_level=min_levels.get(skill),
                 open_seats=cap - result.party_size,
                 roster=assigned_rows + rec_rows,
                 # How narrowly this lineup banked its score. Free: read off the
@@ -1379,6 +1437,7 @@ def plan(
         safety_swaps=safety_swaps,
         unmatched_signups=unmatched_signups,
         normalized_matches=normalized_matches,
+        ineligible_signups=ineligible_signups,
     )
 
 

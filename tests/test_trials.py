@@ -817,3 +817,101 @@ def test_live_shrine_levels_raise_the_rate_but_grant_no_skill_levels():
     assert b.shrine_speed == speed and b.shrine_efficiency == eff
     # And the success term — which is where BuildingSkillLevels acts — is unchanged.
     assert b.building_levels == bare.building_levels
+
+
+# ---------------------------------------------------------------------------
+# Per-trial minimum sign-up level (patch 2026-08-11)
+# ---------------------------------------------------------------------------
+def test_meets_min_level_admits_everyone_when_no_minimum_is_set():
+    m = _member("M", {"Foraging": 40})
+    assert trials.meets_min_level(m, "Foraging", None) is True
+    # No recorded level at all is still admissible while the officers set no rule --
+    # absence of a constraint is not licence to invent one.
+    blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
+    assert trials.meets_min_level(blank, "Foraging", None) is True
+    # But an unknown level can never be SHOWN to meet a minimum, so it is excluded.
+    assert trials.meets_min_level(blank, "Foraging", 1) is False
+
+
+def test_meets_min_level_is_inclusive_at_the_boundary():
+    m = _member("M", {"Foraging": 100})
+    assert trials.meets_min_level(m, "Foraging", 100) is True
+    assert trials.meets_min_level(m, "Foraging", 101) is False
+
+
+def test_min_level_reads_the_members_own_level_not_the_guild_buffed_one(monkeypatch):
+    """Eligibility gates on the character's level, never on a guild building's loan.
+
+    A guild building adds BuildingSkillLevels inside the success calculation; it does
+    not raise the character's skill, and the game's sign-up screen would not care if it
+    did. Modelling it the other way would seat members the game refuses.
+    """
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Foraging", 20)
+    m = _member("M", {"Foraging": 90})
+    assert trials.guild_building_skill_levels("Foraging") == 40
+    assert trials.member_skill_level(m, "Foraging") == 90
+    assert trials.meets_min_level(m, "Foraging", 100) is False
+
+
+def test_no_ineligible_member_is_ever_seated():
+    from src.optimizer import optimize
+
+    members = [_member(f"m{i}", {"Foraging": 80 + i * 5}) for i in range(12)]
+    draw = ["Foraging"]
+    asg = optimize(members, draw, cap=12, strategy="proxy_greedy",
+                   min_levels={"Foraging": 110})
+    seated = asg.parties["Foraging"]
+    assert seated, "the eligible members should still be seated"
+    for m in seated:
+        assert trials.member_skill_level(m, "Foraging") >= 110
+    # Everyone excluded lands on the bench rather than vanishing from the roster.
+    assert len(seated) + len(asg.bench) == len(members)
+
+
+def test_random_strategy_also_respects_the_minimum():
+    # The Phase-1 control strategy does no filtering of its own, so run_week applies
+    # the game's hard constraint to it -- otherwise trials.html could publish a party
+    # the guild cannot field whenever the strategy is rolled back.
+    members = [_member(f"m{i}", {"Foraging": 80 + i * 5}) for i in range(12)]
+    week = trials.run_week(
+        members, skills=["Foraging"], cap=12, strategy="random",
+        min_levels={"Foraging": 110},
+    )
+    for entry in week.trials[0].roster:
+        assert entry.level >= 110
+
+
+def test_min_levels_absent_leaves_the_assignment_untouched():
+    """The feature is inert until the officers fill the cells in."""
+    from src.optimizer import optimize
+
+    members = [_member(f"m{i}", {"Foraging": 80 + i * 5}) for i in range(12)]
+    draw = ["Foraging"]
+    plain = optimize(members, draw, cap=8, strategy="proxy_greedy")
+    for empty in (None, {}, {"Foraging": None}):
+        again = optimize(members, draw, cap=8, strategy="proxy_greedy",
+                         min_levels=empty)
+        assert [m.name for m in again.parties["Foraging"]] == [
+            m.name for m in plain.parties["Foraging"]
+        ]
+        assert [m.name for m in again.bench] == [m.name for m in plain.bench]
+
+
+def test_min_level_advice_reproduces_the_models_own_party():
+    members = [_member(f"m{i}", {"Foraging": 60 + i * 4}) for i in range(20)]
+    party = members[12:]           # the twelve strongest
+    advice = trials.advise_min_level(members, party, "Foraging", current=None)
+    assert advice.suggested == min(
+        trials.member_skill_level(m, "Foraging") for m in party
+    )
+    # Setting it would bar exactly the members not in the party -- no more, no fewer.
+    assert advice.would_exclude == len(members) - len(party)
+    assert advice.already_benched == advice.would_exclude
+    assert advice.party_size == len(party)
+
+
+def test_min_level_advice_is_none_for_a_party_with_no_levels():
+    blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
+    advice = trials.advise_min_level([blank], [blank], "Foraging")
+    assert advice.suggested is None
+    assert advice.would_exclude == 0

@@ -357,3 +357,56 @@ def test_fetch_disables_gviz_header_collapsing(monkeypatch):
     assert config.GVIZ_NO_HEADER_COLLAPSE == "&headers=0"
     assert seen["url"].endswith("&headers=0")
     assert "Trial%20Assignments" in seen["url"]
+
+
+# ---------------------------------------------------------------------------
+# Per-trial minimum sign-up level (patch 2026-08-11) — the optional third column
+# ---------------------------------------------------------------------------
+def test_priority_block_reads_the_optional_minimum_level_column():
+    csv_text = (
+        ",,,,,,,,,,Trial Priority,,\n"
+        ",,,,,,,,,,Milking,3,95\n"
+        ",,,,,,,,,,Foraging,4,\n"
+        ",,,,,,,,,,Crafting,2,100\n"
+        ",,,,,,,,,,Alchemy,1,\n"
+    )
+    d = draw.parse_draw(csv_text)
+    assert d.skills == ["Milking", "Foraging", "Crafting", "Alchemy"]
+    assert d.min_levels == {
+        "Milking": 95,
+        "Foraging": None,
+        "Crafting": 100,
+        "Alchemy": None,
+    }
+
+
+def test_absent_minimum_column_means_every_trial_is_unrestricted():
+    # Absence is the feature's rollback: clear the cells (or never add them) and the
+    # constraint does not exist.
+    csv_text = (
+        ",,,,,,,,,,Trial Priority,\n"
+        ",,,,,,,,,,Milking,3\n"
+        ",,,,,,,,,,Foraging,4\n"
+        ",,,,,,,,,,Crafting,2\n"
+        ",,,,,,,,,,Alchemy,1\n"
+    )
+    d = draw.parse_draw(csv_text)
+    assert d.skills == ["Milking", "Foraging", "Crafting", "Alchemy"]
+    assert all(v is None for v in d.min_levels.values())
+
+
+def test_non_numeric_minimum_is_ignored_rather_than_fatal():
+    # This cell is hand-maintained prose territory. A stray note in it must degrade to
+    # "no minimum", NOT fell the deploy the way a mistyped SKILL rightly does — the
+    # skill column is the structural anchor and stays strict.
+    csv_text = (
+        ",,,,,,,,,,Trial Priority,,\n"
+        ",,,,,,,,,,Milking,3,ask an officer\n"
+        ",,,,,,,,,,Foraging,4,90\n"
+        ",,,,,,,,,,Crafting,2,\n"
+        ",,,,,,,,,,Alchemy,1,-\n"
+    )
+    d = draw.parse_draw(csv_text)
+    assert d.min_levels["Milking"] is None
+    assert d.min_levels["Foraging"] == 90
+    assert d.min_levels["Alchemy"] is None
