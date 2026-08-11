@@ -66,6 +66,7 @@ from .reader import MemberRow, SheetStructureError, _cell, _to_bool
 from .optimizer import AssignmentScorer, _min_banking
 from .trials import (
     RosterEntry,
+    expected_credit_points,
     meets_min_level,
     member_skill_level as trials_member_level,
     rate,
@@ -306,6 +307,11 @@ class SignupTrial:
     # A margin is ordinal; officers plan against probabilities, and the mapping is
     # violently non-linear near the buzzer — see trials.clear_probability.
     clear_probability: Optional[float] = None
+    # E[credit_points] under the calibrated shock. The deterministic credit_points above
+    # is what this lineup earns if every die lands on its expectation; this is what it
+    # earns on average. They diverge exactly where the margin is thin, which since
+    # partial credit is where the optimizer deliberately puts things.
+    expected_points: Optional[float] = None
 
 
 @dataclass
@@ -408,6 +414,11 @@ class SignupPlan:
     # chosen on.
     enforced_step_total: int = 0
     optimal_step_total: int = 0
+    # The enforced plan's total in EXPECTATION, and the optimum's. None when any trial
+    # could not be priced. The gap to enforced_total / optimal_total is what the
+    # deterministic figures over-claim.
+    enforced_expected_total: Optional[float] = None
+    optimal_expected_total: Optional[float] = None
     # Thinnest time margin across the trials that actually banked a tier (the
     # weakest link in the lineup's safety), or None when no trial banked one.
     # Trials that reached no tier are EXCLUDED rather than counted as 0.0, so
@@ -462,6 +473,8 @@ class SignupPlan:
             "reachable_total": self.reachable_total,
             "enforced_step_total": self.enforced_step_total,
             "optimal_step_total": self.optimal_step_total,
+            "enforced_expected_total": self.enforced_expected_total,
+            "optimal_expected_total": self.optimal_expected_total,
             "min_slack_fraction": self.min_slack_fraction,
             "budget_seconds": self.budget_seconds,
             "safety_min_slack": self.safety_min_slack,
@@ -479,6 +492,7 @@ class SignupPlan:
                     "clear_seconds": t.clear_seconds,
                     "slack_fraction": t.slack_fraction,
                     "clear_probability": t.clear_probability,
+                    "expected_points": t.expected_points,
                     "roster": [asdict(r) for r in t.roster],
                 }
                 for t in self.trials
@@ -1356,6 +1370,8 @@ def plan(
                 # The margin as odds. One extra pass over the party per trial
                 # (four in total) — this is well outside the optimizer's hot loop.
                 clear_probability=clear_probability(party, skill, result),
+                # One more pass per trial (four in total), well outside any hot loop.
+                expected_points=expected_credit_points(party, skill, result),
             )
         )
 
@@ -1364,6 +1380,11 @@ def plan(
     # "enforced -> reachable" arithmetic that does not add up.
     enforced_total = sum(t.credit_points for t in trials)
     enforced_step_total = sum(t.points for t in trials)
+    enforced_expected_total = (
+        sum(t.expected_points for t in trials)
+        if all(t.expected_points is not None for t in trials)
+        else None
+    )
     scoring_slack = [t.slack_fraction for t in trials if t.tier_reached >= 1]
     min_slack_fraction = min(scoring_slack) if scoring_slack else None
     seated_free = {i for i in placed}
@@ -1425,6 +1446,13 @@ def plan(
         optimal_step_total=sum(
             int(o["points"]) for o in optimal_summary
         ),
+        enforced_expected_total=enforced_expected_total,
+        optimal_expected_total=(
+            sum(o["expected_points"] for o in optimal_summary)
+            if optimal_summary
+            and all(o.get("expected_points") is not None for o in optimal_summary)
+            else None
+        ),
         reachable_total=reachable_total,
         min_slack_fraction=min_slack_fraction,
         budget_seconds=config.TRIAL_TIME_BUDGET_SECONDS,
@@ -1464,9 +1492,10 @@ def optimal_from_week(week) -> tuple[float, list[dict]]:
             "party_size": t.party_size,
             "clear_seconds": tier_clear_seconds(t),
             "slack_fraction": time_slack_fraction(t),
-            # Already attached by trials.run_week for the shipped races, so this
-            # is a read rather than a recomputation.
+            # Already attached by trials.run_week for the shipped races, so these
+            # are reads rather than recomputations.
             "clear_probability": t.clear_probability,
+            "expected_points": t.expected_points,
         }
         for t in week.trials
     ]

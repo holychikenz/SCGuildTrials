@@ -460,6 +460,52 @@ SLACK_OK = 0.15
 # Set to 0.0 to publish the aleatoric floor alone (a one-line change).
 RISK_SIGMA_SYSTEMATIC = 0.0131
 
+# --- E[points]: the number officers should actually plan against --------------
+# WHY THIS BECAME NECESSARY on 2026-08-11, having been deferred for weeks as
+# "Model 2" in research/risk-aware-objective.md §4. Partial-tier credit made the
+# objective continuous, which let the optimizer find genuinely better assignments
+# (+200 deterministic points on Lactose Intolerance). It found them by reaching for
+# tiers it holds by SECONDS: measured live, three of eight trials bank their credited
+# tier with 1-4 seconds to spare, at P(holds) ~ 0.51. See
+# research/partial-tier-credit.md §9.1 for why that is the right gamble and not a
+# regression — falling short lands on the tier below with ~99% partial credit, so the
+# downside is shallow and reaching wins on expectation by ~28 points.
+#
+# But it makes the DETERMINISTIC score an optimistic point estimate: the page was
+# publishing 1200.03 for a lineup worth ~1173 in expectation. E[points] is the honest
+# figure, and partial credit is exactly what makes it computable — under the step
+# objective an expectation needed the whole tier distribution, whereas now points is a
+# smooth monotone function of the realised clearing times.
+#
+# THE MODEL. Same multiplicative shock as the probability bridge: the party's rate is
+# R*exp(eps) with eps ~ N(0, sigma^2) and sigma from the same two terms (the party's
+# own Wald dice via trials.clear_sigma, plus RISK_SIGMA_SYSTEMATIC in quadrature). A
+# rate shock is exactly a clock shock, so every cumulative clearing time scales by
+# exp(-eps) and the tier reached and partial progress follow deterministically. The
+# expectation is then one integral over eps.
+#
+# It changes NOTHING about which lineup is chosen — this is reporting, not the
+# objective — for the reason above: the gamble survives an expectation test, so
+# optimising E[points] would pick the same parties. Set False to stop computing and
+# publishing it (a one-line rollback; the pages fall back to the deterministic figure).
+RISK_EXPECTED_POINTS = True
+# How many tiers PAST the deterministic outcome to price. A favourable shock can carry
+# a party further than the nominal race did, and truncating at the deterministic tier
+# would silently discard that upside — research/risk-aware-objective.md Phase 0 asked
+# for exactly this ("carry RISK_LOOKAHEAD_TIERS so the race records one or two tiers
+# past the failure for the upside terms"). 3 covers a +3-sigma shock at the measured
+# sigmas of 0.02-0.03 with room to spare.
+RISK_LOOKAHEAD_TIERS = 3
+# Quadrature nodes across [-RISK_QUADRATURE_SPAN, +span] sigmas. A plain normalised
+# midpoint grid rather than Gauss-Hermite, deliberately: the build must stay
+# pure-Python (numpy is a dev-only extra, see pyproject) and a hard-coded Hermite node
+# table is exactly the kind of thing one mistypes. The integrand is bounded and the
+# cost is four races per guild — well outside the optimizer's hot loop — so accuracy
+# here is free and correctness is worth more than elegance. 81 nodes over +/-5 sigma
+# reproduces the deterministic answer to <1e-9 as sigma -> 0 (asserted in the tests).
+RISK_QUADRATURE_NODES = 81
+RISK_QUADRATURE_SPAN = 5.0
+
 # --- Safety swaps on the sign-up page ---------------------------------------
 # The advisory, POINTS-PRESERVING counterpart to the sign-up page's existing points
 # swaps (signup._safety_swaps). It admits a move only when the total points are

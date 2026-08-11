@@ -753,6 +753,152 @@ def clear_probability(
     return _normal_cdf(-math.log(max(1e-12, 1.0 - margin)) / sigma)
 
 
+def _cumulative_tier_times(
+    party: list[MemberRow],
+    skill: str,
+    max_tier: int,
+    building_levels: Optional[int] = None,
+) -> list[float]:
+    """Cumulative seconds to clear tiers ``1..max_tier``, IGNORING the hour budget.
+
+    The nominal clearing curve ``tau_1 < tau_2 < ...`` that every risk calculation in
+    this module needs. :func:`simulate_race` stops at the first tier it cannot afford,
+    which is correct for scoring but truncates exactly the upside a favourable shock
+    would reach — so this races past the buzzer instead, for as many tiers as asked.
+
+    Returns ``[]`` when the party cannot move at all.
+
+    DEV/REPORTING ONLY, like :func:`clear_sigma`, and for the same reason: it is a
+    second pass over the party and the optimizer calls the race ~87k times per
+    pipeline. Both are wanted for the handful of races that get published.
+    """
+    if building_levels is None:
+        building_levels = guild_building_skill_levels(skill)
+    shrine = guild_shrine_bonuses()
+    prepared = [
+        p
+        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
+        if p is not None
+    ]
+    if not prepared:
+        return []
+
+    n = len(party)
+    cumulative = 0.0
+    out: list[float] = []
+    for tier in range(1, max(1, max_tier) + 1):
+        party_rate = sum(
+            success(level, tier, success_bonus, building) * double * wp / asec
+            for level, success_bonus, building, double, wp, asec in prepared
+        )
+        if party_rate <= 0:
+            break
+        cumulative += effective_target(tier, n, config.TARGET_SCALE) / party_rate
+        out.append(cumulative)
+    return out
+
+
+def _normal_pdf(z: float) -> float:
+    return math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+
+
+def expected_credit_points(
+    party: list[MemberRow],
+    skill: str,
+    result: "TrialResult",
+    building_levels: Optional[int] = None,
+) -> Optional[float]:
+    """E[guild points] for this lineup, under the calibrated multiplicative shock.
+
+    The number officers should plan against, as opposed to the deterministic
+    ``credit_points`` the model scores — which is what the party earns if every die
+    falls at its expectation, and is therefore an OPTIMISTIC point estimate.
+
+    WHY IT MATTERS HERE AND NOW. Partial-tier credit let the optimizer find better
+    assignments by reaching for tiers it holds by seconds (measured live: three of eight
+    trials at ``P(holds) ~ 0.51``). That is the right gamble — falling short lands on the
+    tier below with ~99% partial credit, so the downside is shallow — but it means the
+    deterministic figure over-claims. See ``config.RISK_EXPECTED_POINTS``.
+
+    THE MODEL, which is the probability bridge run to its conclusion rather than a new
+    one. The party's rate carries a multiplicative shock ``R*exp(eps)``,
+    ``eps ~ N(0, sigma^2)``, with sigma the party's own Wald dice (:func:`clear_sigma`)
+    and ``config.RISK_SIGMA_SYSTEMATIC`` in quadrature. A rate shock is exactly a clock
+    shock, so every cumulative clearing time becomes ``tau_t * exp(-eps)`` and both the
+    tier reached and the partial progress follow deterministically::
+
+        T(eps) = max{ t : tau_t * exp(-eps) <= BUDGET }
+        f(eps) = (BUDGET - tau_T e^-eps) / ((tau_{T+1} - tau_T) e^-eps)
+        E[pts] = integral points(T(eps), f(eps)) * phi(eps/sigma)/sigma d eps
+
+    Integrated on a normalised midpoint grid over ``+/- RISK_QUADRATURE_SPAN`` sigmas
+    rather than by Gauss-Hermite: the shipped build is pure-Python (numpy is a dev-only
+    extra) and a hard-coded Hermite table is a mistyping waiting to happen. The
+    integrand is bounded, this runs four times per guild, and ``sigma -> 0`` reproduces
+    the deterministic answer to within 1e-9 — asserted in the tests.
+
+    Returns None when there is nothing to price: the party cannot move, or sigma cannot
+    be derived. Note this is deliberately NOT the objective — optimising it would choose
+    the same parties, because the gamble it prices survives its own test — so it never
+    enters :class:`src.optimizer.AssignmentScorer`.
+    """
+    if not config.RISK_EXPECTED_POINTS:
+        return None
+
+    budget = config.TRIAL_TIME_BUDGET_SECONDS
+    tier = max(1, result.tier_reached)
+    sigma_dice = clear_sigma(party, skill, tier, building_levels)
+    if sigma_dice is None:
+        return None
+    sigma = math.hypot(sigma_dice, config.RISK_SIGMA_SYSTEMATIC)
+
+    taus = _cumulative_tier_times(
+        party,
+        skill,
+        result.tier_reached + config.RISK_LOOKAHEAD_TIERS,
+        building_levels,
+    )
+    if not taus:
+        return None
+
+    def points_at(shock: float) -> float:
+        """Credit points if the party's whole clock is scaled by ``exp(-shock)``."""
+        scale = math.exp(-shock)
+        banked = 0
+        for value in taus:
+            if value * scale <= budget:
+                banked += 1
+            else:
+                break
+        if banked >= len(taus):
+            # Ran off the top of the lookahead: no next tier to be part-way through.
+            # Only reachable on a shock large enough to clear every tier priced, which
+            # RISK_LOOKAHEAD_TIERS is sized to keep negligible.
+            return points_for_credit(banked, credit_tiers(banked, 0.0))
+        start = taus[banked - 1] * scale if banked >= 1 else 0.0
+        span = taus[banked] * scale - start
+        fraction = 0.0 if span <= 0 else _clamp((budget - start) / span, 0.0, 1.0)
+        return points_for_credit(banked, credit_tiers(banked, fraction))
+
+    if sigma <= 0:
+        return points_at(0.0)
+
+    nodes = max(3, config.RISK_QUADRATURE_NODES)
+    span = config.RISK_QUADRATURE_SPAN * sigma
+    step = 2.0 * span / nodes
+    total = 0.0
+    weight_sum = 0.0
+    for i in range(nodes):
+        shock = -span + step * (i + 0.5)   # midpoints, so no node sits on an endpoint
+        weight = _normal_pdf(shock / sigma)
+        weight_sum += weight
+        total += weight * points_at(shock)
+    # Normalise by the realised weights rather than by step/sigma, so the truncated
+    # tails cannot bias the answer downward — the result is a proper weighted mean over
+    # the range priced, and the mass outside +/-5 sigma is ~6e-7.
+    return total / weight_sum if weight_sum > 0 else None
+
+
 def points_for_tier(tier_reached: int) -> int:
     """points(T) = 100 + 100*T for T >= 1, else 0.
 
@@ -916,6 +1062,10 @@ class TrialResult:
     # only — see clear_probability for why simulate_race does not compute it.
     # None means "not computed" or "no tier banked"; the page renders both as "—".
     clear_probability: Optional[float] = None
+    # E[credit_points] under the calibrated shock — the honest figure beside the
+    # optimistic one. Filled in by run_week for the SHIPPED races only, for the same
+    # reason as clear_probability. See expected_credit_points.
+    expected_points: Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -1554,6 +1704,10 @@ class WeekResult:
     # Total INCLUDING partial-tier credit — the quantity the optimizer maximised.
     # Equals float(total_points) when config.TRIAL_PARTIAL_CREDIT_RATE is 0.0.
     total_credit_points: float = 0.0
+    # Sum of the per-trial expectations. The gap to total_credit_points is what the
+    # deterministic score over-claims, and it is the number to quote when the margins
+    # are thin — see trials.expected_credit_points.
+    total_expected_points: Optional[float] = None
     trials: list[TrialResult] = field(default_factory=list)
     bench: list[str] = field(default_factory=list)
     # Per drawn skill, the SKILL LEVELS the guild's building grants every member
@@ -1591,6 +1745,7 @@ class WeekResult:
             "member_count": self.member_count,
             "total_points": self.total_points,
             "total_credit_points": self.total_credit_points,
+            "total_expected_points": self.total_expected_points,
             "strategy": self.strategy,
             "trials": [t.to_dict() for t in self.trials],
             "bench": self.bench,
@@ -1665,6 +1820,12 @@ def run_week(
         result.clear_probability = clear_probability(
             assignment.parties[skill], skill, result
         )
+        # And the expectation the deterministic score understates. Same cost profile as
+        # the probability: a couple of extra passes over four parties, long after the
+        # optimizer has finished.
+        result.expected_points = expected_credit_points(
+            assignment.parties[skill], skill, result
+        )
     # How many levels of each trial's guild building would buy another tier, and
     # when does that spend pay for itself? The parties above are held fixed, so
     # each answer is an upper bound on the cost (see probe_building_upgrade).
@@ -1692,6 +1853,11 @@ def run_week(
         member_count=len(members),
         total_points=sum(t.points for t in trials),
         total_credit_points=sum(t.credit_points for t in trials),
+        total_expected_points=(
+            sum(t.expected_points for t in trials)
+            if all(t.expected_points is not None for t in trials)
+            else None
+        ),
         strategy=strategy,
         trials=trials,
         bench=[m.name for m in assignment.bench],

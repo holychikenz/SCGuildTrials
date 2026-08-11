@@ -258,6 +258,112 @@ def _sorted_roster(trial: dict) -> list[dict]:
     return sorted(trial["roster"], key=lambda r: r["rate_final"], reverse=True)
 
 
+def _credit_points(entry: dict) -> float:
+    """``credit_points``, falling back to the step award when the key is absent.
+
+    Defensive by policy (the degrade-don't-fail rule ``draw.py`` already follows): a
+    ``trials.json`` / ``signup.json`` written before the 2026-08-11 patch carries no
+    credit figure at all, and the page must still render the honest equivalent — with
+    no partial credit the two are equal by construction — rather than raise or print a
+    dash where a score belongs.
+    """
+    credit = entry.get("credit_points")
+    return float(entry.get("points") or 0) if credit is None else float(credit)
+
+
+def _tier_phrase(trial: dict) -> str:
+    """``tier 11 + 22.8% into tier 12`` &mdash; the banked tier, then the part-finished one.
+
+    Points are no longer a pure step function of the banked tier: the patch pays
+    ``config.TRIAL_PARTIAL_CREDIT_RATE`` of a tier for progress into the next one, so
+    how far the party got is part of the score and belongs beside the tier, not buried.
+    """
+    tier = trial.get("tier_reached") or 0
+    fraction = trial.get("partial_fraction") or 0.0
+    if fraction <= 0.0:
+        return f"tier <strong>{tier}</strong>"
+    return f"tier <strong>{tier}</strong> + {_pct(fraction)} into tier {tier + 1}"
+
+
+def _points_phrase(trial: dict) -> str:
+    """``1,211.4 points (1,200 banked)`` &mdash; credit score, then the confirmed award.
+
+    Both, because they answer different questions. ``credit_points`` is what the
+    optimizer maximised and what the patch says the trial is worth; ``points`` is the
+    step award for the tiers actually banked, which is the only figure the game's own
+    schedule has ever been confirmed against.
+    """
+    return (
+        f"{_cp(_credit_points(trial))} points "
+        f"({_gp(trial.get('points') or 0)} banked)"
+    )
+
+
+def _expected_phrase(trial: dict) -> str:
+    """`` &middot; 1,275.7 expected`` &mdash; empty when the expectation is absent.
+
+    The deterministic score prices a tier held at even odds as a certainty, so it is
+    optimistic exactly where the margin is thin. This is the same score integrated over
+    the calibrated shock. Shown only when it differs from the deterministic figure by
+    enough to matter: on a comfortable trial the two agree to within a rounding error,
+    and printing both would be noise.
+    """
+    expected = trial.get("expected_points")
+    if expected is None:
+        return ""
+    deterministic = _credit_points(trial)
+    if deterministic is None or abs(deterministic - expected) < 0.5:
+        return ""
+    return (
+        f' &middot; <strong>{_cp(expected)} expected</strong> '
+        f'<span class="muted-text">({_cp(expected - deterministic)} on the bet)</span>'
+    )
+
+
+def _marginal_seat_phrase(trial: dict) -> str:
+    """The weakest seated member's share of party rate, against the break-even.
+
+    WHY THIS IS ON THE PAGE. Partial credit prices a marginal seat: a member earns
+    their place iff they add more than roughly ``1/(100 + N)`` of the party's
+    throughput, because an extra head raises EVERY tier's target by 1% (the
+    ``(1 + Players/100)`` headcount term in TotalWork). Under the old step objective
+    that number was invisible — every candidate from level 140 down to level 10 scored a
+    delta of exactly zero — so being wrong about ``config.TRIAL_PARTY_CAP`` cost nothing
+    measurable. It now costs points in WHICHEVER DIRECTION it is wrong, and the constant
+    is unconfirmed: 20 is the largest skilling party ever observed
+    (``research/trial-tabs.md``), 24 is what ships. If the real cap is 20 then every
+    tier, margin and probability on this page is optimistic by four phantom
+    contributors; if there is no cap at 24 the guild is leaving points on the table and
+    this tool is quietly telling it to. The line publishes that exposure rather than
+    hiding it.
+
+    Two decimals, unlike :func:`_pct`: both figures sit near 1%, and a single decimal
+    cannot separate the two sides of the very break-even the line exists to compare.
+    """
+    rates = [r.get("rate_final") or 0.0 for r in (trial.get("roster") or [])]
+    total = sum(rates)
+    if not rates or total <= 0.0:
+        return ""
+    share = min(rates) / total
+    size = trial.get("party_size") or len(rates)
+    breakeven = 1.0 / (100.0 + size)
+    pays = share >= breakeven
+    return (
+        f'Marginal seat: weakest seated contributes '
+        f'<span class="{"ok-text" if pays else "warn-text"}">'
+        f'{share * 100:.2f}%</span> of party rate, against a '
+        f'{breakeven * 100:.2f}% break-even at {size} seats &mdash; '
+        + (
+            "so every seat pays for itself."
+            if pays
+            else "so the weakest seat costs more than it adds."
+        )
+        + f' The cap ({config.TRIAL_PARTY_CAP}) is itself unconfirmed &mdash; 20 is the '
+          f'largest party ever observed &mdash; and partial credit is what made being '
+          f'wrong about it cost measurable points.'
+    )
+
+
 def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
     """Render one trial's section and return (html, assignment_entries).
 
@@ -295,6 +401,7 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
         "<td class=num>{rate}</td>"
         "<td class=num>{ttc}</td>"
         "<td class=num>{cum}</td>"
+        "<td class=num>{progress}</td>"
         "<td>{status}</td>"
         "</tr>".format(
             cls="cleared" if step["cleared"] else "failed",
@@ -304,10 +411,22 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
             rate=_num(step["party_rate"]),
             ttc=_num(step["time_to_clear"], 1) if step["time_to_clear"] is not None else "&infin;",
             cum=_num(step["cumulative_time"], 1) if step["cumulative_time"] is not None else "&mdash;",
+            # Set on the FIRST UNCLEARED step only: a cleared tier is 100% done by
+            # definition, and a party that could not move at all made no progress to
+            # report. So exactly one row in this table carries a figure, and it is the
+            # row the partial credit is paid on. ``.get`` because a pre-patch
+            # trials.json has no such key.
+            progress=_pct(step.get("progress_fraction")),
             status="cleared" if step["cleared"] else "ran out",
         )
         for step in trial["timeline"]
     )
+
+    # Omit the paragraph entirely rather than emit an empty one: the phrase is empty
+    # only when the roster carries no usable rates at all (an empty party, or a
+    # trials.json old enough to lack rate_final).
+    marginal = _marginal_seat_phrase(trial)
+    marginal_html = f'<p class="meta">{marginal}</p>' if marginal else ""
 
     # Margin and odds, on the optimum too. The safety pass maximises the margin
     # here, so these cards are the standard the sign-up page reads against — and
@@ -317,11 +436,11 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
   <section class="card">
     <h2>{skill}</h2>
     <p class="meta">Party size {trial['party_size']} &middot;
-       tier reached <strong>{trial['tier_reached']}</strong> &middot;
-       {trial['points']} points</p>
+       {_tier_phrase(trial)} &middot; {_points_phrase(trial)}{_expected_phrase(trial)}</p>
     <p class="meta">Safety:
        {_margin_phrase(_margin_view(trial), config.TRIAL_TIME_BUDGET_SECONDS)}
        {_risk_phrase(trial)}</p>
+    {marginal_html}
 
     <h3>Roster</h3>
     <p class="meta">Sorted by rate at the final tier (click any header to
@@ -348,7 +467,7 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
           <tr><th class=num>Tier</th><th class=num>Tier level</th>
               <th class=num>Effective target</th><th class=num>Party rate/s</th>
               <th class=num>Time to clear (s)</th><th class=num>Cumulative (s)</th>
-              <th>Result</th></tr>
+              <th class=num>Progress</th><th>Result</th></tr>
         </thead>
         <tbody>{timeline_rows}</tbody>
       </table>
@@ -593,6 +712,25 @@ def _gp(value) -> str:
     return f"{value:,}"
 
 
+def _cp(value) -> str:
+    """Credit points to ONE decimal with thousands separators; em dash for None.
+
+    Points became a FLOAT with the 2026-08-11 partial-credit patch: ``credit_points``
+    carries the part-finished tier as well as the banked ones, so raw interpolation
+    prints ``4940.365999999999``. One decimal is the honest resolution — a whole tier of
+    partial credit is worth only ``TRIAL_PARTIAL_CREDIT_RATE * 100`` points, so a tenth
+    of a point is already well inside the noise of the model's own constants, and any
+    more digits would imply a precision the race does not have.
+
+    Deliberately separate from :func:`_gp`, which stays integral: guild points SPENT on
+    a building or a shrine are whole numbers from the game's own cost ladder, whereas
+    points EARNED are now continuous.
+    """
+    if value is None:
+        return "&mdash;"
+    return f"{value:,.1f}"
+
+
 def _payback(value) -> str:
     """A payback figure (draws or weeks): one decimal, em dash when it never pays.
 
@@ -709,6 +847,204 @@ def _render_upgrades_section(week: dict) -> str:
 """
 
 
+def _render_shrines_section(week: dict) -> str:
+    """Guild shrines: what they grant every member today, and what one level more costs.
+
+    Deliberately a SEPARATE card from the buildings, because a shrine is a different
+    kind of purchase and pricing it the buildings' way understates it by roughly an
+    order of magnitude: a building buffs one skill, so it only earns anything in the
+    weeks that skill is drawn (every ``TRIAL_WEEKS_BETWEEN_DRAWS`` weeks), whereas a
+    shrine buffs efficiency or action speed for everyone in every skill and therefore
+    pays in ALL FOUR trials EVERY week. Hence no draw-frequency discount here, and a
+    "gain per week" column rather than a per-draw one.
+
+    Rows whose gain is exactly zero are the loot and XP shrines. They are rendered
+    greyed rather than dropped, so the reader can see they were considered and priced at
+    nothing — the same contract the buildings' "checked and rejected" line honours.
+    """
+    upgrades = week.get("shrine_upgrades") or []
+    speed = week.get("shrine_speed") or 0.0
+    efficiency = week.get("shrine_efficiency") or 0.0
+    levels = week.get("guild_shrine_levels") or {}
+    if not upgrades and not levels:
+        return ""
+
+    # Same order as the buildings' table for the same reason: soonest payback first is
+    # the officers' actual decision order. Priceless rows (no gain, or at the cap) sort
+    # last, and the loot/XP shrines land there by construction.
+    ranked = sorted(
+        upgrades,
+        key=lambda u: (
+            u["weeks_to_return"] if u.get("weeks_to_return") is not None
+            else float("inf"),
+            u.get("next_level_cost") or 0,
+        ),
+    )
+
+    rows = []
+    for u in ranked:
+        gain = u.get("points_gained") or 0.0
+        # A shrine that does not feed the race at all: say WHICH currency it pays in
+        # instead, from the buff the game itself names, so "0" never reads as "broken".
+        if gain == 0.0:
+            note = "XP only" if u.get("buff") == "wisdom" else "loot only"
+            if u.get("at_cap"):
+                note = "at the level cap"
+            rows.append(
+                "<tr class=dim>"
+                f"<th>{html.escape(u.get('name') or u.get('shrine') or '?')}</th>"
+                f"<td>{html.escape(u.get('buff') or '?')}</td>"
+                f"<td class=num>{u.get('from_level', 0)}</td>"
+                f"<td class=num>{_gp(u.get('next_level_cost'))}</td>"
+                f"<td class=num>&mdash;</td>"
+                f"<td class=num>{note}</td>"
+                "</tr>"
+            )
+            continue
+        rows.append(
+            "<tr>"
+            f"<th>{html.escape(u.get('name') or u.get('shrine') or '?')}</th>"
+            f"<td>{html.escape(u.get('buff') or '?')}</td>"
+            f"<td class=num>{u.get('from_level', 0)}</td>"
+            f"<td class=num>{_gp(u.get('next_level_cost'))}</td>"
+            f"<td class=num>+{_cp(gain)}</td>"
+            f"<td class=num><strong>{_payback(u.get('weeks_to_return'))}</strong></td>"
+            "</tr>"
+        )
+
+    table = f"""
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Shrine</th><th>Buff</th><th class=num>Level</th>
+          <th class=num>Next level (gp)</th><th class=num>Gain/week</th>
+          <th class=num>Weeks to repay</th>
+        </tr></thead>
+        <tbody>{"".join(rows)}</tbody>
+      </table>
+    </div>""" if rows else ""
+
+    built = ", ".join(
+        f"<strong>{html.escape(config.GUILD_SHRINE_NAMES.get(k, k))} lv {lv}</strong>"
+        for k, lv in levels.items() if lv
+    ) or "none built"
+
+    return f"""
+  <section class="card" id="shrines-section">
+    <h2>Guild shrines &mdash; the buff every member carries into every trial</h2>
+    <p class="meta">Since the 2026-08-11 patch the shrine buffs apply inside guild
+       trials, so every member of every party this week runs with
+       <code>+{efficiency * 100:.1f}%</code> efficiency and
+       <code>+{speed * 100:.1f}%</code> action speed on top of their own gear and house.
+       Levels in place: {built}. Unlike a guild building, which grants skill levels in
+       <em>one</em> skill and therefore earns nothing in the weeks that skill is not
+       drawn, a shrine pays in <strong>all four trials, every week</strong> &mdash; so
+       the payback below carries no draw-frequency discount.</p>
+    <p class="meta">And yet the verdict is that <strong>buildings dominate shrines as an
+       investment</strong>. The shrine guild-point ladder is exactly <em>double</em> the
+       buildings' at every level, while the measured effect of one level is a fraction of
+       a tier spread across four parties, so the payback runs far longer than any
+       building's on this page. The gain is only priceable at all because of partial-tier
+       credit: under the old step objective one shrine level almost never crossed a tier
+       boundary anywhere, so it scored exactly zero in every trial and the upgrade could
+       not be valued. Parties are held fixed here, exactly as in the buildings' table, so
+       each gain is a lower bound and each payback an upper bound.</p>{table}
+  </section>
+"""
+
+
+def _render_min_levels_section(week: dict) -> str:
+    """The per-trial minimum sign-up level: what is set, and what would match the model.
+
+    The patch gave officers a per-trial minimum sign-up level. Read as a constraint it
+    is a nuisance; read as a LEVER it is the thing this tool has never had — the model
+    has always been able to say "these members should sit this one out" and an officer
+    has never had any way to make that happen. ``suggested`` is simply the lowest level
+    the optimizer actually seated, so setting it excludes exactly the members the model
+    already declined to pick and nobody else.
+
+    The two exclusion counts are the whole point of the table. Where ``would_exclude``
+    equals ``already_benched`` the setting merely formalises a bench the model had
+    already chosen; where it is larger, it would bar members this week's model was happy
+    to seat, and it is then a trade rather than a tidy-up.
+    """
+    advice = week.get("min_level_advice") or []
+    if not advice:
+        return ""
+
+    rows = []
+    for a in advice:
+        current = a.get("current")
+        suggested = a.get("suggested")
+        exclude = a.get("would_exclude") or 0
+        benched = a.get("already_benched") or 0
+        extra = exclude - benched
+        if suggested is None:
+            verdict = "no seated member reports a level, so nothing can be suggested"
+            band = "warn-text"
+        elif extra <= 0:
+            verdict = (
+                f"formalises a bench the model already chose &mdash; all {exclude} "
+                f"excluded were benched anyway"
+            )
+            band = "ok-text"
+        else:
+            verdict = (
+                f"would bar {extra} member(s) the model was happy to seat "
+                f"({exclude} excluded, {benched} already benched)"
+            )
+            band = "warn-text"
+        rows.append(
+            "<tr>"
+            f"<th>{html.escape(a.get('skill') or '?')}</th>"
+            f"<td class=num>{'&mdash;' if current is None else current}</td>"
+            f"<td class=num><strong>"
+            f"{'&mdash;' if suggested is None else suggested}</strong></td>"
+            f"<td class=num>{a.get('party_size') or 0}</td>"
+            f"<td class=num>{exclude}</td>"
+            f"<td class=num>{benched}</td>"
+            f'<td class="{band}">{verdict}</td>'
+            "</tr>"
+        )
+
+    return f"""
+  <section class="card" id="min-levels-section">
+    <h2>Minimum sign-up level &mdash; what the officers set, and what would match this plan</h2>
+    <p class="meta"><strong>Set in game</strong> is the minimum this week's
+       <em>Trial Priority</em> block records for each trial (an em dash where none is
+       set); <strong>would match</strong> is the lowest level the optimizer actually
+       seated, i.e. the number that reproduces the party below and excludes nobody
+       else. It is advice, not an instruction: a minimum also bars members from
+       volunteering in future weeks, and it cannot tell "too weak to help" apart from
+       "too weak to help <em>this</em> week alongside these particular twenty-odd".</p>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Trial</th><th class=num>Set in game</th><th class=num>Would match</th>
+          <th class=num>Party</th><th class=num>Excludes</th>
+          <th class=num>Already benched</th><th>Effect</th>
+        </tr></thead>
+        <tbody>{"".join(rows)}</tbody>
+      </table>
+    </div>
+  </section>
+"""
+
+
+def _expected_total_note(total_credit, total_expected) -> str:
+    """`` &middot; 4,947.2 expected`` for a strip tile, or "" when it adds nothing.
+
+    Suppressed when the two agree within half a point, which is the comfortable case:
+    the expectation only diverges where a tier is being held by seconds, and that is
+    exactly when an officer needs to see it.
+    """
+    if total_expected is None or total_credit is None:
+        return ""
+    if abs(total_credit - total_expected) < 0.5:
+        return ""
+    return f" &middot; <strong>{_cp(total_expected)} expected</strong>"
+
+
 def _render_trials_html(
     week: dict, site: "GuildSite", draw_warning: str = ""
 ) -> str:
@@ -718,11 +1054,24 @@ def _render_trials_html(
     live draw could not be read and the skills below are the last known ones (see
     ``build_guild``). Empty means the draw came from the sheet as normal.
     """
+    expected_note = _expected_total_note(
+        week.get("total_credit_points"), week.get("total_expected_points")
+    )
+    # Tile subtitle carries BOTH currencies: the credit score the plan was chosen on,
+    # and the step award for the tier actually banked. The tier headline stays the
+    # banked one — a part-finished tier is worth points, not a tier.
     strip = "".join(
         "<div class=\"stat\">"
         f"<div class=stat-skill>{html.escape(t['skill'])}</div>"
-        f"<div class=stat-tier>Tier {t['tier_reached']}</div>"
-        f"<div class=stat-pts>{t['points']} pts</div>"
+        f"<div class=stat-tier>Tier {t['tier_reached']}"
+        + (
+            f'<span class="stat-pts"> +{_pct(t.get("partial_fraction"))}</span>'
+            if (t.get("partial_fraction") or 0.0) > 0.0
+            else ""
+        )
+        + "</div>"
+        f"<div class=stat-pts>{_cp(_credit_points(t))} pts "
+        f"&middot; {_gp(t['points'])} banked</div>"
         "</div>"
         for t in week["trials"]
     )
@@ -751,6 +1100,8 @@ def _render_trials_html(
     )
 
     upgrades_section = _render_upgrades_section(week)
+    shrines_section = _render_shrines_section(week)
+    min_levels_section = _render_min_levels_section(week)
 
     # Stale-draw banner: deliberately the first thing on the page, so a fallback
     # draw can never be mistaken for a live one.
@@ -800,6 +1151,7 @@ def _render_trials_html(
   .stat-skill {{ font-weight: 700; font-size: 1rem; }}
   .stat-tier {{ color: var(--accent); font-size: 1.35rem; font-variant-numeric: tabular-nums; }}
   .stat-pts {{ color: var(--muted); font-size: .85rem; }}
+  .muted-text {{ color: var(--muted); font-weight: 400; }}
   .total {{ flex: 1 1 160px; background: #14251c; border: 1px solid var(--on);
             border-radius: 8px; padding: .75rem .9rem; }}
   .total .stat-tier {{ color: var(--on); }}
@@ -822,6 +1174,9 @@ def _render_trials_html(
             border-radius: 8px; padding: .8rem 1rem; margin: 0 0 1.25rem;
             font-size: .9rem; }}
   tr.failed td {{ color: var(--warn); }}
+  /* Considered and priced at nothing (the loot / XP shrines): greyed rather than
+     omitted, so a reader can see the row was looked at. */
+  tr.dim > th, tr.dim > td {{ color: var(--muted); font-style: italic; }}
   tbody tr:hover {{ background: #1b2029; }}
   /* --- Player search --------------------------------------------------- */
   .search {{ position: relative; max-width: 420px; margin: .25rem 0 1.25rem; }}
@@ -883,8 +1238,9 @@ def _render_trials_html(
     {strip}
     <div class="total">
       <div class=stat-skill>Total</div>
-      <div class=stat-tier>{week['total_points']}</div>
-      <div class=stat-pts>guild points</div>
+      <div class=stat-tier>{_cp(week.get('total_credit_points') or week['total_points'])}</div>
+      <div class=stat-pts>credit points &middot;
+        {_gp(week['total_points'])} from banked tiers{expected_note}</div>
     </div>
   </div>
 
@@ -902,7 +1258,7 @@ def _render_trials_html(
        (beyond {len(week['skills'])} &times; {week['cap']}).</p>
     <p>{bench_html}</p>
   </section>
-{upgrades_section}</main>
+{min_levels_section}{upgrades_section}{shrines_section}</main>
 <footer>
   <h3>Assumptions &amp; caveats</h3>
   <p>This page is a <strong>model</strong>, not live game data. Every number
@@ -925,10 +1281,29 @@ def _render_trials_html(
         buildings (see below). For Enhancing the <code>bonus</code>
         is the EnhancingSuccessRate (enhancer tool success; the Observatory's
         enhancing-success buff is 0 in the live data).</li>
-    <li><strong>Points formula (ASSUMPTION).</strong>
-        <code>points(T) = 100 + 100*T</code> for the highest tier T (0 if tier 1
-        is not cleared). Fits the only observed data (milking tier1&rarr;200,
-        tier2&rarr;300); the full schedule is unconfirmed.</li>
+    <li><strong>Points formula, and partial-tier credit (2026-08-11).</strong>
+        A trial is now credited for progress into the tier it did <em>not</em>
+        finish, at half rate: <code>0.5% credit per 1% progress</code>. So with
+        <code>T</code> the tier banked and <code>f</code> the fraction of the next
+        one completed when the hour ran out,
+        <code>points = 100 + 100 &times; (T + {config.TRIAL_PARTIAL_CREDIT_RATE} &times; f)</code>.
+        <br>
+        <strong>The shape matters more than the formula.</strong> Each tier is now a
+        <em>ramp</em> worth {_num(config.TRIAL_POINTS_PER_TIER * config.TRIAL_PARTIAL_CREDIT_RATE, 0)}
+        points followed by a <em>step</em> worth
+        {_num(config.TRIAL_POINTS_PER_TIER * (1 - config.TRIAL_PARTIAL_CREDIT_RATE), 0)}
+        at the boundary &mdash; the old {config.TRIAL_POINTS_PER_TIER}-point cliff
+        halved, not abolished. Every seat and every swap now moves the score, where
+        before a member who crossed no threshold was worth exactly nothing; that is
+        why the tables below show fractional points, and why a marginal seat now has
+        a price. The residual step is why reaching for one more tier is still worth
+        doing even when it can only be held by seconds &mdash; see
+        <em>what the deterministic score does not say</em> below.
+        <br>
+        The <code>100 + 100*T</code> base schedule remains an ASSUMPTION fitted to
+        the only observed data (milking tier1&rarr;200, tier2&rarr;300); whether the
+        flat 100 is also earned by a party that completes <em>no</em> tier is
+        unconfirmed, and is withheld here.</li>
     <li><strong>Alchemy = the &ldquo;Bell Farming&rdquo; column.</strong> The
         guild named a sheet column &ldquo;Bell Farming&rdquo; as a joke &mdash;
         it actually records each member's <em>Alchemy</em> level. So Alchemy
@@ -1269,7 +1644,7 @@ def _render_safety_section(p: dict, thinnest: Optional[dict], riskiest: Optional
         f'hold, widening the thinnest margin from '
         f'<span class="{_slack_band(before)}">{_pct(before)}</span> to '
         f'<span class="{_slack_band(after)}">{_pct(after)}</span> {tail} '
-        f'The score does not change &mdash; it stays {p["enforced_total"]} points, by '
+        f'The score does not change &mdash; it stays {_cp(p["enforced_total"])} points, by '
         f'construction rather than by luck &mdash; so this list is about surviving an '
         f'optimistic constant or a missing piece of gear, not about scoring more. Each '
         f'is advisory, and they are cumulative: apply them in order.{gold_plating}'
@@ -1419,16 +1794,28 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         {riskiest.get('tier_reached')} &middot; if the party turns up{recover_p}</div></div>"""
 
     # --- Summary strip: likely / with-swaps / ceiling / safety --------------
+    # The three score tiles lead with CREDIT points, because that is the currency every
+    # comparison on this page is made in (the swap gains, the gap, the ceiling all come
+    # from the scorer) and the one the plan was actually chosen on. The step total — the
+    # confirmed award for the tiers the guild will see banked in game — rides underneath,
+    # read defensively so a signup.json from before the patch still renders.
+    enforced_step = p.get("enforced_step_total")
+    optimal_step = p.get("optimal_step_total")
+    signup_expected_note = _expected_total_note(
+        p.get("enforced_total"), p.get("enforced_expected_total")
+    )
     strip = f"""
     <div class="stat"><div class=stat-skill>Likely score</div>
-      <div class=stat-tier>{p['enforced_total']}</div>
-      <div class=stat-pts>sign-ups + recommended fills</div></div>
+      <div class=stat-tier>{_cp(p['enforced_total'])}</div>
+      <div class=stat-pts>sign-ups + recommended fills &middot;
+        {_gp(enforced_step)} pts from banked tiers{signup_expected_note}</div></div>
     <div class="stat"><div class=stat-skill>With swaps</div>
-      <div class=stat-tier>{p['reachable_total']}</div>
+      <div class=stat-tier>{_cp(p['reachable_total'])}</div>
       <div class=stat-pts>after the swaps below</div></div>
     <div class="total"><div class=stat-skill>Optimal ceiling</div>
-      <div class=stat-tier>{p['optimal_total']}</div>
-      <div class=stat-pts>best possible &middot; gap {p['gap']}</div></div>{safety_tile}{odds_tile}"""
+      <div class=stat-tier>{_cp(p['optimal_total'])}</div>
+      <div class=stat-pts>best possible &middot; gap {_cp(p['gap'])} &middot;
+        {_gp(optimal_step)} pts banked</div></div>{safety_tile}{odds_tile}"""
 
     # --- Per-trial enforced rosters ----------------------------------------
     # Every row carries a stable DOM id so the player search can jump to it, the
@@ -1437,10 +1824,24 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         assigned = r["status"] == "assigned"
         cls = "assigned" if assigned else "rec"
         badges = _badge(r["tool"], "Tool") + _badge(r["top"], "Top") + _badge(r["bot"], "Bot")
+        # A FILL NOW HAS A PRICE, AND IT MAY BE NEGATIVE. Under the old step objective a
+        # marginal seat was worth exactly zero, so every rider was "safe". Partial credit
+        # prices the seat — an extra head raises every tier's target — so a rider seated
+        # under config.TRIAL_FILL_MAX_POINT_COST costs the party points, and the chip
+        # prints the bill rather than implying the seat was free. "Fill (safe)" is now
+        # reserved for a genuine zero (or a plan written before the patch, which carries
+        # no gain at all).
+        gain = r.get("fill_gain")
         if assigned:
             chip = '<span class="chip assigned">Signed up</span>'
-        elif r.get("lifts_tier"):
-            chip = f'<span class="chip rec">Fill +{r["fill_gain"]}</span>'
+        elif gain is not None and gain > 0:
+            chip = f'<span class="chip rec">Fill +{_cp(gain)}</span>'
+        elif gain is not None and gain < 0:
+            chip = (
+                f'<span class="chip cost" title="Seated at a stated cost in credit '
+                f'points (config.TRIAL_FILL_MAX_POINT_COST)">Fill &minus;'
+                f'{_cp(-gain)}</span>'
+            )
         else:
             chip = '<span class="chip filler">Fill (safe)</span>'
         level = "" if r["level"] is None else r["level"]
@@ -1465,7 +1866,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         if opt_tier is not None and opt_tier != t["tier_reached"]:
             opt_note = (
                 f' &middot; <span class="hl">optimal reaches tier {opt_tier} '
-                f'({opt.get("points")} pts)</span>'
+                f'({_cp(_credit_points(opt))} pts)</span>'
             )
         # How safe this lineup is, and how safe the optimum manages to be on the
         # same trial — the comparison is the point: a much wider margin next door
@@ -1478,6 +1879,16 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         )
         n_assigned = sum(1 for r in t["roster"] if r["status"] == "assigned")
         n_rec = sum(1 for r in t["roster"] if r["status"] == "recommended")
+        # The trial's minimum sign-up level, where the officers set one. Stated on the
+        # card because it explains an absence the reader would otherwise read as a bug:
+        # a volunteer whose level the minimum forbids is not in this party (the game
+        # would refuse the sign-up) — see the #ineligible-signups card.
+        min_level = t.get("min_level")
+        min_note = (
+            f" &middot; minimum sign-up level <strong>{min_level}</strong>"
+            if min_level is not None
+            else ""
+        )
         rows = "".join(
             _row(r, f"sr-{t_index}-{i}") for i, r in enumerate(t["roster"])
         )
@@ -1493,9 +1904,10 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         cards.append(f"""
   <section class="card">
     <h2>{html.escape(t['skill'])}</h2>
-    <p class="meta">Party {t['party_size']} &middot; tier <strong>{t['tier_reached']}</strong>
-       &middot; {t['points']} pts &middot; {n_assigned} signed up, {n_rec} recommended,
-       {t['open_seats']} seat(s) still open{opt_note}</p>
+    <p class="meta">Party {t['party_size']} &middot; {_tier_phrase(t)}
+       &middot; {_points_phrase(t)}{_expected_phrase(t)}
+       &middot; {n_assigned} signed up, {n_rec} recommended,
+       {t['open_seats']} seat(s) still open{min_note}{opt_note}</p>
     <p class="meta">Safety: {_margin_phrase(t, budget)}{_risk_phrase(t)}{opt_margin}</p>
     <div class="scroll">
       <table>
@@ -1549,14 +1961,19 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             f'<tr><td><span class="chip {html.escape(s["action"])}">'
             f'{html.escape(s["action"])}</span></td>'
             f'<td>{_swap_detail(s)}</td>'
-            f'<td class=num>+{s["gain"]}</td></tr>'
+            f'<td class=num>+{_cp(s["gain"])}</td></tr>'
             for s in p["swaps"]
         )
         gained = sum(s["gain"] for s in p["swaps"])
-        if p["reachable_total"] >= p["optimal_total"]:
+        # Compared with a tolerance, not exactly. The totals are continuous since
+        # partial-tier credit, so two lineups that are for all practical purposes level
+        # can differ in the second decimal — and reporting "a further 1.5 points to the
+        # ceiling" as a shortfall is noise dressed as advice. Half a point is well
+        # inside the model's own error and far below one tier.
+        if p["reachable_total"] >= p["optimal_total"] - 0.5:
             swap_lead = (
                 f"These {len(p['swaps'])} move(s) raise the likely "
-                f"{p['enforced_total']} to {p['reachable_total']} points "
+                f"{_cp(p['enforced_total'])} to {_cp(p['reachable_total'])} points "
                 "&mdash; the optimal ceiling. Each is purely advisory and "
                 "overrides a sign-up; a &ldquo;reshuffle&rdquo; is a small group "
                 "of swaps that together lift one trial a tier."
@@ -1564,8 +1981,9 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         else:
             swap_lead = (
                 f"These {len(p['swaps'])} move(s) raise the likely "
-                f"{p['enforced_total']} to {p['reachable_total']} points "
-                f"(+{gained}); a further {p['optimal_total'] - p['reachable_total']} "
+                f"{_cp(p['enforced_total'])} to {_cp(p['reachable_total'])} points "
+                f"(+{_cp(gained)}); a further "
+                f"{_cp(p['optimal_total'] - p['reachable_total'])} "
                 "to the optimal ceiling is not reachable without a wider reshuffle "
                 "(see the comparison below). Each is advisory and overrides a "
                 "sign-up."
@@ -1585,17 +2003,19 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         swaps_section = f"""
   <section class="card">
     <h2>Recommended swaps to reach optimal</h2>
-    <p class="meta">None &mdash; the enforced sign-up plan ({p['enforced_total']} pts)
-       already matches the optimal ceiling ({p['optimal_total']} pts), so there is
+    <p class="meta">None &mdash; the enforced sign-up plan ({_cp(p['enforced_total'])} pts,
+       {_gp(enforced_step)} from banked tiers) already matches the optimal ceiling
+       ({_cp(p['optimal_total'])} pts, {_gp(optimal_step)} banked), so there is
        nothing to gain in <em>points</em>.</p>{safety_caveat}
   </section>"""
     else:
         swaps_section = f"""
   <section class="card">
     <h2>Recommended swaps to reach optimal</h2>
-    <p class="meta">None found &mdash; the enforced sign-up plan ({p['enforced_total']} pts)
-       sits {p['optimal_total'] - p['enforced_total']} below the optimal ceiling
-       ({p['optimal_total']} pts), but no swap (single or grouped) closes the gap
+    <p class="meta">None found &mdash; the enforced sign-up plan ({_cp(p['enforced_total'])} pts,
+       {_gp(enforced_step)} from banked tiers)
+       sits {_cp(p['optimal_total'] - p['enforced_total'])} below the optimal ceiling
+       ({_cp(p['optimal_total'])} pts, {_gp(optimal_step)} banked), but no swap (single or grouped) closes the gap
        without lowering another trial. Reaching the ceiling would need a wider
        reshuffle &mdash; compare the two rosters below.</p>{safety_caveat}
   </section>"""
@@ -1605,11 +2025,22 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     # --- Optimal comparison table ------------------------------------------
     # Carries the optimum's own margin, which is what the optimizer's safety pass
     # maximised — the standard to read the enforced plan's margins against.
+    # Both currencies again, side by side: Points is the step award for the banked tier,
+    # Credit adds the part-finished one and is what the optimizer maximised — so a row
+    # can tie the enforced plan on Points and still be visibly ahead on Credit. The tier
+    # cell carries the partial progress that explains the difference.
     opt_rows = "".join(
         f'<tr><th scope=row>{html.escape(o["skill"])}</th>'
         f'<td class=num>{o["party_size"]}</td>'
-        f'<td class=num>{o["tier_reached"]}</td>'
-        f'<td class=num>{o["points"]}</td>'
+        f'<td class=num>{o["tier_reached"]}'
+        + (
+            f'<span class="meta"> +{_pct(o.get("partial_fraction"))}</span>'
+            if (o.get("partial_fraction") or 0.0) > 0.0
+            else ""
+        )
+        + "</td>"
+        f'<td class=num>{_gp(o["points"])}</td>'
+        f'<td class=num>{_cp(_credit_points(o))}</td>'
         f'<td class="num {_slack_band(o.get("slack_fraction"))}">'
         f'{_pct(o.get("slack_fraction"))}</td>'
         f'<td class=num>{_num(o.get("clear_seconds"), 0) or "&mdash;"}</td></tr>'
@@ -1662,6 +2093,35 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             f' &middot; <span class="danger-text">{len(missing)} missing data</span>'
         )
 
+    # --- Ineligible sign-ups: ticked a trial the game would refuse them ------
+    # The 2026-08-11 patch gave each trial a minimum sign-up level. A volunteer below it
+    # cannot actually sign up in game, so the plan does NOT lock them into that trial —
+    # they fall into the uncommitted pool, where they may still be recommended for a
+    # trial they do qualify for. Red, and modelled on #missing-data, because it means the
+    # sheet and the game disagree: either the tick is stale or the minimum is new, and
+    # an officer has to decide which.
+    ineligible = p.get("ineligible_signups") or []
+    ineligible_html = ""
+    ineligible_meta = ""
+    if ineligible:
+        items = "".join(f"<li>{html.escape(m)}</li>" for m in ineligible)
+        ineligible_html = f"""
+  <section class="card danger" id="ineligible-signups">
+    <h2>&#9888; Signed up below the trial's minimum level ({len(ineligible)})</h2>
+    <p class="meta">These member(s) ticked a trial on the
+       <em>{html.escape(site.signup_tab)}</em> tab whose <strong>minimum sign-up
+       level the game would refuse</strong>, so the plan does not lock them into it.
+       They are treated as <em>uncommitted</em> instead: the fill pass may still seat
+       them in a trial they do qualify for, and they appear on the not-seated list if
+       it cannot. Either the tick is stale or the minimum is newly set &mdash; the
+       sheet and the game disagree, and only an officer can say which is right.</p>
+    <ul>{items}</ul>
+  </section>"""
+        ineligible_meta = (
+            f' &middot; <span class="danger-text">{len(ineligible)} below the '
+            f'minimum level</span>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1695,6 +2155,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   .stat-skill {{ font-weight: 700; font-size: 1rem; }}
   .stat-tier {{ color: var(--accent); font-size: 1.7rem; font-variant-numeric: tabular-nums; }}
   .stat-pts {{ color: var(--muted); font-size: .85rem; }}
+  .muted-text {{ color: var(--muted); font-weight: 400; }}
   .total {{ flex: 1 1 180px; background: #14251c; border: 1px solid var(--on);
             border-radius: 8px; padding: .75rem .9rem; }}
   .total .stat-tier {{ color: var(--on); }}
@@ -1724,6 +2185,10 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   .chip.assigned {{ background: rgba(62,207,142,.18); color: var(--on); }}
   .chip.rec {{ background: rgba(110,168,254,.20); color: var(--accent); }}
   .chip.filler {{ background: var(--off); color: #aab1c0; }}
+  /* A fill that COSTS credit points (a rider seated under
+     config.TRIAL_FILL_MAX_POINT_COST): amber, because it is a purchase, not a freebie. */
+  .chip.cost {{ background: rgba(224,179,65,.20); color: var(--warn);
+               border: 1px solid rgba(224,179,65,.45); }}
   .chip.swap {{ background: rgba(224,179,65,.20); color: var(--warn);
                text-transform: capitalize; }}
   .chip.reshuffle {{ background: rgba(110,168,254,.20); color: var(--accent);
@@ -1800,7 +2265,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   <h1>Guild Trials &mdash; Sign-up Optimiser
       <span class="meta">(week of {html.escape(p['week_date'])})</span></h1>
   <p class="meta">{html.escape(site.title)} &middot; {p['roster_count']} members &middot;
-     {p['signup_count']} signed up{missing_meta} &middot; generated {html.escape(p['generated_at'])} (UTC)</p>
+     {p['signup_count']} signed up{missing_meta}{ineligible_meta} &middot; generated {html.escape(p['generated_at'])} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a>
      &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a>
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
@@ -1827,6 +2292,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     <div id="search-results" class="search-results" role="listbox" hidden></div>
   </div>
   {missing_html}
+  {ineligible_html}
   {cards_html}
   {swaps_section}
   {safety_section}
@@ -1840,6 +2306,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
       <table>
         <thead><tr><th>Trial</th><th class=num>Party</th>
           <th class=num>Tier</th><th class=num>Points</th>
+          <th class=num>Credit pts</th>
           <th class=num>Margin</th><th class=num>Banked at (s)</th></tr></thead>
         <tbody>{opt_rows}</tbody>
       </table>
@@ -1868,19 +2335,40 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         assignment the <a href="trials.html">Guild Trials</a> page computes, so the
         two never disagree. The scoring model, tiers and equipment assumptions are
         documented there.</li>
-    <li><strong>The margin is the risk.</strong> Points are a <em>step</em> function
-        of the tier reached, so a trial that banks its tier with nine seconds left
-        scores exactly the same as one that banks it with ten minutes left &mdash;
-        right up until a member does not turn up, a buff lapses, or the model's
-        constants are slightly off, at which point the thin one loses the whole tier.
-        Each card therefore shows when its last tier was <em>banked</em> out of the
-        {_num(budget, 0)}-second budget, and the strip above leads with the thinnest
-        of them. Note that the optimizer's safety pass, which deliberately widens
-        this margin, applies to the <a href="trials.html">unconstrained optimum</a>
-        only: here the volunteers are locked, so the margin the real sign-ups leave
-        is the margin that ships. A comfortable optimum next to a knife-edge sign-up
-        plan means the exposure is in <em>who signed up for what</em>, not in the
-        draw.</li>
+    <li><strong>A thin margin is no longer a fault &mdash; read this before
+        worrying about one.</strong> Until 2026-08-11 points were a pure <em>step</em>
+        function of the tier, so banking a tier with nine seconds left scored exactly
+        the same as banking it with ten minutes, and a thin margin therefore meant
+        something had gone wrong: the optimizer had no reason to cut it fine, and its
+        safety pass deliberately widened it to around 15&ndash;18%.
+        <br>
+        Partial-tier credit changed the incentive. Completing a tier is still worth a
+        {_num(config.TRIAL_POINTS_PER_TIER * (1 - config.TRIAL_PARTIAL_CREDIT_RATE), 0)}-point
+        step, which is far more than any margin is worth, so the optimizer now
+        <em>reaches</em> for tiers it can only just hold &mdash; and it is right to.
+        Falling short no longer forfeits the tier: the party lands on the one below
+        with almost all of its progress credited, so the downside is a handful of
+        points rather than a hundred. On the live rosters that reaching is worth two
+        extra tiers a week, bought at the price of margins measured in seconds.
+        <br>
+        So expect several trials to read <span class="danger-text">knife-edge</span>
+        here, and read it as a deliberate bet rather than a blunder. Each card still
+        shows when its last tier was <em>banked</em> out of the
+        {_num(budget, 0)}-second budget, and the strip above still leads with the
+        thinnest &mdash; those numbers now tell you <em>which</em> bets are outstanding,
+        not that a mistake has been made. What they do not tell you is what the bet is
+        worth, which is the next note.</li>
+    <li><strong>What the deterministic score does not say.</strong> The points figures
+        on this page are what the lineup earns if every die lands on its expectation.
+        A tier held at even odds is priced there as a certainty, so the total is
+        systematically <em>optimistic</em> exactly where the margins are thin. The
+        <em>expected</em> total is shown beside it: the same score integrated over the
+        calibrated shock, so a coin-flip tier contributes about half of itself and a
+        comfortable one contributes all of it. The gap between the two is the size of
+        the outstanding bet &mdash; on the live rosters it runs
+        {_pct(0.005)}&ndash;{_pct(0.010)} of the total, or roughly
+        {_num(24, 0)} points per knife-edge trial. Plan against the expected figure;
+        the deterministic one is the ceiling, not the forecast.</li>
     <li><strong>The margin, as odds.</strong> A margin is ordinal; officers plan
         against probabilities. Under a multiplicative shock on the party's work rate
         the clearing time scales with it, so
@@ -1898,11 +2386,25 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         it excludes sheet staleness, which can only make it conservative. It was checked
         against an independent simulation that rolls every action individually: predicted
         83%, realised 84% on the thinnest live lineup.</li>
-    <li><strong>Safety swaps buy odds, never points.</strong> The second swap list
-        searches the same neighbourhood for moves that leave the score
-        <em>exactly</em> as it is while lifting the thinnest trial &mdash; a move that
-        would gain a tier belongs to the points list above, and one that would lose a
-        tier is never offered. It spends the uncommitted members first (nothing
+    <li><strong>Safety swaps buy odds for at most
+        {_cp(config.SIGNUP_SAFETY_POINTS_TOLERANCE)} points.</strong> The second swap
+        list searches the same neighbourhood for moves that lift the thinnest trial
+        without costing more than that &mdash; and at the shipped tolerance of
+        {_cp(config.SIGNUP_SAFETY_POINTS_TOLERANCE)} it means the score does not fall at
+        all, so the old promise of &ldquo;the same points&rdquo; still holds literally.
+        The test used to be exact <em>equality</em> on the score; once partial-tier
+        credit made points continuous, exact ties all but vanished and an equality test
+        would have quietly found nothing to offer. A move that <em>gains</em> points is
+        now welcome, because the independent requirement that the thinnest margin
+        strictly rise is what forbids the failure the old rule was written against
+        (a live probe once produced a move that gained a tier while crashing that
+        trial's margin to 0.23%).
+        <br>
+        Note what this pass can and cannot do about the knife-edge trials described
+        above: it can rearrange who sits where, but it cannot buy a comfortable margin
+        by giving up a tier, because that costs far more than the tolerance allows. If
+        every trial reads thin and this list is empty, nothing is broken &mdash; the
+        lineup is taking bets the model judges worth taking. It spends the uncommitted members first (nothing
         overridden); only if that cannot reach {_pct(config.SIGNUP_SAFETY_TARGET)} does
         it propose moving a volunteer, and every such row is flagged. The list stops at
         {config.SIGNUP_SAFETY_MAX_MOVES} moves and each entry strictly improves on the
@@ -2150,10 +2652,16 @@ def build_guild(site: "GuildSite") -> str:
                 file=sys.stderr,
             )
 
+    # The build log quotes CREDIT points (one decimal — these are floats now) with the
+    # step total beside them, so a CI log tells you both what the plan was chosen on and
+    # what the guild will see banked in game. Truncating to int here would silently hide
+    # every partial-credit difference the whole patch exists to expose.
     signup_note = (
-        f"{plan.signup_count} signed, enforced {plan.enforced_total} pts "
-        f"-> {plan.reachable_total} via {len(plan.swaps)} swap(s) "
-        f"(optimal {plan.optimal_total}); "
+        f"{plan.signup_count} signed, enforced {plan.enforced_total:,.1f} cp "
+        f"({plan.enforced_step_total} pts) "
+        f"-> {plan.reachable_total:,.1f} via {len(plan.swaps)} swap(s) "
+        f"(optimal {plan.optimal_total:,.1f} cp / {plan.optimal_step_total} pts); "
+        f"{len(plan.ineligible_signups)} below min level, "
         f"{len(plan.normalized_matches)} case-fixed, "
         f"{len(plan.unmatched_signups)} unmatched"
         if plan is not None
@@ -2165,9 +2673,12 @@ def build_guild(site: "GuildSite") -> str:
         f"({len(data['skills'])} skills); draw {week_draw.date or '?'} "
         f"[{', '.join(week_draw.skills)}]; trials "
         + ", ".join(
-            f"{t.skill} T{t.tier_reached}/{t.points}pts" for t in week.trials
+            f"{t.skill} T{t.tier_reached}+{t.partial_fraction * 100:.0f}%/"
+            f"{t.credit_points:,.1f}cp"
+            for t in week.trials
         )
-        + f" (total {week.total_points} pts); signup: {signup_note}"
+        + f" (total {week.total_credit_points:,.1f} cp / {week.total_points} pts); "
+        f"signup: {signup_note}"
     )
 
 

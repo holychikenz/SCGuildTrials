@@ -1045,3 +1045,87 @@ def test_credit_points_are_deterministic_and_order_independent():
     assert trials.simulate_race(
         list(reversed(party)), "Foraging"
     ).credit_points == first
+
+
+# ---------------------------------------------------------------------------
+# E[points] — the honest figure beside the optimistic one
+# ---------------------------------------------------------------------------
+def test_expected_points_reduces_to_the_deterministic_score_as_sigma_vanishes(
+    monkeypatch,
+):
+    """The sigma -> 0 identity, and the licence for everything else in this block.
+
+    With no uncertainty the expectation must BE the deterministic score, to within
+    quadrature error. Asserted tightly (1e-9) because a normalised midpoint grid over
+    a degenerate distribution collapses onto the single point exactly.
+    """
+    party = _ramp_party()
+    r = trials.simulate_race(party, "Foraging")
+    monkeypatch.setattr(config, "RISK_SIGMA_SYSTEMATIC", 0.0)
+    monkeypatch.setattr(trials, "clear_sigma", lambda *a, **k: 0.0)
+    assert trials.expected_credit_points(party, "Foraging", r) == pytest.approx(
+        r.credit_points, abs=1e-9
+    )
+
+
+def test_expected_points_is_below_the_deterministic_score_on_a_knife_edge():
+    """The whole reason this exists.
+
+    A lineup that banks its tier with seconds to spare is a coin flip, and the
+    deterministic score prices it as a certainty. Measured live, such a trial
+    over-claims by ~24 points; a comfortable one by ~0.02 (and in fact slightly UNDER,
+    since a favourable shock has upside). Both directions are checked here.
+    """
+    party = _ramp_party()
+    comfortable = trials.simulate_race(party, "Foraging")
+    assert trials.time_slack_fraction(comfortable) > 0.05
+    e_comfortable = trials.expected_credit_points(party, "Foraging", comfortable)
+    assert abs(comfortable.credit_points - e_comfortable) < 1.0
+
+    # Shrink the party one at a time until a tier is held by a hair.
+    thin = None
+    for k in range(1, len(party)):
+        candidate = party[: len(party) - k]
+        result = trials.simulate_race(candidate, "Foraging")
+        if 0 < trials.time_slack_fraction(result) < 0.01 and result.tier_reached >= 1:
+            thin = (candidate, result)
+            break
+    assert thin is not None, "no knife-edge party found in the sweep"
+    candidate, result = thin
+    expected = trials.expected_credit_points(candidate, "Foraging", result)
+    assert expected < result.credit_points - 5.0, (
+        "a tier held by seconds must be priced well below its deterministic score"
+    )
+    # And never below the tier the party is nearly certain to hold.
+    assert expected > trials.points_for_tier(result.tier_reached - 1)
+
+
+def test_expected_points_is_switchable_off():
+    party = _ramp_party()
+    r = trials.simulate_race(party, "Foraging")
+    original = config.RISK_EXPECTED_POINTS
+    try:
+        config.RISK_EXPECTED_POINTS = False
+        assert trials.expected_credit_points(party, "Foraging", r) is None
+    finally:
+        config.RISK_EXPECTED_POINTS = original
+
+
+def test_cumulative_tier_times_race_past_the_buzzer():
+    """The lookahead the upside terms need, which simulate_race truncates."""
+    party = _ramp_party()
+    r = trials.simulate_race(party, "Foraging")
+    taus = trials._cumulative_tier_times(
+        party, "Foraging", r.tier_reached + config.RISK_LOOKAHEAD_TIERS
+    )
+    assert len(taus) == r.tier_reached + config.RISK_LOOKAHEAD_TIERS
+    assert all(a < b for a, b in zip(taus, taus[1:])), "must be strictly increasing"
+    # It agrees with the shipped race on every tier the race actually reported.
+    for step in r.timeline:
+        if step.cumulative_time is not None:
+            assert taus[step.tier - 1] == pytest.approx(step.cumulative_time)
+    # And it runs PAST the budget, which is the point.
+    assert taus[r.tier_reached] > config.TRIAL_TIME_BUDGET_SECONDS
+    # A party that cannot move has no curve at all.
+    blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
+    assert trials._cumulative_tier_times([blank], "Foraging", 5) == []
