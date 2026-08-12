@@ -982,13 +982,26 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
     WHAT PARTIAL CREDIT CHANGED (2026-08-11), because it is most of the original
     argument. The margin is no longer invisible to the objective: progress into the
     next tier IS the time left over, so ``credit_points`` now prices the margin
-    linearly and the search walks off the buzzer by itself. Two things follow:
+    linearly.
 
-    * The pass's original justification is largely spent. Its remaining job is the part
-      partial credit still cannot see: the objective is a **sum** over trials while risk
-      is a **minimum** over them, so a lineup can bank a comfortable total while one
-      trial sits on the boundary. This pass is the max-min correction to a max-sum
-      search, and nothing else in the pipeline performs it.
+    IT DOES NOT FOLLOW THAT THE SEARCH WALKS OFF THE BUZZER BY ITSELF, and this
+    docstring claimed that it did until the live run refuted it. The minimum margin did
+    not improve — it **collapsed** to 0.09%, with three of eight live trials banking
+    their tier 1–4 seconds inside the hour at ``P(holds) ≈ 0.51``. Pricing the margin
+    linearly *within* a tier leaves a residual STEP of ``(1 - rho) * 100 = 50`` points at
+    the boundary, which dwarfs any margin the search could buy by standing still — so the
+    objective does not walk off the buzzer, it walks off *this* tier's buzzer and
+    straight onto the *next* one's. Full treatment in
+    ``research/partial-tier-credit.md`` §9.1. Two things follow:
+
+    * The pass's original justification is NOT spent — the max-min problem is sharper
+      than before, not softer. Its job is the part partial credit still cannot see: the
+      objective is a **sum** over trials while risk is a **minimum** over them, so a
+      lineup can bank a comfortable total while one trial sits on the boundary. This
+      pass is the max-min correction to a max-sum search, and nothing else in the
+      pipeline performs it. Expect it to find nothing on a knife-edge tier, though:
+      ``config.OPT_SLACK_POINTS_TOLERANCE`` is 0.0 and stepping back to a comfortable
+      lower tier costs ~55 points, so an empty result is the pass working, not failing.
     * Its old mechanism no longer works. It ranked on
       ``(total_points, min_slack, sum_slack)`` with the points "compared as exact ints,
       so it cannot trade a tier for margin" — a guarantee that came free from

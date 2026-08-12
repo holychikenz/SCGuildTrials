@@ -219,8 +219,9 @@ Shrinking the same party one member at a time shows the second identity:
 `f = 3600·margin / ttc(T+1)`, so **partial credit is a linear read-out of the very time
 margin `optimizer._refine_slack` was invented to protect**. At N=14 the lineup holds
 tier 11 by 1.6% — 58 seconds — and scores *identically* to the comfortable N=20 lineup
-today; under partial credit the comfortable one is worth 9.8 points more. **The new
-objective walks off the buzzer by itself.** What it does *not* do is protect the
+today; under partial credit the comfortable one is worth 9.8 points more. ~~**The new
+objective walks off the buzzer by itself.**~~ ← **refuted by the live run; see the
+correction above.** What it does *not* do is protect the
 *thinnest* trial, because the objective is a **sum** and risk is a **minimum** — which
 is precisely the residual job left for the safety passes (§5.3).
 

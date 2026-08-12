@@ -267,6 +267,12 @@ comfortable N=20 lineup under today's objective; under partial credit the
 comfortable one is worth 9.8 points more. **The new objective walks off the buzzer
 by itself.**
 
+> ⚠ **This last sentence is wrong, and §9.1 is the refutation.** It is left standing
+> because §9.1 quotes it. The live run collapsed the minimum margin to 0.09% rather
+> than improving it: the residual 50-point step at the tier boundary dwarfs any margin
+> the search could buy by standing still, so the objective walks off *this* tier's
+> buzzer and straight onto the *next* one's.
+
 What it does **not** do is protect the *thinnest* trial, because the objective is
 a **sum** and risk is a **minimum**. That asymmetry is the residual job left to
 the safety passes, and it is why the page copy at `build.py:1871` — *"The margin
