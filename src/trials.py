@@ -44,6 +44,7 @@ Two terms arrived with the 2026-08-11 game patch and both are load-bearing:
 
 from __future__ import annotations
 
+import contextlib
 import math
 import random
 from dataclasses import asdict, dataclass, field
@@ -102,12 +103,89 @@ def _is_gathering(skill: str) -> bool:
 def double_chance(skill: str) -> float:
     """Labyrinth-style doubleProgressChance for a member on ``skill``.
 
-    While the community gathering buff is live, gathering skills carry the +20%
-    buff plus ~+5% gear (config.DOUBLE_CHANCE); every other family carries 0.
-    Scales work rate by ``(1 + double_chance)`` in :func:`rate`, per the lab-sim
-    formula (research/trial-messages.md).
+    While the community gathering buff is live, gathering skills carry the buff
+    plus ~+5% gear (config.DOUBLE_CHANCE); every other family carries 0. Scales
+    work rate by ``(1 + double_chance)`` in :func:`rate`, per the lab-sim formula
+    (research/trial-messages.md).
     """
     return config.DOUBLE_CHANCE if _is_gathering(skill) else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Community buffs: the level ladder
+# ---------------------------------------------------------------------------
+def community_buff_value(family: str, level: int) -> float:
+    """The community buff for ``family`` at ladder ``level`` (1..20).
+
+    CONFIRMED game data: ``flatBoost + (level - 1) * flatBoostLevelBonus`` over
+    ``config.COMMUNITY_BUFF_LADDER``. Note that ``flatBoost !=
+    flatBoostLevelBonus`` for these buffs, so the ``per_level * level`` shortcut
+    the buildings/houses/shrines use does NOT apply here — see the block comment
+    in :mod:`src.config` and ``research/community-buffs.md``.
+
+    ``level`` is clamped to 1..``config.COMMUNITY_BUFF_MAX_LEVEL`` — the ladder the
+    game itself offers. Note what the low end therefore means: level 0 resolves to
+    the level-1 value, NOT to zero, because level 1 is where the ladder starts and
+    a buff below it does not exist rather than granting less. An *inactive* buff is
+    a different question and a different shape — a regime, priced by
+    ``calibrate.scenario_buffs_lapsed``, not a level.
+
+    Rounded to 6dp purely so a level-20 value reads as ``0.197`` rather than
+    ``0.19700000000000003`` in JSON and on the page.
+    """
+    base, per_level = config.COMMUNITY_BUFF_LADDER[family]
+    level = _clamp(level, 1, config.COMMUNITY_BUFF_MAX_LEVEL)
+    return round(base + (level - 1) * per_level, 6)
+
+
+@contextlib.contextmanager
+def community_buff_level(level: int):
+    """Run a block with every modelled community buff set to ``level``.
+
+    Rebinds the three magnitudes the rate model reads
+    (``COMMUNITY_GATHERING_BUFF_DOUBLE``, ``COMMUNITY_PRODUCTION_EFFICIENCY_BUFF``,
+    ``COMMUNITY_ENHANCING_SPEED_BUFF``), the composed ``DOUBLE_CHANCE``, and
+    ``COMMUNITY_BUFF_LEVEL`` itself so that a ``WeekResult`` produced inside the
+    block records the regime it actually ran under. All five are restored on the way
+    out, exception or no.
+
+    Rebinding module constants rather than threading a ``level`` parameter is
+    deliberate, and follows the precedent ``calibrate.scenario_buffs_lapsed``
+    already set: every function in the rate model reads ``config`` at CALL time,
+    the buffs are common-mode across the whole party by definition, and a
+    parameter would have to be carried through ``member_bonuses`` ->
+    ``_prepare_member`` -> ``rate`` -> ``simulate_race`` -> the optimizer's hot
+    loop to reach the place it is used. NOT thread-safe, and not intended to be:
+    the build is single-threaded and runs one regime at a time.
+
+    Used by ``build.build_guild`` to publish the level-20 counterfactual page
+    beside the default level-1 one.
+    """
+    names = (
+        "COMMUNITY_GATHERING_BUFF_DOUBLE",
+        "COMMUNITY_PRODUCTION_EFFICIENCY_BUFF",
+        "COMMUNITY_ENHANCING_SPEED_BUFF",
+        "DOUBLE_CHANCE",
+        "COMMUNITY_BUFF_LEVEL",
+    )
+    saved = {name: getattr(config, name) for name in names}
+    gathering = community_buff_value("gathering", level)
+    try:
+        config.COMMUNITY_GATHERING_BUFF_DOUBLE = gathering
+        config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = community_buff_value(
+            "production", level
+        )
+        config.COMMUNITY_ENHANCING_SPEED_BUFF = community_buff_value(
+            "enhancing", level
+        )
+        config.DOUBLE_CHANCE = gathering + config.GEAR_DOUBLE_CHANCE
+        config.COMMUNITY_BUFF_LEVEL = _clamp(
+            level, 1, config.COMMUNITY_BUFF_MAX_LEVEL
+        )
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(config, name, value)
 
 
 def _sheet_column(skill: str) -> str:
@@ -1733,6 +1811,16 @@ class WeekResult:
     # something the game will enforce — see MinLevelAdvice.
     min_levels: dict[str, Optional[int]] = field(default_factory=dict)
     min_level_advice: list[MinLevelAdvice] = field(default_factory=list)
+    # The community-buff REGIME this week was simulated under: the ladder level and
+    # the three magnitudes it resolves to. Recorded for the same reason
+    # guild_shrine_levels is — the page and trials.json state the assumption instead
+    # of hiding it — and because the trials page publishes TWO runs (the default
+    # level and the level-20 counterfactual), so a reader holding one JSON file must
+    # be able to tell which regime produced it. See config.COMMUNITY_BUFF_LADDER.
+    community_buff_level: int = 0
+    community_buff_gathering: float = 0.0
+    community_buff_production: float = 0.0
+    community_buff_enhancing: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -1757,6 +1845,10 @@ class WeekResult:
             "shrine_upgrades": [u.to_dict() for u in self.shrine_upgrades],
             "min_levels": self.min_levels,
             "min_level_advice": [a.to_dict() for a in self.min_level_advice],
+            "community_buff_level": self.community_buff_level,
+            "community_buff_gathering": self.community_buff_gathering,
+            "community_buff_production": self.community_buff_production,
+            "community_buff_enhancing": self.community_buff_enhancing,
         }
 
 
@@ -1879,4 +1971,11 @@ def run_week(
             )
             for skill in skills
         ],
+        # Read from config LIVE rather than recomputed from the ladder, so the
+        # figures recorded are exactly the ones the simulation above ran on —
+        # including inside community_buff_level() and calibrate's lapsed scenario.
+        community_buff_level=config.COMMUNITY_BUFF_LEVEL,
+        community_buff_gathering=config.COMMUNITY_GATHERING_BUFF_DOUBLE,
+        community_buff_production=config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF,
+        community_buff_enhancing=config.COMMUNITY_ENHANCING_SPEED_BUFF,
     )

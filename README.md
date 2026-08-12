@@ -80,6 +80,19 @@ buff loot and XP and must never touch the rate model. `research/guild-shrines.md
 has the game data, both cost ladders, and the verdict that buildings dominate
 shrines as an investment by an order of magnitude.
 
+**Community buffs are levelled, 1–20**, and the magnitudes are confirmed game data
+rather than the placeholders they were carried as: gathering `0.20 + 0.005/level`,
+enhancing speed `0.20 + 0.005/level`, production efficiency `0.14 + 0.003/level`.
+Note that `flatBoost ≠ flatBoostLevelBonus` here, so the `per_level × level`
+shortcut the buildings, houses and shrines use does **not** apply — and the old
+production figure of `0.15` turned out to be a value the game grants at no level at
+all. The site publishes **level 1** (`config.COMMUNITY_BUFF_LEVEL`; the guild's real
+levels are in no capture we hold) and the trials page carries a **level-20
+counterfactual** behind a switch at the top — a second, complete optimiser run, not
+this week's parties re-rated, because a common-mode buff changes *who is worth
+seating*. `research/community-buffs.md` has the dump, the ladder, and the one open
+question that would cost 16% of every gathering rate if it goes the wrong way.
+
 The shipped default is the ensemble strategy `"best"`
 (`config.TRIAL_OPTIMIZER_STRATEGY`): it runs several strong pipelines — including
 a **beam-search-seeded genetic algorithm** — and returns the single best result.
