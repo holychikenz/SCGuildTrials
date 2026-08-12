@@ -40,12 +40,18 @@ TRIALS_MAXBUFF_JSON = "trials-maxbuffs.json"
 # UNLISTED PAGES. Readers who met BOTH the full optimum (``trials.html``) and the
 # sign-up plan (``signup.html``) took them for rival answers to one question, when
 # they answer two: the ceiling over the whole roster, and the plan over the members
-# who actually volunteered. They necessarily disagree, which is the confusion. So
-# every page is still built and still served at its own URL, but nothing links to
-# these two any more (as was already true of ``trials-maxbuffs.html``): the nav on
-# index.html now carries only the sibling guild, and the pages no longer cross-link
-# to one another. Reaching them means knowing the URL. To relist one, restore its
-# <a href> in the ``.nav`` paragraph of the relevant _render_*_html.
+# who actually volunteered. They necessarily disagree, which is the confusion. The
+# full optimum is the answer we publish, so ``signup.html`` is now UNLISTED — still
+# built, still written, still served at its own URL with its JSON, but nothing links
+# TO it any more (as was already true of ``trials-maxbuffs.html``). Reaching it means
+# knowing the URL.
+#
+# Note the asymmetry: signup.html keeps its own OUTBOUND links to trials.html, in the
+# nav and in the prose of its comparison card. Those cannot make it discoverable, and
+# they point a reader who arrived by URL back at the page we do publish.
+#
+# To relist it, restore the <a href="signup.html"> in the ``.nav`` paragraph of
+# ``_render_html`` (index) and ``_render_trials_html``.
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +208,8 @@ def _render_html(data: dict, site: "GuildSite") -> str:
   <h1>{html.escape(site.title)} &mdash; Skill Register</h1>
   <p class="meta">Milky Way Idle guild &middot; {data['member_count']} members &middot;
      generated {html.escape(data['generated_at'])} (UTC)</p>
-  <p class="nav"><a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
+  <p class="nav"><a href="trials.html">Guild Trials &rarr;</a>
+     &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
   <h2>Per-skill summary</h2>
@@ -2429,6 +2436,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   <p class="meta">{html.escape(site.title)} &middot; {p['roster_count']} members &middot;
      {p['signup_count']} signed up{missing_meta}{ineligible_meta} &middot; generated {html.escape(p['generated_at'])} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a>
+     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a>
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
@@ -2462,7 +2470,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     <h2>Optimal (unconstrained) for comparison</h2>
     <p class="meta">The best possible teams over the full {p['roster_count']}-member roster,
        ignoring who signed up &mdash; the ceiling above. Full rosters on the
-       Guild Trials page.</p>
+       <a href="trials.html">Guild Trials</a> page.</p>
     <div class="scroll">
       <table>
         <thead><tr><th>Trial</th><th class=num>Party</th>
@@ -2493,7 +2501,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         strictly-improving moves (each raising the score) from the enforced plan
         toward the full-roster optimum. Applying them overrides sign-ups.</li>
     <li><strong>Optimal is the ceiling.</strong> The optimum reuses the exact
-        assignment the Guild Trials page computes, so the
+        assignment the <a href="trials.html">Guild Trials</a> page computes, so the
         two never disagree. The scoring model, tiers and equipment assumptions are
         documented there.</li>
     <li><strong>A thin margin is no longer a fault &mdash; read this before
@@ -2634,6 +2642,7 @@ def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSit
   <h1>Guild Trials &mdash; Sign-up Optimiser</h1>
   <p class="meta">{html.escape(site.title)} &middot; generated {html.escape(generated_at)} (UTC)</p>
   <p class="nav"><a href="index.html">&larr; Skill Register</a>
+     &nbsp;&middot;&nbsp; <a href="trials.html">Guild Trials (full optimum) &rarr;</a>
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
@@ -2648,7 +2657,7 @@ def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSit
        (members pick their own trial), so there is no tick-box sign-up table to
        enforce. This page repopulates automatically once a parseable
        <em>SC Trial Signup</em> tab exists again.</p>
-    <p>In the meantime, the Guild Trials page shows the
+    <p>In the meantime, the <a href="trials.html">Guild Trials</a> page shows the
        full-roster optimal assignment.</p>
   </section>
 </main>
