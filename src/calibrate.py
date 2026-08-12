@@ -214,9 +214,10 @@ class Sources:
     gear_slots: bool = False       # ignore the three half-widths and draw the
                                    # ACTUAL item set from research/item-stats.json
     # --- COMMUNITY BUFF MAGNITUDES ------------------------------------------
-    # The three live event buffs, each flagged a WORKING ASSUMPTION in config:
+    # The three live event buffs, at config.COMMUNITY_BUFF_LEVEL on their 1..20
+    # ladders (magnitudes CONFIRMED from the client dump; the LEVEL is assumed):
     #   gathering  -> +0.20 doubling chance   (COMMUNITY_GATHERING_BUFF_DOUBLE)
-    #   production -> +0.15 efficiency        (COMMUNITY_PRODUCTION_EFFICIENCY_BUFF)
+    #   production -> +0.14 efficiency        (COMMUNITY_PRODUCTION_EFFICIENCY_BUFF)
     #   enhancing  -> +0.20 action speed      (COMMUNITY_ENHANCING_SPEED_BUFF)
     # Half-widths below are in ABSOLUTE stat points, as for gear.
     #
@@ -227,7 +228,7 @@ class Sources:
     # a buff uncertainty is worth several times a gear uncertainty, and the ranking
     # in the variance budget cannot be read off the half-widths alone.
     buff_gathering: float = 0.0    # uncertainty on the +0.20 doubling chance
-    buff_production: float = 0.0   # uncertainty on the +0.15 efficiency
+    buff_production: float = 0.0   # uncertainty on the +0.14 efficiency
     buff_enhancing: float = 0.0    # uncertainty on the +0.20 enhancing speed,
                                    # respecting slot exclusivity
     q_signed: float = 1.0     # turnout probability for a member who volunteered

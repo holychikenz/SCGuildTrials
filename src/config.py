@@ -719,22 +719,78 @@ TRIAL_FILL_MAX_POINT_COST = 0.0
 GATHERING_SKILLS = frozenset({"Milking", "Foraging", "Woodcutting"})
 
 # --- Community buffs (event) + gear ------------------------------------------
-# The gathering buff is modelled as the labyrinth-style `doubleProgressChance`:
-# the chance an action counts double, so it scales work rate by (1 + doubleChance)
-# exactly as the lab-sim formula does (research/trial-messages.md §"lab-sim model":
-# `rate(m,t) = success(m,t) * (1 + doubleChance) * floor(workPower_m) / actionSeconds_m`).
-# WORKING ASSUMPTION (2026-07-17): while the community buffs are live, every
-# member on a GATHERING skill carries a doubling chance of the +20% community
-# gathering buff plus ~+5% naturally on gear (0.25 total); every member on a
-# PRODUCTION skill gains +0.15 efficiency from the community production buff;
-# every member ENHANCING gains +0.20 speed from the community enhancing buff.
-# Placeholders until per-member gear is harvested; the buff terms apply only
-# while the respective community buff is active.
-COMMUNITY_GATHERING_BUFF_DOUBLE = 0.20   # +20% community gathering buff (event)
-GEAR_DOUBLE_CHANCE = 0.05                # ~+5% carried naturally on gear
+# The MAGNITUDES here are CONFIRMED game data, read from the client dump's
+# `communityBuffTypeDetailMap` (`/Users/morgan/pie/cowstuff/milkyway_client_info.json`,
+# gameVersion v1.20260715.0) and written up in research/community-buffs.md. Each
+# community buff is bought with cowbells and carries its OWN level ladder 1..20;
+# the magnitude follows the same in-game rule the buildings and shrines use,
+#
+#     value(level) = flatBoost + (level - 1) * flatBoostLevelBonus
+#
+# but — UNLIKE the buildings, houses and shrines — here `flatBoost` does NOT equal
+# `flatBoostLevelBonus`, so the `per_level * level` shortcut those three rely on
+# MUST NOT be extended to these. A community buff opens at a large base and then
+# creeps. Verbatim from the dump:
+#
+#   gathering_quantity    -> /buff_types/gathering      flat 0.20 + 0.005/level
+#   enhancing_speed       -> /buff_types/action_speed    flat 0.20 + 0.005/level
+#   production_efficiency -> /buff_types/efficiency      flat 0.14 + 0.003/level
+#
+# The other two entries in the map are deliberately UNMODELLED, for exactly the
+# reason research/guild-shrines.md §2 gives for Rarity/Spirit/Scholar: `experience`
+# grants /buff_types/wisdom (XP, which the race never reads) and
+# `combat_drop_quantity` is combat loot. Neither is in the trial race's loop.
+#
+# OPEN QUESTION (research/community-buffs.md §3): the gathering buff's type is
+# `/buff_types/gathering` — "Increases gathering quantity" — while the engine field
+# this model drives it through, `doubleProgressChance`, belongs to the SEPARATE type
+# `/buff_types/labyrinth_double_progress`. Modelling gathering quantity as double
+# progress therefore remains a WORKING ASSUMPTION, and the one that would cost the
+# most if wrong: DOUBLE_CHANCE would fall to the 0.05 gear placeholder, taking ~16%
+# off every gathering party's rate. The settling measurement is a
+# `guild_skilling_updated` capture from a GATHERING trial while the buff is live.
+COMMUNITY_BUFF_MAX_LEVEL = 20   # every community buff's ladder caps at level 20
+
+# (flatBoost, flatBoostLevelBonus) per modelled skill family, straight from the
+# dump. Read by trials.community_buff_value(); the three constants below are this
+# ladder evaluated at COMMUNITY_BUFF_LEVEL, and a test pins that they agree.
+COMMUNITY_BUFF_LADDER = {
+    "gathering": (0.20, 0.005),
+    "production": (0.14, 0.003),
+    "enhancing": (0.20, 0.005),
+}
+
+# The level the site PUBLISHES by default. 1 is the honest default: it is the
+# level a buff sits at the moment anyone funds it at all, and the guild's real
+# levels are not in any capture this repo holds (the same gap
+# GUILD_SHRINE_LEVELS carries). The trials page additionally publishes a
+# level-20 counterfactual — a second full optimiser run under
+# trials.community_buff_level(COMMUNITY_BUFF_MAX_LEVEL) — so the reader can see
+# what maxed buffs would be worth without this default moving.
+COMMUNITY_BUFF_LEVEL = 1
+
+# Publish that counterfactual, or don't. The one-line rollback: False drops
+# trials-maxbuffs.html/.json and the switch, leaving the trials page exactly as it
+# was before. It is a *second complete optimiser run* per guild — the expensive part
+# of the build, near enough doubled — so this is also the lever to pull if the
+# nightly Actions budget ever becomes the binding constraint.
+TRIALS_PUBLISH_MAXBUFF_PAGE = True
+
+# The three live magnitudes, = COMMUNITY_BUFF_LADDER at COMMUNITY_BUFF_LEVEL.
+# The gathering buff is applied as the labyrinth-style `doubleProgressChance`: the
+# chance an action counts double, scaling work rate by (1 + doubleChance) exactly
+# as the lab-sim formula does (research/trial-messages.md §"lab-sim model":
+# `rate(m,t) = success(m,t) * (1 + doubleChance) * floor(workPower_m) / actionSeconds_m`)
+# — see the OPEN QUESTION above. Each term applies only while its buff is active;
+# scenario_buffs_lapsed in src/calibrate.py prices the lapse as a regime.
+COMMUNITY_GATHERING_BUFF_DOUBLE = 0.20 + (COMMUNITY_BUFF_LEVEL - 1) * 0.005
+COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = 0.14 + (COMMUNITY_BUFF_LEVEL - 1) * 0.003
+COMMUNITY_ENHANCING_SPEED_BUFF = 0.20 + (COMMUNITY_BUFF_LEVEL - 1) * 0.005
+
+# WORKING ASSUMPTION, and the one term here that is NOT from the dump: ~+5%
+# doubling chance carried naturally on gear, pending the per-member gear harvest.
+GEAR_DOUBLE_CHANCE = 0.05
 DOUBLE_CHANCE = COMMUNITY_GATHERING_BUFF_DOUBLE + GEAR_DOUBLE_CHANCE  # 0.25 (gathering only)
-COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = 0.15  # +15% efficiency for production skills
-COMMUNITY_ENHANCING_SPEED_BUFF = 0.20        # +20% speed for enhancing
 
 # --- Houses (player housing rooms) -------------------------------------------
 # Authoritative game data (cowstuff csim houseRoomDetailMap): every skilling

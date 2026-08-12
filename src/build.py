@@ -25,6 +25,18 @@ from .scraper import scrape_member_tab
 
 OUTPUT_DIR = Path("_site")
 
+# The trials page ships TWICE per guild: once at the published community-buff level
+# (``config.COMMUNITY_BUFF_LEVEL``, the default ``trials.html`` every other page and
+# every existing link points at) and once as a maxed-buff counterfactual at
+# ``config.COMMUNITY_BUFF_MAX_LEVEL``. Two files rather than one file with a
+# client-side switch because each is a WHOLE separate optimiser run — different
+# parties, not merely different rates — and because two full copies of the roster
+# markup in one document would collide on every DOM id the player search jumps to.
+TRIALS_PAGE = "trials.html"
+TRIALS_JSON = "trials.json"
+TRIALS_MAXBUFF_PAGE = "trials-maxbuffs.html"
+TRIALS_MAXBUFF_JSON = "trials-maxbuffs.json"
+
 
 # ---------------------------------------------------------------------------
 # Per-guild site definitions
@@ -1045,14 +1057,84 @@ def _expected_total_note(total_credit, total_expected) -> str:
     return f" &middot; <strong>{_cp(total_expected)} expected</strong>"
 
 
+def _render_buff_toggle(week: dict, counterpart: Optional[dict]) -> str:
+    """The community-buff level switch: two segments, this page's one active.
+
+    The whole page — every party, tier, rate and total — is one optimiser run at
+    ONE community-buff level, so the switch cannot recompute anything in the
+    browser; it navigates to the sibling page that was built under the other
+    regime. Both segments carry their own credit total, so the reader learns what
+    the other view is worth *before* clicking, and the delta is legible without
+    holding a number in their head.
+
+    ``counterpart`` is ``{"href", "level", "total"}`` for the sibling page, or
+    ``None`` (a lone page, e.g. a pre-existing ``trials.json`` re-render) in which
+    case no switch is emitted at all.
+    """
+    if not counterpart:
+        return ""
+    # Falsy covers both cases that mean "no regime recorded": a pre-buff trials.json
+    # with the key missing, and a WeekResult built by hand at the dataclass default
+    # of 0 (run_week never records 0 — the ladder clamps to 1).
+    here_level = week.get("community_buff_level")
+    if not here_level:
+        return ""
+    here_total = week.get("total_credit_points") or week.get("total_points")
+    segments = [
+        (here_level, here_total, None),
+        (counterpart["level"], counterpart.get("total"), counterpart["href"]),
+    ]
+    # Lowest level first, so the pair never swaps sides between the two pages —
+    # a control whose halves move when you click it reads as two controls.
+    segments.sort(key=lambda s: s[0])
+    parts = []
+    for level, total, href in segments:
+        label = f"Level {level}<span class=bt-pts>{_cp(total)} pts</span>"
+        if href is None:
+            parts.append(f'<span class="bt-seg active" aria-current="page">{label}</span>')
+        else:
+            parts.append(f'<a class="bt-seg" href="{html.escape(href)}">{label}</a>')
+    delta = None
+    if here_total is not None and counterpart.get("total") is not None:
+        delta = counterpart["total"] - here_total
+    note = (
+        f"Every number on this page is modelled with all three community buffs at "
+        f"<strong>ladder level {here_level}</strong> "
+        f"({_pct(week.get('community_buff_gathering'))} gathering, "
+        f"{_pct(week.get('community_buff_production'))} production efficiency, "
+        f"{_pct(week.get('community_buff_enhancing'))} enhancing speed). "
+        f"Level {counterpart['level']} is a SEPARATE, full optimiser run &mdash; the "
+        f"parties it seats may differ, not merely their rates"
+    )
+    if delta is not None:
+        note += (
+            f", and it is worth <strong>{_cp(abs(delta))} points "
+            f"{'more' if delta >= 0 else 'less'}</strong> across the week"
+        )
+    return f"""
+  <div class="bufftoggle" role="group" aria-label="Community buff level">
+    <span class="bt-label">Community buffs</span>
+    <span class="bt-segs">{''.join(parts)}</span>
+  </div>
+  <p class="bt-note">{note}.</p>"""
+
+
 def _render_trials_html(
-    week: dict, site: "GuildSite", draw_warning: str = ""
+    week: dict,
+    site: "GuildSite",
+    draw_warning: str = "",
+    counterpart: Optional[dict] = None,
 ) -> str:
     """Render the full trials page from a ``WeekResult`` dict.
 
     ``draw_warning``, when set, is shown as a banner at the top of the page: the
     live draw could not be read and the skills below are the last known ones (see
     ``build_guild``). Empty means the draw came from the sheet as normal.
+
+    ``counterpart`` names the sibling page built under the OTHER community-buff
+    level (``{"href", "level", "total"}``) and turns on the level switch at the top
+    of the page; ``None`` renders the page alone, exactly as before. See
+    ``_render_buff_toggle``.
     """
     expected_note = _expected_total_note(
         week.get("total_credit_points"), week.get("total_expected_points")
@@ -1102,6 +1184,30 @@ def _render_trials_html(
     upgrades_section = _render_upgrades_section(week)
     shrines_section = _render_shrines_section(week)
     min_levels_section = _render_min_levels_section(week)
+    buff_toggle = _render_buff_toggle(week, counterpart)
+
+    # The raised-buff page is a COUNTERFACTUAL and must never be mistaken for the
+    # published plan, so it says so in the tab title and the headline as well as in
+    # the switch. "Raised" is decided against the sibling page rather than against
+    # config, because the default level is a config value the switch itself exists
+    # to step away from.
+    buff_level = week.get("community_buff_level") or 0
+    is_raised = bool(counterpart) and buff_level > counterpart["level"]
+    title_suffix = f" (community buffs L{buff_level})" if is_raised else ""
+    buff_h1 = (
+        f' <span class="meta">&middot; community buffs L{buff_level}</span>'
+        if is_raised
+        else ""
+    )
+    json_name = TRIALS_MAXBUFF_JSON if is_raised else TRIALS_JSON
+    # Only claim a switch exists when one was actually emitted: a lone render (no
+    # sibling regime) must not promise the reader a control that is not on the page.
+    switch_phrase = (
+        " &mdash; and the switch at the top of the page shows the same week "
+        f"optimised again at level {counterpart['level']}"
+        if buff_toggle
+        else ""
+    )
 
     # Stale-draw banner: deliberately the first thing on the page, so a fallback
     # draw can never be mistaken for a live one.
@@ -1117,7 +1223,7 @@ def _render_trials_html(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(site.title)} - Guild Trials</title>
+<title>{html.escape(site.title)} - Guild Trials{title_suffix}</title>
 <style>
   :root {{
     --bg: #0f1115; --panel: #171a21; --line: #2a2f3a;
@@ -1173,6 +1279,30 @@ def _render_trials_html(
   .alert {{ background: #2a1f10; border: 1px solid var(--warn); color: #f2dca6;
             border-radius: 8px; padding: .8rem 1rem; margin: 0 0 1.25rem;
             font-size: .9rem; }}
+  /* --- Community-buff level toggle ------------------------------------- */
+  .bufftoggle {{ display: flex; flex-wrap: wrap; align-items: center;
+                 gap: .5rem .75rem; margin: 1.25rem 0 0; }}
+  .bt-label {{ color: var(--muted); font-size: .85rem; font-weight: 600;
+               text-transform: uppercase; letter-spacing: .4px; }}
+  /* The two segments live in their own flex box so the corner rounding can key
+     off :first-child / :last-child. Keying off :first-of-type instead would be
+     silently wrong: the active segment is a <span> and the inactive one an <a>,
+     so "of-type" counts them in separate sequences and both would claim the
+     right-hand corner. */
+  .bt-segs {{ display: inline-flex; }}
+  .bt-seg {{ display: inline-flex; align-items: baseline; gap: .4rem;
+             padding: .35rem .75rem; font-size: .9rem; font-weight: 600;
+             border: 1px solid var(--line); background: var(--panel);
+             color: var(--muted); text-decoration: none; }}
+  .bt-segs > :first-child {{ border-radius: 6px 0 0 6px; }}
+  .bt-segs > :last-child {{ border-radius: 0 6px 6px 0; border-left: 0; }}
+  .bt-seg:hover {{ color: var(--text); }}
+  .bt-seg.active {{ background: #1b2b3d; border-color: var(--accent);
+                    color: var(--text); cursor: default; }}
+  .bt-seg .bt-pts {{ color: var(--muted); font-weight: 400;
+                     font-variant-numeric: tabular-nums; font-size: .82rem; }}
+  .bt-seg.active .bt-pts {{ color: var(--accent); }}
+  .bt-note {{ margin: .4rem 0 0; color: var(--muted); font-size: .82rem; }}
   tr.failed td {{ color: var(--warn); }}
   /* Considered and priced at nothing (the loot / XP shrines): greyed rather than
      omitted, so a reader can see the row was looked at. */
@@ -1224,7 +1354,7 @@ def _render_trials_html(
 <body>
 <header>
   <h1>Guild Trials &mdash; Week of {html.escape(week['week_date'])}
-      <span class="meta">({html.escape(_assignment_label(week))})</span></h1>
+      <span class="meta">({html.escape(_assignment_label(week))})</span>{buff_h1}</h1>
   <p class="meta">{html.escape(site.title)} &middot; {week['member_count']} members &middot;
      {html.escape(_assignment_detail(week))} &middot;
      generated {html.escape(week['generated_at'])} (UTC)</p>
@@ -1233,7 +1363,7 @@ def _render_trials_html(
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
-  {alert_html}
+  {alert_html}{buff_toggle}
   <div class="strip">
     {strip}
     <div class="total">
@@ -1316,15 +1446,40 @@ def _render_trials_html(
         special: its tool grants success (not speed) and its gloves grant speed
         (not efficiency). Skilling top/bottom are modelled as efficiency for all
         skills (in-game the Enhancer's set grants speed instead).</li>
-    <li><strong>Community buffs (event, WORKING ASSUMPTION).</strong> Three live
-        community buffs are modelled, one per skill family. <em>Gathering</em>
-        (Milking / Foraging / Woodcutting): a lab-style double-progress chance of
-        <code>0.25</code> — the +20% community gathering buff plus ~5% carried on
-        gear — scaling each member's rate by <code>(1 + doubleChance)</code>.
-        <em>Production</em> (incl. Alchemy): +0.15 efficiency from the community
-        production buff. <em>Enhancing</em>: +0.20 speed from the community
-        enhancing buff. Placeholders that apply only while each buff is active;
-        the ~5% gear term awaits the per-member gear harvest.</li>
+    <li><strong>Community buffs (magnitudes CONFIRMED; level assumed).</strong>
+        Three community buffs are modelled, one per skill family, and each is
+        bought with cowbells on its own <strong>level ladder 1&ndash;20</strong>.
+        The magnitude follows the game's usual rule
+        <code>flatBoost + (level&minus;1) &times; flatBoostLevelBonus</code>, but
+        note that here <code>flatBoost &ne; flatBoostLevelBonus</code>: a community
+        buff opens at a large base and then creeps, so the
+        <code>per_level &times; level</code> shortcut the buildings and shrines
+        follow does <em>not</em> apply. From the client data:
+        <em>Gathering</em> (Milking / Foraging / Woodcutting)
+        <code>0.20 + 0.005/level</code>; <em>Enhancing</em> speed
+        <code>0.20 + 0.005/level</code>; <em>Production</em> efficiency (incl.
+        Alchemy) <code>0.14 + 0.003/level</code>. This page is built at
+        <strong>level {buff_level}</strong> &mdash;
+        {_pct(week.get('community_buff_gathering'))} /
+        {_pct(week.get('community_buff_enhancing'))} /
+        {_pct(week.get('community_buff_production'))} respectively{switch_phrase}.
+        The guild's <em>real</em> buff levels are in no capture this repo
+        holds, which is why level&nbsp;1 is the published default: the same gap the
+        shrine levels carry. The two remaining community buffs (Experience &rarr;
+        wisdom, Combat Drop Quantity) are deliberately unmodelled &mdash; XP and
+        loot are not in the race's loop.
+        <br>
+        <strong>One WORKING ASSUMPTION remains, and it is the expensive one.</strong>
+        The gathering buff is applied as a lab-style double-progress chance,
+        scaling each member's rate by <code>(1 + doubleChance)</code> &mdash;
+        {_pct(week.get('community_buff_gathering'))} of buff plus a placeholder ~5%
+        carried on gear, pending the per-member gear harvest. But the game types
+        that buff as <em>gathering quantity</em>, which is a different thing from
+        the <em>double progress</em> the engine's <code>doubleProgressChance</code>
+        field reports. If the two do not in fact coincide, the doubling chance falls
+        to the ~5% gear term alone and every gathering rate here is some 19% too
+        high. The settling measurement is a single progress capture from a gathering
+        trial while the buff is live.</li>
     <li><strong>Houses (per-member, from the sheet).</strong> Each member's
         per-skill house level is read from the guild sheet's &ldquo;H&rdquo;
         column. Per the game data, gathering and production house rooms grant
@@ -1349,7 +1504,7 @@ def _render_trials_html(
         total, and how many weeks the spend takes to earn itself back.</li>
     <li><strong>{html.escape(_assignment_footnote(week))}</strong></li>
   </ol>
-  <p>Machine-readable copy of this page's data: <code>trials.json</code>.
+  <p>Machine-readable copy of this page's data: <code>{json_name}</code>.
      Static build from the public guild sheet; no credentials, read-only.</p>
 </footer>
 <script id="assign-data" type="application/json">{assign_json}</script>
@@ -2501,9 +2656,11 @@ def build_guild(site: "GuildSite") -> str:
     """Build one guild's pages into ``site.out_dir``; return a one-line summary.
 
     Runs the full pipeline for a single guild: the member skill register
-    (index.html + data.json), the trials optimiser (trials.html + trials.json),
-    and the sign-up optimiser (signup.html + signup.json). The trial *draw* is
-    the shared "Trial Assignments" tab (both guilds run the same weekly draw).
+    (index.html + data.json), the trials optimiser (trials.html + trials.json,
+    plus the maxed-community-buff counterfactual trials-maxbuffs.html/.json from a
+    second optimiser run), and the sign-up optimiser (signup.html + signup.json).
+    The trial *draw* is the shared "Trial Assignments" tab (both guilds run the
+    same weekly draw).
 
     Raises:
         SheetStructureError / RuntimeError: on a hard failure of the member tab,
@@ -2576,12 +2733,63 @@ def build_guild(site: "GuildSite") -> str:
         min_levels=week_draw.min_levels,
     )
     week_dict = week.to_dict()
-    (out / "trials.json").write_text(
+
+    # The maxed-community-buff counterfactual: the SAME draw and the same members,
+    # optimised again from scratch with all three community buffs at the top of
+    # their ladder. A second full optimiser run — so roughly a second helping of the
+    # ~2-3 min the Phase 2 optimizer costs — and that is deliberate: raising a
+    # common-mode buff changes which members are worth seating, not merely how fast
+    # the seated ones work, so re-rating this week's parties would understate it.
+    # config.TRIALS_PUBLISH_MAXBUFF_PAGE = False is the one-line rollback.
+    #
+    # ``week`` is left strictly untouched either way: it remains the published plan,
+    # the ceiling the sign-up page reads, and the target of every existing link.
+    week_maxbuff = None
+    if config.TRIALS_PUBLISH_MAXBUFF_PAGE:
+        with trials_model.community_buff_level(config.COMMUNITY_BUFF_MAX_LEVEL):
+            week_maxbuff = trials_model.run_week(
+                gd.members,
+                skills=week_draw.skills,
+                min_levels=week_draw.min_levels,
+            )
+
+    (out / TRIALS_JSON).write_text(
         json.dumps(week_dict, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    (out / "trials.html").write_text(
-        _render_trials_html(week_dict, site, draw_warning), encoding="utf-8"
+    # Each page's switch points at the other, carrying the other's level and total so
+    # the reader can see what the alternative regime is worth before navigating.
+    (out / TRIALS_PAGE).write_text(
+        _render_trials_html(
+            week_dict, site, draw_warning,
+            counterpart=(
+                {
+                    "href": TRIALS_MAXBUFF_PAGE,
+                    "level": week_maxbuff.community_buff_level,
+                    "total": week_maxbuff.total_credit_points,
+                }
+                if week_maxbuff is not None
+                else None
+            ),
+        ),
+        encoding="utf-8",
     )
+    if week_maxbuff is not None:
+        week_maxbuff_dict = week_maxbuff.to_dict()
+        (out / TRIALS_MAXBUFF_JSON).write_text(
+            json.dumps(week_maxbuff_dict, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (out / TRIALS_MAXBUFF_PAGE).write_text(
+            _render_trials_html(
+                week_maxbuff_dict, site, draw_warning,
+                counterpart={
+                    "href": TRIALS_PAGE,
+                    "level": week_dict["community_buff_level"],
+                    "total": week_dict["total_credit_points"],
+                },
+            ),
+            encoding="utf-8",
+        )
 
     # --- Sign-up Optimiser (OPTIONAL) ---------------------------------------
     # Fetch this guild's sign-up tab, enforce those picks, recommend fills for
@@ -2656,6 +2864,15 @@ def build_guild(site: "GuildSite") -> str:
     # step total beside them, so a CI log tells you both what the plan was chosen on and
     # what the guild will see banked in game. Truncating to int here would silently hide
     # every partial-credit difference the whole patch exists to expose.
+    # What the maxed-buff counterfactual scored, and the gap — so a CI log records the
+    # size of the whole week's buff sensitivity, not just this regime's total.
+    maxbuff_note = (
+        f" vs L{week_maxbuff.community_buff_level} "
+        f"{week_maxbuff.total_credit_points:,.1f} cp "
+        f"({week_maxbuff.total_credit_points - week.total_credit_points:+,.1f})"
+        if week_maxbuff is not None
+        else " (maxbuff page off)"
+    )
     signup_note = (
         f"{plan.signup_count} signed, enforced {plan.enforced_total:,.1f} cp "
         f"({plan.enforced_step_total} pts) "
@@ -2678,6 +2895,7 @@ def build_guild(site: "GuildSite") -> str:
             for t in week.trials
         )
         + f" (total {week.total_credit_points:,.1f} cp / {week.total_points} pts); "
+        f"buffs L{week.community_buff_level}{maxbuff_note}; "
         f"signup: {signup_note}"
     )
 

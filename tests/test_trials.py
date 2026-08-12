@@ -1129,3 +1129,229 @@ def test_cumulative_tier_times_race_past_the_buzzer():
     # A party that cannot move has no curve at all.
     blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
     assert trials._cumulative_tier_times([blank], "Foraging", 5) == []
+
+
+# ---------------------------------------------------------------------------
+# Community buffs: the 1..20 level ladder
+# ---------------------------------------------------------------------------
+# The magnitudes are CONFIRMED game data (client dump communityBuffTypeDetailMap,
+# v1.20260715.0 — see research/community-buffs.md), so these tests pin the numbers
+# themselves rather than merely re-deriving whatever config happens to hold.
+def test_community_buff_ladder_matches_the_dump():
+    # flatBoost at level 1, and flatBoost + 19*flatBoostLevelBonus at the cap.
+    # NOTE flatBoost != flatBoostLevelBonus for these buffs, so the
+    # `per_level * level` shortcut the buildings/houses/shrines use is WRONG here:
+    # at level 20 that shortcut would claim 0.10 gathering, not 0.295.
+    assert trials.community_buff_value("gathering", 1) == pytest.approx(0.20)
+    assert trials.community_buff_value("gathering", 20) == pytest.approx(0.295)
+    assert trials.community_buff_value("enhancing", 1) == pytest.approx(0.20)
+    assert trials.community_buff_value("enhancing", 20) == pytest.approx(0.295)
+    assert trials.community_buff_value("production", 1) == pytest.approx(0.14)
+    assert trials.community_buff_value("production", 20) == pytest.approx(0.197)
+    # And it is linear in between, not stepped.
+    assert trials.community_buff_value("production", 5) == pytest.approx(0.152)
+
+
+def test_community_buff_value_clamps_to_the_games_own_ladder():
+    # Level 0 resolves to the level-1 value, NOT to zero: 1 is where the ladder
+    # starts, and below it the buff does not exist rather than granting less. An
+    # INACTIVE buff is a regime (calibrate.scenario_buffs_lapsed), not a level.
+    # Above the cap there is nothing further to grant.
+    assert trials.community_buff_value("gathering", 0) == pytest.approx(0.20)
+    assert trials.community_buff_value("gathering", -5) == pytest.approx(0.20)
+    assert trials.community_buff_value("gathering", 99) == pytest.approx(
+        trials.community_buff_value("gathering", config.COMMUNITY_BUFF_MAX_LEVEL)
+    )
+
+
+def test_shipped_config_publishes_level_one():
+    """The published default. Deliberately a test rather than a comment.
+
+    This one FAILS the day someone changes the default level, which is the
+    intended behaviour: the level-20 view is a counterfactual reached by the
+    toggle, and moving the default silently would republish the whole site's
+    plan under a regime the guild may not have funded.
+    """
+    assert config.COMMUNITY_BUFF_LEVEL == 1
+    assert config.COMMUNITY_BUFF_MAX_LEVEL == 20
+    # And the counterfactual page ships. False is the one-line rollback (it costs a
+    # whole second optimiser run per guild), so it is pinned rather than assumed.
+    assert config.TRIALS_PUBLISH_MAXBUFF_PAGE is True
+
+
+def test_config_constants_agree_with_the_ladder_at_the_default_level():
+    """config derives its three magnitudes with the literals written out, so this
+    is the test that shouts if the two copies ever drift apart."""
+    level = config.COMMUNITY_BUFF_LEVEL
+    assert config.COMMUNITY_GATHERING_BUFF_DOUBLE == pytest.approx(
+        trials.community_buff_value("gathering", level)
+    )
+    assert config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF == pytest.approx(
+        trials.community_buff_value("production", level)
+    )
+    assert config.COMMUNITY_ENHANCING_SPEED_BUFF == pytest.approx(
+        trials.community_buff_value("enhancing", level)
+    )
+    # DOUBLE_CHANCE stays the composed quantity: community buff + gear placeholder.
+    assert config.DOUBLE_CHANCE == pytest.approx(
+        config.COMMUNITY_GATHERING_BUFF_DOUBLE + config.GEAR_DOUBLE_CHANCE
+    )
+
+
+def test_community_buff_level_context_moves_every_term_the_race_reads():
+    m = _member("Buffed", {"Foraging": 120, "Brewing": 120, "Enhancing": 120})
+    base_forage = trials.double_chance("Foraging")
+    base_brew = trials.member_bonuses(m, "Brewing").efficiency
+    base_enh = trials.member_bonuses(m, "Enhancing").speed
+
+    with trials.community_buff_level(20):
+        assert trials.double_chance("Foraging") == pytest.approx(
+            0.295 + config.GEAR_DOUBLE_CHANCE
+        )
+        # Non-gathering families still carry no doubling chance at any buff level.
+        assert trials.double_chance("Brewing") == 0.0
+        assert trials.member_bonuses(m, "Brewing").efficiency == pytest.approx(
+            base_brew + (0.197 - 0.14)
+        )
+        assert trials.member_bonuses(m, "Enhancing").speed == pytest.approx(
+            base_enh + (0.295 - 0.20)
+        )
+        # Enhancing gets SPEED, never efficiency — true at every buff level.
+        assert trials.member_bonuses(m, "Enhancing").efficiency == 0.0
+        assert config.COMMUNITY_BUFF_LEVEL == 20
+
+    assert trials.double_chance("Foraging") == pytest.approx(base_forage)
+    assert trials.member_bonuses(m, "Brewing").efficiency == pytest.approx(base_brew)
+    assert trials.member_bonuses(m, "Enhancing").speed == pytest.approx(base_enh)
+    assert config.COMMUNITY_BUFF_LEVEL == 1
+
+
+def test_community_buff_level_context_restores_on_exception():
+    saved = (
+        config.DOUBLE_CHANCE,
+        config.COMMUNITY_GATHERING_BUFF_DOUBLE,
+        config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF,
+        config.COMMUNITY_ENHANCING_SPEED_BUFF,
+        config.COMMUNITY_BUFF_LEVEL,
+    )
+    with pytest.raises(RuntimeError):
+        with trials.community_buff_level(20):
+            raise RuntimeError("boom")
+    assert (
+        config.DOUBLE_CHANCE,
+        config.COMMUNITY_GATHERING_BUFF_DOUBLE,
+        config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF,
+        config.COMMUNITY_ENHANCING_SPEED_BUFF,
+        config.COMMUNITY_BUFF_LEVEL,
+    ) == saved
+
+
+def test_run_week_records_the_buff_regime_it_ran_under():
+    # Same reason guild_building_levels is recorded: the page and the JSON state
+    # the assumption instead of hiding it — and with TWO runs shipped per guild, a
+    # reader holding one JSON file must be able to tell which regime made it.
+    members = [_member(f"M{i}", {sk: 110 for sk in config.SKILLS}) for i in range(8)]
+    skills = ["Foraging", "Brewing"]
+    base = trials.run_week(members, skills=skills, strategy="random").to_dict()
+    assert base["community_buff_level"] == 1
+    assert base["community_buff_gathering"] == pytest.approx(0.20)
+    assert base["community_buff_production"] == pytest.approx(0.14)
+    assert base["community_buff_enhancing"] == pytest.approx(0.20)
+
+    with trials.community_buff_level(config.COMMUNITY_BUFF_MAX_LEVEL):
+        maxed = trials.run_week(members, skills=skills, strategy="random").to_dict()
+    assert maxed["community_buff_level"] == 20
+    assert maxed["community_buff_gathering"] == pytest.approx(0.295)
+    assert maxed["community_buff_production"] == pytest.approx(0.197)
+    assert maxed["community_buff_enhancing"] == pytest.approx(0.295)
+
+    # Bigger buffs cannot score less: same members, same draw, same seed.
+    assert maxed["total_credit_points"] >= base["total_credit_points"]
+
+
+# ---------------------------------------------------------------------------
+# The trials page's community-buff level switch
+# ---------------------------------------------------------------------------
+def _two_regime_weeks():
+    """The same members and draw, run at the default level and at the cap."""
+    members = [
+        _member(f"M{i}", {sk: 100 + i for sk in config.SKILLS}) for i in range(10)
+    ]
+    skills = ["Foraging", "Brewing"]
+    base = trials.run_week(members, skills=skills, strategy="random").to_dict()
+    with trials.community_buff_level(config.COMMUNITY_BUFF_MAX_LEVEL):
+        maxed = trials.run_week(members, skills=skills, strategy="random").to_dict()
+    return base, maxed
+
+
+def test_trials_page_switch_cross_links_and_marks_the_active_level():
+    from src import build
+
+    base, maxed = _two_regime_weeks()
+    site = build.GUILD_SITES[0]
+    default_page = build._render_trials_html(
+        base, site, "",
+        counterpart={"href": build.TRIALS_MAXBUFF_PAGE, "level": 20,
+                     "total": maxed["total_credit_points"]},
+    )
+    maxbuff_page = build._render_trials_html(
+        maxed, site, "",
+        counterpart={"href": build.TRIALS_PAGE, "level": 1,
+                     "total": base["total_credit_points"]},
+    )
+
+    # Each page marks ITS level active and links to the other.
+    assert '<span class="bt-seg active" aria-current="page">Level 1' in default_page
+    assert f'href="{build.TRIALS_MAXBUFF_PAGE}"' in default_page
+    assert '<span class="bt-seg active" aria-current="page">Level 20' in maxbuff_page
+    assert f'href="{build.TRIALS_PAGE}"' in maxbuff_page
+
+    # Level 1 stays on the LEFT in both, so the control does not swap sides when
+    # you click it, and each page quotes the other's total so the reader can see
+    # the counterfactual's worth before navigating.
+    for page in (default_page, maxbuff_page):
+        segs = page.split('class="bt-segs">')[1].split("</span>\n")[0]
+        assert segs.index("Level 1") < segs.index("Level 20")
+        assert build._cp(base["total_credit_points"]) in segs
+        assert build._cp(maxed["total_credit_points"]) in segs
+
+    # Only the counterfactual is badged as one — in the tab title, the headline and
+    # the name of its own JSON — so it can never be mistaken for the published plan.
+    assert "community buffs L20" not in default_page.split("</title>")[0]
+    assert "community buffs L20" in maxbuff_page.split("</title>")[0]
+    assert f"<code>{build.TRIALS_JSON}</code>" in default_page
+    assert f"<code>{build.TRIALS_MAXBUFF_JSON}</code>" in maxbuff_page
+
+
+def test_trials_page_footnote_states_the_level_it_was_built_at():
+    from src import build
+
+    base, maxed = _two_regime_weeks()
+    site = build.GUILD_SITES[0]
+    assert "level 1</strong>" in build._render_trials_html(base, site)
+    assert "level 20</strong>" in build._render_trials_html(maxed, site)
+
+
+def test_trials_page_renders_without_a_counterpart():
+    """A lone render (no sibling regime) emits no switch at all rather than half
+    of one — the path any caller holding a single WeekResult takes."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    body = build._render_trials_html(base, build.GUILD_SITES[0]).split("</style>", 1)[1]
+    assert "bufftoggle" not in body
+    assert "bt-seg" not in body
+
+
+def test_trials_page_switch_survives_a_pre_buff_trials_json():
+    """A trials.json written before this feature carries no community_buff_level;
+    the page must still render, minus the switch, rather than raise."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    del base["community_buff_level"]
+    page = build._render_trials_html(
+        base, build.GUILD_SITES[0], "",
+        counterpart={"href": build.TRIALS_MAXBUFF_PAGE, "level": 20, "total": 1.0},
+    )
+    assert "bufftoggle" not in page.split("</style>", 1)[1]

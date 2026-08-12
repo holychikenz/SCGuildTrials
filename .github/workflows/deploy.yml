@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
   schedule:
-    # Daily. The Phase 2 trials optimizer takes ~2-3 min per run; hourly would
-    # burn ~2000+ Actions minutes/month. The weekly draw + slow-moving member
-    # data do not need hourly rebuilds. Adjust if you split cheap/expensive steps.
+    # Daily. The Phase 2 trials optimizer takes ~2-3 min per run, and since the
+    # maxed-community-buff counterfactual landed it runs TWICE per guild (the
+    # level-1 plan and the level-20 counterfactual), so budget roughly double that;
+    # hourly would burn well past ~2000 Actions minutes/month. The weekly draw +
+    # slow-moving member data do not need hourly rebuilds. Adjust if you split
+    # cheap/expensive steps — or set config.TRIALS_PUBLISH_MAXBUFF_PAGE = False,
+    # which drops the second run outright.
     #
     # 01:00 UTC is chosen for the LAG, not the hour: GitHub queues scheduled
     # workflows best-effort and defers them under load, and this repo's runs have
