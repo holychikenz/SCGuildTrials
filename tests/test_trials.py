@@ -1355,3 +1355,142 @@ def test_trials_page_switch_survives_a_pre_buff_trials_json():
         counterpart={"href": build.TRIALS_MAXBUFF_PAGE, "level": 20, "total": 1.0},
     )
     assert "bufftoggle" not in page.split("</style>", 1)[1]
+
+
+# ---------------------------------------------------------------------------
+# Pinned members
+# ---------------------------------------------------------------------------
+# Most readers want one fact from this page -- which trial am I in, and is it
+# safe -- so a member can be pinned to a panel at the top that survives the next
+# visit. The state lives in the reader's browser, which the suite cannot execute;
+# what it CAN pin down is the contract the page script depends on, and every test
+# below guards a way that contract could silently rot.
+
+
+def _pin_index(page: str) -> list[dict]:
+    """The embedded assignment index the pinned panel and search both read."""
+    import json
+
+    blob = page.split('id="assign-data"', 1)[1].split(">", 1)[1].split("</script>", 1)[0]
+    return json.loads(blob.replace("\\u003c", "<"))
+
+
+def test_pin_key_is_namespaced_per_guild():
+    """THE failure this feature is most likely to ship with.
+
+    Both guild sites are served from ONE github.io origin -- Survey Corps at the
+    root and Lactose Intolerance under /li/ -- and localStorage is scoped to the
+    origin, not the directory. An unqualified key would therefore have the two
+    guilds overwrite each other's pins, and the bug would surface only for the
+    handful of readers who visit both.
+    """
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    keys = {
+        site.key: build._render_trials_html(base, site)
+        .split('data-pin-key="', 1)[1]
+        .split('"', 1)[0]
+        for site in build.GUILD_SITES
+    }
+    assert len(set(keys.values())) == len(build.GUILD_SITES), keys
+    for guild_key, pin_key in keys.items():
+        assert pin_key.endswith("." + guild_key)
+
+
+def test_roster_rows_sort_on_the_bare_name_not_the_star():
+    """The pin control lives INSIDE the member cell, so that cell's textContent
+    now starts with a star glyph. The client-side text sorter falls back to
+    textContent when data-sort is absent, which would make every member's sort key
+    identical; the attribute carries the bare name to prevent it."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    names = [e["n"] for e in _pin_index(page) if e["t"] != "Bench"]
+    assert names
+    for name in names:
+        assert f'<th scope=row data-sort="{name}">' in page
+        assert f'data-fav="{name}"' in page
+
+
+def test_pinned_panel_ships_hidden_and_empty():
+    """No pin can be known at build time -- the page is a static file cached by
+    GitHub Pages and the pins are per-device -- so it must ship hidden, with every
+    star hollow, and be filled in by the script. Shipping it visible would show a
+    first-time reader an empty box; shipping a star pre-filled would show them
+    somebody else's pins."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    assert '<section class="card pinned" id="pinned-section" hidden>' in page
+    assert '<div id="pinned-list" class="pin-list"></div>' in page
+    assert 'aria-pressed="true"' not in page
+    assert page.count('class="fav" data-fav=') == len(_pin_index(page))
+
+
+def test_assign_index_carries_the_pinned_panel_summary_as_plain_text():
+    """The panel writes these fields with textContent, so an HTML entity would
+    render literally as '&middot;'. They must be plain text, and every entry must
+    carry the full set of keys -- a missing one shows as 'undefined' to a reader."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    assert entries
+    for e in entries:
+        assert set(e) == {"n", "t", "r", "l", "d", "m", "b"}
+        for field in ("d", "m"):
+            assert "&" not in e[field], e
+        assert e["b"] in ("", "ok-text", "warn-text", "danger-text")
+
+
+def test_pinned_summary_bands_agree_with_the_trial_card():
+    """A pinned row quotes the same margin as the trial card it summarises, in the
+    same colour. Deriving both from _margin_view is what keeps them honest; this
+    fails the moment someone recomputes one of them separately."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    by_trial = {e["t"]: e for e in entries if e["t"] != "Bench"}
+    for trial in base["trials"]:
+        e = by_trial.get(trial["skill"])
+        if e is None:
+            continue  # an empty party seats nobody to pin
+        view = build._margin_view(trial)
+        assert e["b"] == build._slack_band(view["slack_fraction"])
+        assert build._cp(build._credit_points(trial)) in e["d"]
+
+
+def test_benched_members_can_be_pinned_too():
+    """'Am I in this week?' is exactly the question the bench answers, so a benched
+    member gets a star like anyone else -- and an index entry that says plainly
+    they are not in a trial rather than leaving the panel blank."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    base["bench"] = ["Benched McBenchface"]
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    assert 'data-fav="Benched McBenchface"' in page
+    entry = next(e for e in _pin_index(page) if e["n"] == "Benched McBenchface")
+    assert entry["t"] == "Bench"
+    assert entry["r"] == "bench-section"
+    assert entry["d"] == "Not assigned to a trial this week"
+
+
+def test_pin_controls_reach_every_page_the_reader_can_land_on():
+    """The counterfactual page shares the guild's pins (one key, both pages), so it
+    needs the same controls -- landing on it from the buff switch must not lose
+    them."""
+    from src import build
+
+    base, maxed = _two_regime_weeks()
+    page = build._render_trials_html(
+        maxed, build.GUILD_SITES[0], "",
+        counterpart={"href": build.TRIALS_PAGE, "level": 1,
+                     "total": base["total_credit_points"]},
+    )
+    assert 'id="pinned-section"' in page
+    assert 'data-pin-key="guild-trials.pins.sc"' in page

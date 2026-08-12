@@ -391,24 +391,81 @@ def _marginal_seat_phrase(trial: dict) -> str:
     )
 
 
+def _fav_button(name: str) -> str:
+    """The pin control (a hollow star) for one member.
+
+    Rendered hollow and unpressed for EVERY member; the page script fills in the
+    ones this reader has pinned once it has read localStorage. Server-side state
+    is impossible here — the pins are per-device and the page is a static file
+    cached by GitHub Pages — so the honest starting state is "none pinned", and a
+    reader with pins sees them fill in on load rather than seeing the wrong ones
+    baked in.
+    """
+    safe = html.escape(name)
+    return (
+        f'<button type="button" class="fav" data-fav="{safe}" aria-pressed="false"'
+        f' title="Pin {safe} to the top of this page"'
+        f' aria-label="Pin {safe} to the top of this page">&#9734;</button>'
+    )
+
+
+def _member_cell(name: str) -> str:
+    """A roster row's member cell: the pin control, then the name.
+
+    ``data-sort`` carries the BARE name because the client-side text sorter falls
+    back to ``textContent`` when the attribute is absent — and textContent here
+    begins with the star glyph, which would sort every row identically.
+    """
+    safe = html.escape(name)
+    return f'<th scope=row data-sort="{safe}">{_fav_button(name)}{safe}</th>'
+
+
+def _assign_summary(trial: dict) -> tuple[str, str, str]:
+    """(what the trial scored, how narrowly, band class) as PLAIN text.
+
+    Denormalised onto every member's search-index entry so the pinned panel can
+    describe someone's trial from the index alone, with no second lookup table.
+    Plain text rather than HTML because the panel writes it through
+    ``textContent`` — an ``&middot;`` would render literally.
+    """
+    view = _margin_view(trial)
+    secs = view["clear_seconds"]
+    scored = f"Tier {trial['tier_reached']} · {_cp(_credit_points(trial))} credit pts"
+    if (trial.get("tier_reached") or 0) < 1 or secs is None:
+        return scored, "no tier banked", "danger-text"
+    margin = (
+        f"banked at {_num(secs, 0)}s of "
+        f"{_num(config.TRIAL_TIME_BUDGET_SECONDS, 0)}s · "
+        f"{_pct(view['slack_fraction'])} spare"
+    )
+    return scored, margin, _slack_band(view["slack_fraction"])
+
+
 def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
     """Render one trial's section and return (html, assignment_entries).
 
     ``assignment_entries`` maps each rostered member to this trial and to the
-    DOM id of their (pre-sorted) roster row, feeding the page's player search.
+    DOM id of their (pre-sorted) roster row, feeding the page's player search and
+    its pinned-members panel. Keys are terse because the whole index ships inline
+    in every page: ``n``ame, ``t``rial, ``r``ow id, ``l``evel, ``d``etail (what the
+    trial scored), ``m``argin, ``b``and (the margin's colour class).
     """
     skill = html.escape(trial["skill"])
     final_tier = trial["tier_reached"] if trial["tier_reached"] >= 1 else 1
 
     roster = _sorted_roster(trial)
+    scored, margin, band = _assign_summary(trial)
     assign_entries = [
-        {"n": r["name"], "t": trial["skill"], "r": f"r-{t_index}-{i}"}
+        {
+            "n": r["name"], "t": trial["skill"], "r": f"r-{t_index}-{i}",
+            "l": r["level"], "d": scored, "m": margin, "b": band,
+        }
         for i, r in enumerate(roster)
     ]
 
     roster_rows = "".join(
         f'<tr id="r-{t_index}-{i}">'
-        f"<th scope=row>{html.escape(r['name'])}</th>"
+        f"{_member_cell(r['name'])}"
         f"<td class=num data-sort=\"{'' if r['level'] is None else r['level']}\">"
         f"{'' if r['level'] is None else r['level']}</td>"
         f"<td class=cbadges data-sort=\"{int(r['tool']) + int(r['top']) + int(r['bot'])}\">"
@@ -547,9 +604,15 @@ _TRIALS_JS = r"""
       return;
     }
     hits.forEach(function (h) {
+      // A row, not a button: it carries TWO controls (pin, jump), and a button
+      // nested inside a button is invalid markup browsers flatten unpredictably.
+      var item = document.createElement("div");
+      item.className = "sr-item";
+      item.appendChild(makeStar(h.n));
+
       var b = document.createElement("button");
       b.type = "button";
-      b.className = "sr-item";
+      b.className = "sr-jump";
       var name = document.createElement("span");
       name.className = "sr-name";
       name.textContent = h.n;
@@ -563,8 +626,10 @@ _TRIALS_JS = r"""
         input.value = h.n;
         clearPanel();
       });
-      panel.appendChild(b);
+      item.appendChild(b);
+      panel.appendChild(item);
     });
+    syncStars();
   }
 
   if (input && panel) {
@@ -579,6 +644,162 @@ _TRIALS_JS = r"""
       if (e.target !== input && !panel.contains(e.target)) clearPanel();
     });
   }
+
+  // ---------- Pinned members ----------
+  // Most readers want one thing from this page: which trial am I in, and is it
+  // safe? Pinning lifts that answer to the top and keeps it there on the next
+  // visit, so the page opens on their own row instead of a wall of eight parties.
+  //
+  // Stored in localStorage under a key NAMESPACED BY GUILD. Both guild sites are
+  // served from the one github.io origin and localStorage is per-origin, not
+  // per-directory, so a bare "pins" key would have Survey Corps and Lactose
+  // Intolerance silently overwrite each other. NAMES are stored, never row ids:
+  // ids are regenerated on every weekly build and would point at a stranger by
+  // Tuesday, whereas a name still resolves — or honestly fails to.
+  var PIN_KEY = dataEl ? (dataEl.getAttribute("data-pin-key") || "") : "";
+  var pinSection = document.getElementById("pinned-section");
+  var pinList = document.getElementById("pinned-list");
+  var pinClear = document.getElementById("pin-clear");
+
+  // Every localStorage call is wrapped: it throws outright in Safari's private
+  // mode and wherever site data is blocked, and a page that cannot remember pins
+  // must still search, sort and render normally.
+  function pinsRead() {
+    if (!PIN_KEY) return [];
+    var raw = null;
+    try { raw = window.localStorage.getItem(PIN_KEY); } catch (e) { return []; }
+    if (!raw) return [];
+    try {
+      var v = JSON.parse(raw);
+      if (Object.prototype.toString.call(v) !== "[object Array]") return [];
+      return v.filter(function (x) { return typeof x === "string" && x; });
+    } catch (e) { return []; }
+  }
+
+  function pinsWrite(list) {
+    if (!PIN_KEY) return;
+    try { window.localStorage.setItem(PIN_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+
+  function entryFor(name) {
+    for (var i = 0; i < data.length; i++) {
+      if (data[i].n === name) return data[i];
+    }
+    return null;
+  }
+
+  function makeStar(name) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "fav";
+    b.setAttribute("data-fav", name);
+    b.setAttribute("aria-pressed", "false");
+    b.textContent = "☆";
+    return b;
+  }
+
+  // One pass over every star on the page — in the roster tables, on the bench, in
+  // the search panel and in the pinned list — so all of them agree after any
+  // change, wherever the change was made.
+  function syncStars() {
+    var pinned = {};
+    pinsRead().forEach(function (n) { pinned[n] = true; });
+    var btns = document.querySelectorAll("button[data-fav]");
+    Array.prototype.forEach.call(btns, function (b) {
+      var name = b.getAttribute("data-fav");
+      var on = pinned[name] === true;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.textContent = on ? "★" : "☆";
+      var label = (on ? "Unpin " : "Pin ") + name;
+      b.title = label;
+      b.setAttribute("aria-label", label);
+    });
+  }
+
+  function pinRow(name) {
+    var e = entryFor(name);
+    var row = document.createElement("div");
+    row.className = e ? "pin" : "pin pin-stale";
+    row.appendChild(makeStar(name));
+
+    var who = document.createElement("span");
+    who.className = "pin-name";
+    who.textContent = name;
+    row.appendChild(who);
+
+    var trial = document.createElement("span");
+    trial.className = "pin-trial";
+    // A pin can outlive the member: someone leaves the guild, or the sheet spells
+    // them differently this week. Say so and keep the row — silently dropping it
+    // would read as "you were never pinned" and leave no way to tidy up.
+    trial.textContent = e ? e.t : "not on this week's page";
+    row.appendChild(trial);
+
+    var detail = document.createElement("span");
+    detail.className = "pin-detail";
+    detail.textContent = e
+      ? (e.d + (e.l ? " · level " + e.l : ""))
+      : "No member of this name was in the roster when the page was built.";
+    row.appendChild(detail);
+
+    if (e && e.m) {
+      var margin = document.createElement("span");
+      margin.className = "pin-margin " + (e.b || "");
+      margin.textContent = e.m;
+      row.appendChild(margin);
+    }
+
+    if (e) {
+      var go = document.createElement("button");
+      go.type = "button";
+      go.className = "pin-jump";
+      go.textContent = "View row →";
+      go.addEventListener("click", function () { jump(e.r); });
+      row.appendChild(go);
+    }
+    return row;
+  }
+
+  function renderPins() {
+    if (!pinSection || !pinList) { syncStars(); return; }
+    var pins = pinsRead();
+    while (pinList.firstChild) pinList.removeChild(pinList.firstChild);
+    // Hidden entirely when empty rather than shown as a placeholder: a reader who
+    // never pins anyone should not pay a box for the feature. The hint under the
+    // search input is what advertises it.
+    pinSection.hidden = pins.length === 0;
+    pins.forEach(function (name) { pinList.appendChild(pinRow(name)); });
+    syncStars();
+  }
+
+  function togglePin(name) {
+    if (!name) return;
+    var pins = pinsRead();
+    var at = pins.indexOf(name);
+    if (at === -1) pins.push(name); else pins.splice(at, 1);
+    pinsWrite(pins);
+    renderPins();
+  }
+
+  // Delegated, so it also catches the stars this script creates later — the ones
+  // in the search panel and in the pinned list itself.
+  document.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest("button[data-fav]") : null;
+    if (btn) togglePin(btn.getAttribute("data-fav"));
+  });
+
+  if (pinClear) {
+    pinClear.addEventListener("click", function () { pinsWrite([]); renderPins(); });
+  }
+
+  // Keeps the level-1 and level-20 trials pages (and any other open tab on this
+  // guild) in step, since they share the one key.
+  window.addEventListener("storage", function (e) {
+    if (!e.key || e.key === PIN_KEY) renderPins();
+  });
+
+  renderPins();
 
   // ---------- Generic sortable roster tables ----------
   function keyOf(row, col, type) {
@@ -1182,12 +1403,24 @@ def _render_trials_html(
     cards = "".join(cards_parts)
 
     bench = week["bench"]
+    # Chips rather than a comma list, so a benched member can pin themselves too —
+    # "am I in this week?" is exactly the question the bench answers, and it is
+    # worth an answer at the top of the page like any other.
     bench_html = (
-        ", ".join(html.escape(n) for n in bench) if bench else "(none)"
+        " ".join(
+            f'<span class="bench-name">{_fav_button(n)}{html.escape(n)}</span>'
+            for n in bench
+        )
+        if bench
+        else "(none)"
     )
     # Bench members jump to the bench section (they have no roster row).
     assign_index.extend(
-        {"n": n, "t": "Bench", "r": "bench-section"} for n in bench
+        {
+            "n": n, "t": "Bench", "r": "bench-section", "l": None,
+            "d": "Not assigned to a trial this week", "m": "", "b": "",
+        }
+        for n in bench
     )
 
     # Embedded, self-contained assignment data for the player search. Escape
@@ -1336,17 +1569,50 @@ def _render_trials_html(
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.4);
   }}
+  /* The result row holds two controls (pin, jump), so it is a flex CONTAINER and
+     .sr-jump is the button that used to be .sr-item itself. */
   .sr-item {{
+    display: flex; align-items: center; gap: .2rem; padding: 0 .7rem;
+    border-bottom: 1px solid var(--line);
+  }}
+  .sr-jump {{
     display: flex; justify-content: space-between; align-items: center;
-    gap: 1rem; width: 100%; padding: .45rem .7rem; font: inherit;
+    gap: 1rem; flex: 1; padding: .45rem 0; font: inherit;
     text-align: left; color: var(--text); background: none; border: 0;
-    border-bottom: 1px solid var(--line); cursor: pointer;
+    cursor: pointer;
   }}
   .sr-item:last-child {{ border-bottom: 0; }}
-  .sr-item:hover, .sr-item:focus {{ background: #1b2029; outline: none; }}
+  .sr-item:hover, .sr-jump:focus {{ background: #1b2029; outline: none; }}
   .sr-name {{ font-weight: 600; }}
   .sr-trial {{ color: var(--accent); font-size: .85rem; }}
   .sr-empty {{ padding: .45rem .7rem; color: var(--muted); }}
+  /* --- Pinned members --------------------------------------------------- */
+  .fav {{ background: none; border: 0; padding: 0 .3rem 0 0; margin: 0;
+          font-size: 1rem; line-height: 1; color: var(--off); cursor: pointer; }}
+  .fav:hover, .fav:focus {{ color: var(--warn); outline: none; }}
+  .fav.on {{ color: var(--warn); }}
+  .pinned {{ border-color: var(--accent); }}
+  .pin-list {{ display: flex; flex-direction: column; }}
+  .pin {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .7rem;
+          padding: .4rem 0; border-bottom: 1px solid var(--line); }}
+  .pin:last-child {{ border-bottom: 0; }}
+  .pin-name {{ font-weight: 700; }}
+  .pin-trial {{ color: var(--accent); font-weight: 600; }}
+  .pin-detail {{ color: var(--muted); font-size: .85rem; }}
+  /* No colour of its own: the band class (.ok-text / .warn-text / .danger-text)
+     paints it, so a pinned row reads the same red or green as the trial card. */
+  .pin-margin {{ font-size: .85rem; }}
+  .pin-stale .pin-trial {{ color: var(--muted); font-style: italic; font-weight: 400; }}
+  .pin-jump {{ margin-left: auto; background: none; border: 1px solid var(--line);
+               border-radius: 6px; color: var(--accent); font: inherit;
+               font-size: .82rem; padding: .1rem .5rem; cursor: pointer; }}
+  .pin-jump:hover {{ border-color: var(--accent); }}
+  .pin-clear {{ background: none; border: 0; padding: 0; font: inherit;
+                font-size: .85rem; color: var(--accent); cursor: pointer;
+                text-decoration: underline; }}
+  .pin-hint {{ margin: -.9rem 0 1.25rem; }}
+  .bench-name {{ display: inline-flex; align-items: center; white-space: nowrap;
+                 margin: 0 .8rem .3rem 0; }}
   /* --- Sortable headers ----------------------------------------------- */
   table.sortable th.sort {{ cursor: pointer; user-select: none; }}
   table.sortable th.sort:hover {{ color: var(--text); }}
@@ -1378,6 +1644,15 @@ def _render_trials_html(
 </header>
 <main>
   {alert_html}{buff_toggle}
+  <!-- Filled in by the page script from localStorage and unhidden only when this
+       reader has pinned somebody; it starts hidden so a first-time visitor sees no
+       empty scaffolding. -->
+  <section class="card pinned" id="pinned-section" hidden>
+    <h2>Your members</h2>
+    <p class="meta">Pinned on this device &middot;
+       <button type="button" id="pin-clear" class="pin-clear">clear all</button></p>
+    <div id="pinned-list" class="pin-list"></div>
+  </section>
   <div class="strip">
     {strip}
     <div class="total">
@@ -1394,6 +1669,9 @@ def _render_trials_html(
            aria-label="Search for a guild member">
     <div id="search-results" class="search-results" role="listbox" hidden></div>
   </div>
+  <p class="meta pin-hint">Tip: the <span class="fav on">&#9733;</span> beside any
+     member pins their trial to the top of this page and remembers it on this
+     device, so your own assignment is the first thing you see next week.</p>
   {cards}
 
   <section class="card" id="bench-section">
@@ -1521,7 +1799,8 @@ def _render_trials_html(
   <p>Machine-readable copy of this page's data: <code>{json_name}</code>.
      Static build from the public guild sheet; no credentials, read-only.</p>
 </footer>
-<script id="assign-data" type="application/json">{assign_json}</script>
+<script id="assign-data" type="application/json"
+        data-pin-key="guild-trials.pins.{site.key}">{assign_json}</script>
 <script>{_TRIALS_JS}</script>
 </body>
 </html>

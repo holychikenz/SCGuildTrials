@@ -133,6 +133,33 @@ The pass applies to the **unconstrained optimum only** (`optimizer.optimize`, i.
 so its margin is not the optimizer's to choose — whatever the sign-ups leave is what
 ships. `signup.html` therefore **reports** the margin instead (see below).
 
+### Pinned members
+
+Most readers want one fact from `trials.html`: *which trial am I in, and is it
+safe?* Everything else on the page is context for that. The ☆ beside any member —
+in a roster table, on the bench, or in a search result — pins them to a **Your
+members** panel above the fold, which survives the next visit and the next
+week's rebuild.
+
+Three decisions worth keeping:
+
+- **Names are stored, never row ids.** The `r-<trial>-<row>` ids are regenerated
+  on every build, so a stored id would point at a stranger by Tuesday. A stored
+  name either resolves against this week's index or is shown, honestly, as *not on
+  this week's page* with its star still there to unpin.
+- **The key is namespaced per guild** (`guild-trials.pins.sc` / `guild-trials.pins.li`, carried
+  on `#assign-data`'s `data-pin-key`). Both guild sites are served from the one
+  `github.io` **origin** — the sub-directory does not separate them — and
+  localStorage is per-origin, so a bare key would have the two guilds silently
+  overwrite each other. Pinned by the `test_pin_key_is_namespaced_per_guild` test.
+- **The panel ships hidden and every star ships hollow.** The page is a static
+  file on a CDN and the pins are per-device, so no pin can be known at build time;
+  the script fills them in on load. `trials.html` and `trials-maxbuffs.html` share
+  the one key, so a pin follows the reader across the buff switch.
+
+State lives entirely in the reader's browser — nothing is written to the sheet,
+and clearing site data clears the pins.
+
 ## Sign-up optimiser (real sign-ups)
 
 `src/signup.py` reads each guild's sign-up tab (**SC Trial Signup** /
