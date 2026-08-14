@@ -27,13 +27,23 @@ from .scraper import scrape_member_tab
 
 OUTPUT_DIR = Path("_site")
 
-# The trials page ships TWICE per guild: once at the published community-buff level
-# (``config.COMMUNITY_BUFF_LEVEL``, the default ``trials.html`` every other page and
-# every existing link points at) and once as a maxed-buff counterfactual at
-# ``config.COMMUNITY_BUFF_MAX_LEVEL``. Two files rather than one file with a
-# client-side switch because each is a WHOLE separate optimiser run — different
-# parties, not merely different rates — and because two full copies of the roster
-# markup in one document would collide on every DOM id the player search jumps to.
+# The trials page ships ONCE per guild, at the published community-buff level
+# (``config.COMMUNITY_BUFF_LEVEL``), and carries the whole 1..20 ladder inline behind
+# a selector: one optimiser run, re-rated at each rung by ``trials.run_week_ladder``.
+#
+# It used to ship TWICE, the second copy a maxed-buff counterfactual at
+# ``config.COMMUNITY_BUFF_MAX_LEVEL``, and the argument for two files rather than one
+# was that each was a WHOLE separate optimiser run — different parties, not merely
+# different rates — so no client-side switch could stand in for it, and that two full
+# copies of the roster markup in one document would collide on every DOM id the
+# player search jumps to.
+#
+# Both halves of that argument dissolve once the parties are held FIXED. There is one
+# roster, so there are no duplicate ids; and the swap is arithmetic already done at
+# build time, so the browser recomputes nothing. What the selector cannot do is
+# redraw the parties, which is why every rung is labelled a lower bound — see
+# ``config.TRIALS_BUFF_LEVEL_SLIDER``. The counterfactual's whole path is still here
+# and still tested, one config line from returning.
 TRIALS_PAGE = "trials.html"
 TRIALS_JSON = "trials.json"
 TRIALS_MAXBUFF_PAGE = "trials-maxbuffs.html"
@@ -447,6 +457,128 @@ def _assign_summary(trial: dict) -> tuple[str, str, str]:
     return scored, margin, _slack_band(view["slack_fraction"])
 
 
+# ---------------------------------------------------------------------------
+# The level-dependent fragments of a trial card
+# ---------------------------------------------------------------------------
+# Everything below is a pure function of ONE trial dict, and every one of them is
+# called twice: once to render the page at the published community-buff level, and
+# once per rung to fill the selector's inline ladder (_buff_ladder_payload). Keeping
+# them as named fragments rather than inlining them in _render_trial_card is what
+# lets the browser swap a level without a second copy of the model, or of the
+# formatting rules, or of the band thresholds living in JavaScript.
+
+
+def _card_headline(trial: dict) -> str:
+    """Party size, tier, points, expectation — the card's first meta line."""
+    return (
+        f"Party size {trial['party_size']} &middot;\n       "
+        f"{_tier_phrase(trial)} &middot; {_points_phrase(trial)}"
+        f"{_expected_phrase(trial)}"
+    )
+
+
+def _card_safety(trial: dict) -> str:
+    """When the last tier was banked and how often it holds — the second meta line."""
+    return (
+        "Safety:\n       "
+        f"{_margin_phrase(_margin_view(trial), config.TRIAL_TIME_BUDGET_SECONDS)}\n       "
+        f"{_risk_phrase(trial)}"
+    )
+
+
+def _timeline_cells(trial: dict) -> list[list]:
+    """The tier timeline as rows of ALREADY-FORMATTED cells, newest rung last.
+
+    Arrays rather than ``<tr>`` markup because the selector ships one of these per
+    rung per trial and the markup is eight times the bytes; arrays of *formatted
+    strings* rather than of numbers because the formatting is where the rules are
+    (the infinity, the em dash, the progress figure that appears on exactly one
+    row), and those rules belong here beside :func:`_num` and not in the page
+    script.
+    """
+    return [
+        [
+            step["tier"],
+            step["tier_level"],
+            _num(step["effective_target"], 0),
+            _num(step["party_rate"]),
+            _num(step["time_to_clear"], 1)
+            if step["time_to_clear"] is not None
+            else "&infin;",
+            _num(step["cumulative_time"], 1)
+            if step["cumulative_time"] is not None
+            else "&mdash;",
+            # Set on the FIRST UNCLEARED step only: a cleared tier is 100% done by
+            # definition, and a party that could not move at all made no progress to
+            # report. So exactly one row in this table carries a figure, and it is the
+            # row the partial credit is paid on. ``.get`` because a pre-patch
+            # trials.json has no such key.
+            _pct(step.get("progress_fraction")),
+            "cleared" if step["cleared"] else "ran out",
+        ]
+        for step in trial["timeline"]
+    ]
+
+
+def _timeline_rows(trial: dict) -> str:
+    """:func:`_timeline_cells`, wrapped in table markup. The server-side render."""
+    return "".join(
+        '<tr class="{cls}">{cells}</tr>'.format(
+            cls="cleared" if row[7] == "cleared" else "failed",
+            cells="".join(
+                f"<td class=num>{value}</td>" for value in row[:7]
+            )
+            + f"<td>{row[7]}</td>",
+        )
+        for row in _timeline_cells(trial)
+    )
+
+
+def _rate_header(trial: dict) -> str:
+    """``Rate @T11`` — the roster's last column, which names the tier it is rated at.
+
+    Level-dependent for the same reason the rates under it are: raise the buffs far
+    enough and the party finishes a tier it did not reach before.
+    """
+    final_tier = trial["tier_reached"] if trial["tier_reached"] >= 1 else 1
+    return f"Rate @T{final_tier}"
+
+
+def _stat_strip(week: dict) -> str:
+    """The whole summary strip: one tile per trial, then the week's total."""
+    # Tile subtitle carries BOTH currencies: the credit score the plan was chosen on,
+    # and the step award for the tier actually banked. The tier headline stays the
+    # banked one — a part-finished tier is worth points, not a tier.
+    tiles = "".join(
+        "<div class=\"stat\">"
+        f"<div class=stat-skill>{html.escape(t['skill'])}</div>"
+        f"<div class=stat-tier>Tier {t['tier_reached']}"
+        + (
+            f'<span class="stat-pts"> +{_pct(t.get("partial_fraction"))}</span>'
+            if (t.get("partial_fraction") or 0.0) > 0.0
+            else ""
+        )
+        + "</div>"
+        f"<div class=stat-pts>{_cp(_credit_points(t))} pts "
+        f"&middot; {_gp(t['points'])} banked</div>"
+        "</div>"
+        for t in week["trials"]
+    )
+    expected_note = _expected_total_note(
+        week.get("total_credit_points"), week.get("total_expected_points")
+    )
+    return (
+        tiles
+        + '<div class="total">'
+        + "<div class=stat-skill>Total</div>"
+        + f"<div class=stat-tier>"
+          f"{_cp(week.get('total_credit_points') or week['total_points'])}</div>"
+        + f"<div class=stat-pts>credit points &middot; "
+          f"{_gp(week['total_points'])} from banked tiers{expected_note}</div>"
+        + "</div>"
+    )
+
+
 def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
     """Render one trial's section and return (html, assignment_entries).
 
@@ -457,8 +589,6 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
     trial scored), ``m``argin, ``b``and (the margin's colour class).
     """
     skill = html.escape(trial["skill"])
-    final_tier = trial["tier_reached"] if trial["tier_reached"] >= 1 else 1
-
     roster = _sorted_roster(trial)
     scored, margin, band = _assign_summary(trial)
     assign_entries = [
@@ -483,40 +613,20 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
         for i, r in enumerate(roster)
     )
 
-    timeline_rows = "".join(
-        "<tr class=\"{cls}\">"
-        "<td class=num>{tier}</td>"
-        "<td class=num>{tier_level}</td>"
-        "<td class=num>{eff}</td>"
-        "<td class=num>{rate}</td>"
-        "<td class=num>{ttc}</td>"
-        "<td class=num>{cum}</td>"
-        "<td class=num>{progress}</td>"
-        "<td>{status}</td>"
-        "</tr>".format(
-            cls="cleared" if step["cleared"] else "failed",
-            tier=step["tier"],
-            tier_level=step["tier_level"],
-            eff=_num(step["effective_target"], 0),
-            rate=_num(step["party_rate"]),
-            ttc=_num(step["time_to_clear"], 1) if step["time_to_clear"] is not None else "&infin;",
-            cum=_num(step["cumulative_time"], 1) if step["cumulative_time"] is not None else "&mdash;",
-            # Set on the FIRST UNCLEARED step only: a cleared tier is 100% done by
-            # definition, and a party that could not move at all made no progress to
-            # report. So exactly one row in this table carries a figure, and it is the
-            # row the partial credit is paid on. ``.get`` because a pre-patch
-            # trials.json has no such key.
-            progress=_pct(step.get("progress_fraction")),
-            status="cleared" if step["cleared"] else "ran out",
-        )
-        for step in trial["timeline"]
-    )
-
     # Omit the paragraph entirely rather than emit an empty one: the phrase is empty
     # only when the roster carries no usable rates at all (an empty party, or a
-    # trials.json old enough to lack rate_final).
+    # trials.json old enough to lack rate_final) — a property of the party, not of
+    # the buff regime, so a card without this line has none at any level and needs
+    # no slot for the selector to fill.
     marginal = _marginal_seat_phrase(trial)
-    marginal_html = f'<p class="meta">{marginal}</p>' if marginal else ""
+    marginal_html = (
+        f'<p class="meta" id="c{t_index}-marg">{marginal}</p>' if marginal else ""
+    )
+
+    # The ids on the four meta lines, the rate header and the two table bodies are
+    # the selector's swap slots (see _BUFF_JS). They are the ONLY thing the level
+    # control touches; the roster's membership, the pins and the search index all
+    # stay exactly where they are, because raising a buff does not move anybody.
 
     # Margin and odds, on the optimum too. The safety pass maximises the margin
     # here, so these cards are the standard the sign-up page reads against — and
@@ -525,11 +635,8 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
     card_html = f"""
   <section class="card">
     <h2>{skill}</h2>
-    <p class="meta">Party size {trial['party_size']} &middot;
-       {_tier_phrase(trial)} &middot; {_points_phrase(trial)}{_expected_phrase(trial)}</p>
-    <p class="meta">Safety:
-       {_margin_phrase(_margin_view(trial), config.TRIAL_TIME_BUDGET_SECONDS)}
-       {_risk_phrase(trial)}</p>
+    <p class="meta" id="c{t_index}-head">{_card_headline(trial)}</p>
+    <p class="meta" id="c{t_index}-safe">{_card_safety(trial)}</p>
     {marginal_html}
 
     <h3>Roster</h3>
@@ -543,7 +650,7 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
             <th class="sort num" data-type="num">Level <span class="arrow">&#8597;</span></th>
             <th class="sort" data-type="badge">Tool / Top / Bot <span class="arrow">&#8597;</span></th>
             <th class="sort num" data-type="num">Rate @T1 <span class="arrow">&#8597;</span></th>
-            <th class="sort num" data-type="num">Rate @T{final_tier} <span class="arrow">&#8597;</span></th>
+            <th class="sort num" data-type="num"><span id="c{t_index}-rh">{_rate_header(trial)}</span> <span class="arrow">&#8597;</span></th>
           </tr>
         </thead>
         <tbody>{roster_rows}</tbody>
@@ -559,7 +666,7 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
               <th class=num>Time to clear (s)</th><th class=num>Cumulative (s)</th>
               <th class=num>Progress</th><th>Result</th></tr>
         </thead>
-        <tbody>{timeline_rows}</tbody>
+        <tbody id="c{t_index}-tl">{_timeline_rows(trial)}</tbody>
       </table>
     </div>
   </section>"""
@@ -876,7 +983,148 @@ _TRIALS_JS = r"""
       table.__sortAsc = false; // descending
       setArrows(heads, dcol, false, dtype);
     }
+    // Re-apply whatever sort is currently in force. The buff-level selector
+    // rewrites the rate cells underneath the reader, and a table sorted by a
+    // column whose values have just changed is no longer sorted at all. Honours
+    // the reader's own choice of column rather than yanking them back to the
+    // default: only the ORDER is refreshed, never the criterion.
+    table.__resort = function () {
+      var col = table.__sortCol;
+      if (col === undefined || col === null) return;
+      var th = heads[col];
+      var type = th ? (th.getAttribute("data-type") || "num") : "num";
+      sortBy(table, heads, col, type, table.__sortAsc);
+    };
   });
+
+  // ---------- Community-buff level selector ----------
+  // ONE optimiser run, rated at every rung of the game's 1..20 ladder at BUILD
+  // time and shipped inline in #levels-data. Nothing here models anything: it
+  // swaps prepared text into prepared slots, which is why the page still works
+  // from a file:// checkout and off the network. What the rungs mean — and the
+  // fact that they are a LOWER bound, the parties being fixed — is spelled out
+  // in build._render_buff_slider and on the page itself.
+  var lvlEl = document.getElementById("levels-data");
+  var LEVELS = null;
+  try {
+    LEVELS = lvlEl ? JSON.parse(lvlEl.textContent) : null;
+  } catch (e) { LEVELS = null; }
+  var lvlBox = document.getElementById("buff-level");
+  var lvlRange = document.getElementById("buff-range");
+
+  if (LEVELS && lvlBox && lvlRange) {
+    var PUBLISHED = lvlBox.getAttribute("data-published") || "";
+    var stripEl = document.getElementById("strip");
+    var resetBtn = document.getElementById("buff-reset");
+
+    function put(id, markup) {
+      var el = document.getElementById(id);
+      if (el) el.innerHTML = markup;
+    }
+
+    function rowsHtml(cells) {
+      var out = "";
+      for (var r = 0; r < cells.length; r++) {
+        var row = cells[r];
+        out += '<tr class="' + (row[7] === "cleared" ? "cleared" : "failed") + '">';
+        for (var j = 0; j < 7; j++) out += "<td class=num>" + row[j] + "</td>";
+        out += "<td>" + row[7] + "</td></tr>";
+      }
+      return out;
+    }
+
+    function applyLevel(level) {
+      var rung = LEVELS[String(level)];
+      if (!rung) return;
+      if (stripEl) stripEl.innerHTML = rung.strip;
+      for (var t = 0; t < rung.cards.length; t++) {
+        var c = rung.cards[t];
+        put("c" + t + "-head", c.head);
+        put("c" + t + "-safe", c.safe);
+        // Only when the server emitted the slot: a card with no marginal-seat
+        // line at the published level has none at any level (the phrase is empty
+        // only for a party with no usable rates, which no buff can change).
+        if (c.marg) put("c" + t + "-marg", c.marg);
+        put("c" + t + "-rh", c.rh);
+        // Rates are addressed by the row id the server assigned, NEVER by the
+        // row's position: the reader may have re-sorted the table, and writing
+        // by position would put each member's rate in a stranger's row.
+        for (var i = 0; i < c.rates.length; i++) {
+          var tr = document.getElementById("r-" + t + "-" + i);
+          if (!tr || tr.cells.length < 5) continue;
+          for (var k = 0; k < 2; k++) {
+            var cell = tr.cells[3 + k];
+            cell.textContent = c.rates[i][k];
+            cell.setAttribute("data-sort", c.rates[i][k]);
+          }
+        }
+        put("c" + t + "-tl", rowsHtml(c.tl));
+      }
+      // The search index denormalises each trial's score and margin onto every
+      // member in it, so it moves with the level too — otherwise a pinned member
+      // would read the published figures inside a raised-buff view.
+      for (var d = 0; d < data.length; d++) {
+        var s = rung.assign[data[d].t];
+        if (s) { data[d].d = s[0]; data[d].m = s[1]; data[d].b = s[2]; }
+      }
+      renderPins();
+      if (input && panel && !panel.hidden) renderResults(input.value);
+
+      var off = String(level) !== String(PUBLISHED);
+      put("buff-level-num", String(level));
+      put("buff-mags", rung.note);
+      put("buff-off-num", String(level));
+      var offEl = document.getElementById("buff-off");
+      if (offEl) offEl.hidden = !off;
+      if (resetBtn) resetBtn.hidden = !off;
+      if (stripEl) {
+        if (off) stripEl.classList.add("off-level");
+        else stripEl.classList.remove("off-level");
+      }
+      Array.prototype.forEach.call(
+        document.querySelectorAll("table.sortable"),
+        function (table) { if (table.__resort) table.__resort(); }
+      );
+    }
+
+    function levelFromHash() {
+      var m = /(?:^|[#&])buffs=(\d+)/.exec(window.location.hash || "");
+      return m && LEVELS[m[1]] ? m[1] : null;
+    }
+
+    // The chosen level lives in the URL and NOT in localStorage, deliberately.
+    // A remembered level would have a reader return next week to numbers that are
+    // not the published plan, with nothing on screen to say when they chose them;
+    // in the URL it is visible, shareable, and gone the moment they open the page
+    // afresh. (Pins are remembered because a pin is about the reader; a buff level
+    // is about the guild.)
+    lvlRange.addEventListener("input", function () {
+      applyLevel(lvlRange.value);
+      try {
+        window.history.replaceState(
+          null, "",
+          lvlRange.value === PUBLISHED ? "#" : "#buffs=" + lvlRange.value
+        );
+      } catch (e) {}
+    });
+    if (resetBtn) {
+      resetBtn.addEventListener("click", function () {
+        lvlRange.value = PUBLISHED;
+        applyLevel(PUBLISHED);
+        try { window.history.replaceState(null, "", "#"); } catch (e) {}
+      });
+    }
+    window.addEventListener("hashchange", function () {
+      var h = levelFromHash() || PUBLISHED;
+      lvlRange.value = h;
+      applyLevel(h);
+    });
+    var initial = levelFromHash();
+    if (initial && initial !== PUBLISHED) {
+      lvlRange.value = initial;
+      applyLevel(initial);
+    }
+  }
 })();
 """
 
@@ -1299,6 +1547,22 @@ def _expected_total_note(total_credit, total_expected) -> str:
     return f" &middot; <strong>{_cp(total_expected)} expected</strong>"
 
 
+def _deterministic_total_note(total_objective, total_credit) -> str:
+    """`` &middot; 4,939.9 deterministic`` for a strip tile, or "" when it adds nothing.
+
+    The mirror of :func:`_expected_total_note`, for the page whose headline is already
+    the expectation (see ``config.OPT_OBJECTIVE``). Same suppression rule and the same
+    reason for it: the two figures only diverge where a tier is being held by seconds,
+    and printing both on a comfortable lineup is noise. What differs is which one is
+    the aside.
+    """
+    if total_credit is None or total_objective is None:
+        return ""
+    if abs(total_credit - total_objective) < 0.5:
+        return ""
+    return f" &middot; <strong>{_cp(total_credit)} deterministic</strong>"
+
+
 def _render_buff_toggle(week: dict, counterpart: Optional[dict]) -> str:
     """The community-buff level switch: two segments, this page's one active.
 
@@ -1361,11 +1625,131 @@ def _render_buff_toggle(week: dict, counterpart: Optional[dict]) -> str:
   <p class="bt-note">{note}.</p>"""
 
 
+def _buff_ladder_payload(week: dict, ladder: dict) -> dict:
+    """Every rung of the community-buff ladder, as the fragments the page swaps.
+
+    ``ladder`` is ``{level: WeekResult dict}`` from ``trials.run_week_ladder`` — one
+    optimiser run rated at each level, so every rung seats the same members in the
+    same trials and only the numbers move.
+
+    THE ROW ORDER IS THE PUBLISHED ONE, AND MUST BE. Roster rows carry the DOM ids
+    ``r-<trial>-<index>`` assigned by ``_render_trial_card`` from
+    ``_sorted_roster(published trial)``. A rung sorted by its OWN rates would put a
+    different member at each index and the selector would write everyone's rate into
+    somebody else's row, so each rung is re-indexed by NAME against the published
+    order before it ships.
+
+    Rates ship as their DISPLAY strings and the page uses them for the sort key too.
+    That is sound only because a single member's rate runs at 5-50 work/second and
+    never reaches the thousands separator ``_num`` would insert (a whole PARTY's rate
+    does, which is why the timeline keeps its own formatting); the cost is that
+    sorting the roster after a level change compares two decimals rather than
+    seventeen, which can reorder members whose rates agree to 0.005.
+    """
+    payload: dict = {}
+    for level, rung in ladder.items():
+        cards = []
+        for t_index, rung_trial in enumerate(rung["trials"]):
+            published_trial = week["trials"][t_index]
+            by_name = {r["name"]: r for r in rung_trial["roster"]}
+            rates = []
+            for r in _sorted_roster(published_trial):
+                other = by_name.get(r["name"], r)
+                rates.append([_num(other["rate_tier1"]), _num(other["rate_final"])])
+            cards.append(
+                {
+                    "head": _card_headline(rung_trial),
+                    "safe": _card_safety(rung_trial),
+                    "marg": _marginal_seat_phrase(rung_trial),
+                    "rh": _rate_header(rung_trial),
+                    "rates": rates,
+                    "tl": _timeline_cells(rung_trial),
+                }
+            )
+        payload[str(level)] = {
+            "strip": _stat_strip(rung),
+            "cards": cards,
+            # Keyed by trial NAME, not index: the search index entries carry the
+            # skill (``t``) and the bench entries carry the literal "Bench", so a
+            # name lookup needs no parallel ordering to stay correct.
+            "assign": {
+                t["skill"]: list(_assign_summary(t)) for t in rung["trials"]
+            },
+            "note": _buff_level_note(rung),
+        }
+    return payload
+
+
+def _buff_level_note(week: dict) -> str:
+    """One line naming the three magnitudes a rung actually ran on."""
+    return (
+        f"{_pct(week.get('community_buff_gathering'))} gathering &middot; "
+        f"{_pct(week.get('community_buff_production'))} production efficiency "
+        f"&middot; {_pct(week.get('community_buff_enhancing'))} enhancing speed"
+    )
+
+
+def _render_buff_slider(week: dict, ladder: Optional[dict]) -> str:
+    """The community-buff level selector: one plan, twenty ratings of it.
+
+    Unlike ``_render_buff_toggle`` — which navigates between two pages because each
+    was a separate optimiser run — this control recomputes nothing and fetches
+    nothing. Every rung was rated at build time by ``trials.run_week_ladder`` and
+    ships inline, so moving it is a DOM swap; the page therefore works from a
+    ``file://`` checkout and with no network at all, which a fetch would not.
+
+    WHAT THE READER MUST UNDERSTAND, and why the caveat is in the control rather
+    than in a footnote: the parties do not move. Every rung says what THIS WEEK'S
+    PLAN would score at that level, which is a floor under what the guild could
+    score there — at a raised buff the optimiser would seat different members and
+    do at least as well. Overstating that would turn a lower bound into a forecast.
+
+    Returns "" when there is no ladder (the switch is off, or a lone re-render of an
+    old trials.json), so the page falls back to exactly what it was before.
+    """
+    if not ladder:
+        return ""
+    published = week.get("community_buff_level")
+    if not published:
+        return ""
+    levels = sorted(int(k) for k in ladder)
+    lo, hi = levels[0], levels[-1]
+    return f"""
+  <div class="bufflevel" id="buff-level" data-published="{published}">
+    <div class="bl-row">
+      <label class="bl-label" for="buff-range">Community buffs</label>
+      <input id="buff-range" class="bl-range" type="range" min="{lo}" max="{hi}"
+             step="1" value="{published}" list="buff-ticks"
+             aria-describedby="buff-readout">
+      <datalist id="buff-ticks">{
+        "".join(f'<option value="{n}"></option>' for n in levels)
+      }</datalist>
+      <span class="bl-readout" id="buff-readout" aria-live="polite">
+        <strong>Level <span id="buff-level-num">{published}</span></strong>
+        <span class="bl-mag" id="buff-mags">{_buff_level_note(week)}</span>
+      </span>
+      <button type="button" class="bl-reset" id="buff-reset" hidden>
+        back to level {published}</button>
+    </div>
+    <p class="bl-note">Every number on this page is modelled with all three
+       community buffs at <strong>ladder level {published}</strong>, the level the
+       site publishes because the guild's real levels are in no capture this repo
+       holds. Moving the slider re-rates <em>this same plan</em> at another level
+       &mdash; the parties never change, so what you see is a <strong>lower
+       bound</strong> on that level: with better buffs the optimiser would seat
+       different members and score at least as much.
+       <span class="bl-off" id="buff-off" hidden>Showing level
+       <strong><span id="buff-off-num">{published}</span></strong>, not the
+       published plan.</span></p>
+  </div>"""
+
+
 def _render_trials_html(
     week: dict,
     site: "GuildSite",
     draw_warning: str = "",
     counterpart: Optional[dict] = None,
+    ladder: Optional[dict] = None,
 ) -> str:
     """Render the full trials page from a ``WeekResult`` dict.
 
@@ -1377,28 +1761,15 @@ def _render_trials_html(
     level (``{"href", "level", "total"}``) and turns on the level switch at the top
     of the page; ``None`` renders the page alone, exactly as before. See
     ``_render_buff_toggle``.
+
+    ``ladder`` is ``{level: WeekResult dict}`` for the SAME plan rated at every
+    community-buff level (``trials.run_week_ladder``) and turns on the level
+    selector; ``None`` omits it and every number on the page is the published
+    level's, as it was before the selector existed. The two controls are
+    independent and may both be on: the toggle navigates to a differently-OPTIMISED
+    page, the selector re-rates this one.
     """
-    expected_note = _expected_total_note(
-        week.get("total_credit_points"), week.get("total_expected_points")
-    )
-    # Tile subtitle carries BOTH currencies: the credit score the plan was chosen on,
-    # and the step award for the tier actually banked. The tier headline stays the
-    # banked one — a part-finished tier is worth points, not a tier.
-    strip = "".join(
-        "<div class=\"stat\">"
-        f"<div class=stat-skill>{html.escape(t['skill'])}</div>"
-        f"<div class=stat-tier>Tier {t['tier_reached']}"
-        + (
-            f'<span class="stat-pts"> +{_pct(t.get("partial_fraction"))}</span>'
-            if (t.get("partial_fraction") or 0.0) > 0.0
-            else ""
-        )
-        + "</div>"
-        f"<div class=stat-pts>{_cp(_credit_points(t))} pts "
-        f"&middot; {_gp(t['points'])} banked</div>"
-        "</div>"
-        for t in week["trials"]
-    )
+    strip = _stat_strip(week)
 
     cards_parts: list[str] = []
     assign_index: list[dict] = []
@@ -1439,6 +1810,23 @@ def _render_trials_html(
     shrines_section = _render_shrines_section(week)
     min_levels_section = _render_min_levels_section(week)
     buff_toggle = _render_buff_toggle(week, counterpart)
+    buff_slider = _render_buff_slider(week, ladder)
+    # The ladder ships as a SECOND inline JSON island rather than inside #assign-data,
+    # because the search index is read on every keystroke and the ladder only when the
+    # selector moves. Same "<" escape, same reason: neither may break out of its
+    # <script> element. Empty (and the island omitted) when there is no selector.
+    levels_json = (
+        json.dumps(
+            _buff_ladder_payload(week, ladder), ensure_ascii=False
+        ).replace("<", "\\u003c")
+        if buff_slider
+        else ""
+    )
+    levels_script = (
+        f'<script id="levels-data" type="application/json">{levels_json}</script>'
+        if buff_slider
+        else ""
+    )
 
     # The raised-buff page is a COUNTERFACTUAL and must never be mistaken for the
     # published plan, so it says so in the tab title and the headline as well as in
@@ -1454,14 +1842,22 @@ def _render_trials_html(
         else ""
     )
     json_name = TRIALS_MAXBUFF_JSON if is_raised else TRIALS_JSON
-    # Only claim a switch exists when one was actually emitted: a lone render (no
-    # sibling regime) must not promise the reader a control that is not on the page.
+    # Only claim a control exists when one was actually emitted: a lone render must
+    # not promise the reader something that is not on the page. The two controls make
+    # DIFFERENT promises and the footnote has to keep them apart — the selector
+    # re-rates these parties, the switch replaces them.
     switch_phrase = (
         " &mdash; and the switch at the top of the page shows the same week "
         f"optimised again at level {counterpart['level']}"
         if buff_toggle
         else ""
     )
+    if buff_slider:
+        switch_phrase += (
+            " &mdash; and the selector at the top of the page re-rates <em>this same "
+            "plan</em> at every rung of the ladder, which is a lower bound at each "
+            "one, the parties being held fixed"
+        )
 
     # Stale-draw banner: deliberately the first thing on the page, so a fallback
     # draw can never be mistaken for a live one.
@@ -1632,6 +2028,29 @@ def _render_trials_html(
   }}
   tr.row-flash > th, tr.row-flash > td {{ animation: rowflash 1.8s ease-out; }}
   section.card.row-flash {{ animation: rowflash 1.8s ease-out; }}
+  /* --- Community-buff level selector ----------------------------------- */
+  /* Laid out so the readout never reflows the slider as the digits change:
+     the level number and the three magnitudes sit in a fixed-min-width span with
+     tabular figures, which is what stops the control jittering under the thumb. */
+  .bufflevel {{ margin: 1.25rem 0 0; }}
+  .bl-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; }}
+  .bl-label {{ color: var(--muted); font-size: .85rem; font-weight: 600;
+               text-transform: uppercase; letter-spacing: .4px; }}
+  .bl-range {{ flex: 0 1 18rem; accent-color: var(--accent); }}
+  .bl-readout {{ display: inline-flex; flex-wrap: wrap; align-items: baseline;
+                 gap: .1rem .6rem; font-size: .9rem;
+                 font-variant-numeric: tabular-nums; min-width: 22rem; }}
+  .bl-mag {{ color: var(--muted); font-size: .82rem; }}
+  .bl-reset {{ background: none; border: 1px solid var(--line); border-radius: 6px;
+               color: var(--muted); cursor: pointer; font: inherit;
+               font-size: .8rem; padding: .2rem .55rem; }}
+  .bl-reset:hover {{ color: var(--text); border-color: var(--accent); }}
+  .bl-note {{ margin: .4rem 0 0; color: var(--muted); font-size: .82rem;
+              max-width: 78ch; }}
+  .bl-off {{ color: var(--warn); font-weight: 600; }}
+  /* Off the published level, the whole strip is tinted: the summary numbers are
+     the ones most likely to be quoted out of context, so they carry the reminder. */
+  .strip.off-level {{ outline: 1px dashed var(--warn); outline-offset: .4rem; }}
   footer {{ margin-top: 2rem; color: var(--muted); font-size: .8rem; }}
   footer ol {{ padding-left: 1.2rem; }}
   footer li {{ margin: .25rem 0; }}
@@ -1649,7 +2068,7 @@ def _render_trials_html(
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
-  {alert_html}{buff_toggle}
+  {alert_html}{buff_toggle}{buff_slider}
   <!-- Filled in by the page script from localStorage and unhidden only when this
        reader has pinned somebody; it starts hidden so a first-time visitor sees no
        empty scaffolding. -->
@@ -1659,15 +2078,7 @@ def _render_trials_html(
        <button type="button" id="pin-clear" class="pin-clear">clear all</button></p>
     <div id="pinned-list" class="pin-list"></div>
   </section>
-  <div class="strip">
-    {strip}
-    <div class="total">
-      <div class=stat-skill>Total</div>
-      <div class=stat-tier>{_cp(week.get('total_credit_points') or week['total_points'])}</div>
-      <div class=stat-pts>credit points &middot;
-        {_gp(week['total_points'])} from banked tiers{expected_note}</div>
-    </div>
-  </div>
+  <div class="strip" id="strip">{strip}</div>
 
   <div class="search">
     <input id="member-search" type="search" autocomplete="off"
@@ -1807,6 +2218,7 @@ def _render_trials_html(
 </footer>
 <script id="assign-data" type="application/json"
         data-pin-key="guild-trials.pins.{site.key}">{assign_json}</script>
+{levels_script}
 <script>{_TRIALS_JS}</script>
 </body>
 </html>
@@ -2248,20 +2660,29 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         {riskiest.get('tier_reached')} &middot; if the party turns up{recover_p}</div></div>"""
 
     # --- Summary strip: likely / with-swaps / ceiling / safety --------------
-    # The three score tiles lead with CREDIT points, because that is the currency every
+    # The three score tiles lead with THE OBJECTIVE, because that is the currency every
     # comparison on this page is made in (the swap gains, the gap, the ceiling all come
-    # from the scorer) and the one the plan was actually chosen on. The step total — the
-    # confirmed award for the tiers the guild will see banked in game — rides underneath,
-    # read defensively so a signup.json from before the patch still renders.
+    # from the scorer) and the one the plan was actually chosen on. The rule has not
+    # changed; the number it selects has — since 2026-08-14 the objective is E[credit
+    # points] (config.OPT_OBJECTIVE), so these tiles are expected points and the
+    # deterministic total is the secondary figure rather than the headline. The step
+    # total — the confirmed award for the tiers the guild will see banked in game —
+    # rides underneath, read defensively so a signup.json from before the patch still
+    # renders.
     enforced_step = p.get("enforced_step_total")
     optimal_step = p.get("optimal_step_total")
-    signup_expected_note = _expected_total_note(
-        p.get("enforced_total"), p.get("enforced_expected_total")
+    # Note the ARGUMENTS ARE THE OTHER WAY ROUND from the trials page's use of this
+    # helper, and deliberately: there the headline is deterministic and the expectation
+    # is the aside, here the headline IS the expectation and the deterministic score is
+    # the aside. Same suppression rule (silent when the two agree within half a point),
+    # opposite roles.
+    signup_expected_note = _deterministic_total_note(
+        p.get("enforced_total"), p.get("enforced_credit_total")
     )
     strip = f"""
     <div class="stat"><div class=stat-skill>Likely score</div>
       <div class=stat-tier>{_cp(p['enforced_total'])}</div>
-      <div class=stat-pts>sign-ups + recommended fills &middot;
+      <div class=stat-pts>expected &middot; sign-ups + recommended fills &middot;
         {_gp(enforced_step)} pts from banked tiers{signup_expected_note}</div></div>
     <div class="stat"><div class=stat-skill>With swaps</div>
       <div class=stat-tier>{_cp(p['reachable_total'])}</div>
@@ -2269,7 +2690,9 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     <div class="total"><div class=stat-skill>Optimal ceiling</div>
       <div class=stat-tier>{_cp(p['optimal_total'])}</div>
       <div class=stat-pts>best possible &middot; gap {_cp(p['gap'])} &middot;
-        {_gp(optimal_step)} pts banked</div></div>{safety_tile}{odds_tile}"""
+        {_gp(optimal_step)} pts banked{_deterministic_total_note(
+            p.get('optimal_total'), p.get('optimal_credit_total'))}</div></div>"""\
+        f"""{safety_tile}{odds_tile}"""
 
     # --- Per-trial enforced rosters ----------------------------------------
     # Every row carries a stable DOM id so the player search can jump to it, the
@@ -2292,8 +2715,8 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             chip = f'<span class="chip rec">Fill +{_cp(gain)}</span>'
         elif gain is not None and gain < 0:
             chip = (
-                f'<span class="chip cost" title="Seated at a stated cost in credit '
-                f'points (config.TRIAL_FILL_MAX_POINT_COST)">Fill &minus;'
+                f'<span class="chip cost" title="Seated at a stated cost in the '
+                f'objective (config.TRIAL_FILL_MAX_POINT_COST)">Fill &minus;'
                 f'{_cp(-gain)}</span>'
             )
         else:
@@ -2812,17 +3235,24 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         thinnest &mdash; those numbers now tell you <em>which</em> bets are outstanding,
         not that a mistake has been made. What they do not tell you is what the bet is
         worth, which is the next note.</li>
-    <li><strong>What the deterministic score does not say.</strong> The points figures
-        on this page are what the lineup earns if every die lands on its expectation.
-        A tier held at even odds is priced there as a certainty, so the total is
-        systematically <em>optimistic</em> exactly where the margins are thin. The
-        <em>expected</em> total is shown beside it: the same score integrated over the
-        calibrated shock, so a coin-flip tier contributes about half of itself and a
-        comfortable one contributes all of it. The gap between the two is the size of
-        the outstanding bet &mdash; on the live rosters it runs
-        {_pct(0.005)}&ndash;{_pct(0.010)} of the total, or roughly
-        {_num(24, 0)} points per knife-edge trial. Plan against the expected figure;
-        the deterministic one is the ceiling, not the forecast.</li>
+    <li><strong>The score on this page is the EXPECTED one.</strong> Since 2026-08-14
+        the plan totals here &mdash; and the assignment itself &mdash; are chosen on
+        <em>expected</em> credit points (<code>config.OPT_OBJECTIVE</code>): the score
+        integrated over the calibrated shock, so a coin-flip tier contributes about
+        half of itself and a comfortable one contributes all of it. The
+        <em>deterministic</em> figure, what the lineup earns if every die lands on its
+        expectation, rides alongside as the ceiling. It prices a tier held at even odds
+        as a certainty and is therefore systematically <em>optimistic</em> exactly
+        where the margins are thin, by {_pct(0.005)}&ndash;{_pct(0.010)} of the total
+        or roughly {_num(24, 0)} points per knife-edge trial.
+        <br>This inverts what the page used to say, and the reason is measured rather
+        than aesthetic: optimising the deterministic score was documented as picking
+        the same parties as optimising the expectation, and it does not. On the
+        2026-08-14 roster one swap cost {_cp(0.867)} deterministic points and bought
+        {_cp(8.736)} expected ones, taking a trial from
+        {_num(0.3, 1)}s of spare time at even odds to {_num(31.8, 1)}s at
+        {_pct(0.694)}. Plan against the expected figure; it is now also what the
+        search plans against.</li>
     <li><strong>The margin, as odds.</strong> A margin is ordinal; officers plan
         against probabilities. Under a multiplicative shock on the party's work rate
         the clearing time scales with it, so
@@ -2972,9 +3402,16 @@ def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSit
 # But those four optimiser runs are mutually independent, and the runner has four
 # vCPUs (GitHub gives public repositories 4-vCPU/16GiB machines, with unlimited free
 # Actions minutes — the "~2000 minutes/month" worry this file's cron comment used to
-# carry did not apply to a public repo). So the four units now run concurrently and
-# the critical path becomes max(L1+signup, L20) per guild rather than the sum of
+# carry did not apply to a public repo). So the units run concurrently and the
+# critical path becomes max(L1+signup, L20) per guild rather than the sum of
 # everything: ~103s against ~365s locally.
+#
+# SINCE 2026-08-14 there are TWO units, not four: the counterfactual is off and the
+# buff selector re-rates the published plan instead, which costs 0.20s per guild for
+# all twenty rungs — four orders of magnitude under the ~90s run it replaced (each
+# rung is score_assignment alone, no search). The fan-out stays because it still
+# earns its keep on two units, and because the counterfactual is one config line
+# from returning to four.
 #
 # THE OUTPUT IS UNCHANGED, BIT FOR BIT. Every seed is fixed
 # (config.TRIAL_OPTIMIZER_SEED, and _run_ensemble's derived seed + 1 + i), each unit
@@ -3133,13 +3570,28 @@ def _compute_unit(job: dict) -> dict:
     skills = job["skills"]
     min_levels = job["min_levels"]
 
+    ladder: dict = {}
     if level is None:
-        week = trials_model.run_week(members, skills=skills, min_levels=min_levels)
+        # The published unit also rates its own plan at every rung of the buff
+        # ladder, for the page's level selector. It is the SAME search — one
+        # optimize() call, twenty score_assignment() calls at ~2ms each — so the
+        # ladder is free beside the unit that carries it, and could not be computed
+        # anywhere else without redoing the search or shipping the parties between
+        # processes.
+        if config.TRIALS_BUFF_LEVEL_SLIDER:
+            week, rungs = trials_model.run_week_ladder(
+                members, skills=skills, min_levels=min_levels
+            )
+            ladder = {str(k): v.to_dict() for k, v in rungs.items()}
+        else:
+            week = trials_model.run_week(
+                members, skills=skills, min_levels=min_levels
+            )
     else:
         with trials_model.community_buff_level(level):
             week = trials_model.run_week(members, skills=skills, min_levels=min_levels)
 
-    out: dict = {"week": week.to_dict()}
+    out: dict = {"week": week.to_dict(), "ladder": ladder}
 
     picks = job["picks"]
     if picks is not None:
@@ -3180,12 +3632,17 @@ def _summary_line(
     if plan is None:
         signup_note = f"WITHHELD — {inputs.signup_unavailable_short}"
     else:
+        # Every figure here is in the OBJECTIVE's currency and suffixed "E" to say so —
+        # the enforced total, the reachable one and the ceiling alike. They used to be
+        # credit ("cp"); the suffix moved with the objective rather than being dropped,
+        # because the one number on this line with no unit was the one that silently
+        # changed meaning. The step totals stay "pts": those are the banked tiers.
         signup_note = (
             f"{plan['signup_count']} signed, enforced "
-            f"{plan['enforced_total']:,.1f} cp "
+            f"{plan['enforced_total']:,.1f} E "
             f"({plan['enforced_step_total']} pts) "
-            f"-> {plan['reachable_total']:,.1f} via {len(plan['swaps'])} swap(s) "
-            f"(optimal {plan['optimal_total']:,.1f} cp / "
+            f"-> {plan['reachable_total']:,.1f} E via {len(plan['swaps'])} swap(s) "
+            f"(optimal {plan['optimal_total']:,.1f} E / "
             f"{plan['optimal_step_total']} pts); "
             f"{len(plan['ineligible_signups'])} below min level, "
             f"{len(plan['normalized_matches'])} case-fixed, "
@@ -3215,6 +3672,7 @@ def _write_guild(
     week_maxbuff: Optional[dict],
     week_draw: "draw_model.TrialDraw",
     draw_warning: str,
+    ladder: Optional[dict] = None,
 ) -> str:
     """Write one guild's pages from its already-computed results; return the summary.
 
@@ -3251,10 +3709,19 @@ def _write_guild(
                 if week_maxbuff is not None
                 else None
             ),
+            ladder=ladder,
         ),
         encoding="utf-8",
     )
-    if week_maxbuff is not None:
+    if week_maxbuff is None:
+        # Take the counterfactual DOWN with its switch when it is not published.
+        # CI builds into a fresh checkout so this is a no-op there, but a local
+        # rebuild would otherwise leave the previous run's pages sitting at their
+        # own URLs, unlinked and quietly stale — the same trap signup.json carries
+        # below, and the same fix. missing_ok: there may never have been one.
+        (out / TRIALS_MAXBUFF_PAGE).unlink(missing_ok=True)
+        (out / TRIALS_MAXBUFF_JSON).unlink(missing_ok=True)
+    else:
         (out / TRIALS_MAXBUFF_JSON).write_text(
             json.dumps(week_maxbuff, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -3363,10 +3830,15 @@ def _load_draw() -> tuple["draw_model.TrialDraw", str]:
 def _unit_jobs(site: "GuildSite", inputs: _GuildInputs, week_draw) -> list[dict]:
     """The independent optimiser units for one guild, published regime first.
 
-    Two units per guild: the published week (which also carries the sign-up plan,
-    because it owns the WeekResult that plan's ceiling is read from) and the maxed-buff
-    counterfactual. config.TRIALS_PUBLISH_MAXBUFF_PAGE = False drops the second
-    outright, which halves the build and leaves trials.html exactly as it was.
+    ONE unit per guild as shipped: the published week, which also carries the sign-up
+    plan (because it owns the WeekResult that plan's ceiling is read from) and the
+    inline buff ladder (because it owns the assignment every rung re-rates).
+
+    config.TRIALS_PUBLISH_MAXBUFF_PAGE = True adds a second: the maxed-buff
+    counterfactual, a complete re-optimisation rather than a re-rating, and the
+    dearer of the two runs. It is off by default — measured on the 2026-08-14 live
+    rosters, re-optimising at level 20 beat re-rating there by 4.2 points on SC and
+    0.6 on LI, out of ~4,950, and moved no trial to a different tier.
     """
     common = {
         "site_key": site.key,
@@ -3457,7 +3929,10 @@ def main() -> int:
         inputs.plan_dict = span[0].get("plan")
         week_maxbuff = span[1]["week"] if len(span) > 1 else None
         notes.append(
-            _write_guild(site, inputs, week, week_maxbuff, week_draw, draw_warning)
+            _write_guild(
+                site, inputs, week, week_maxbuff, week_draw, draw_warning,
+                ladder=span[0].get("ladder") or None,
+            )
         )
 
     print("Built _site/:")

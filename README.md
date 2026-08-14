@@ -97,12 +97,49 @@ enhancing speed `0.20 + 0.005/level`, production efficiency `0.14 + 0.003/level`
 Note that `flatBoost ≠ flatBoostLevelBonus` here, so the `per_level × level`
 shortcut the buildings, houses and shrines use does **not** apply — and the old
 production figure of `0.15` turned out to be a value the game grants at no level at
-all. The site publishes **level 1** (`config.COMMUNITY_BUFF_LEVEL`; the guild's real
-levels are in no capture we hold) and the trials page carries a **level-20
-counterfactual** behind a switch at the top — a second, complete optimiser run, not
-this week's parties re-rated, because a common-mode buff changes *who is worth
-seating*. `research/community-buffs.md` has the dump, the ladder, and the one open
+all. `research/community-buffs.md` has the dump, the ladder, and the one open
 question that would cost 16% of every gathering rate if it goes the wrong way.
+
+### The buff-level selector, and the bound it carries
+
+The site optimises at **level 1** (`config.COMMUNITY_BUFF_LEVEL`; the guild's real
+levels are in no capture we hold) and the trials page carries the **whole 1–20
+ladder** behind a slider at the top: one optimiser run, re-rated at every rung by
+`trials.run_week_ladder` and shipped inline, so moving it recomputes nothing and
+fetches nothing.
+
+**Every rung is a lower bound and the page says so.** Re-rating answers *"what would
+this week's plan score at level N"*, not *"what is the best plan at level N"* — the
+optimiser would seat different members, because a common-mode buff changes who is
+worth a seat. That is the same fixed-party bound `probe_building_upgrade` already
+publishes, and it is the more operational of the two questions besides: the parties
+are settled early in the week, while cowbells can be spent at any hour.
+
+The bound turns out to be **tight, and the whole ladder nearly flat**. Measured on
+the 2026-08-14 live rosters:
+
+| | L1 | L20 re-rated | L20 re-optimised | gap |
+|---|---|---|---|---|
+| Survey Corps | 4,939.9 | 4,961.6 (+21.7) | 4,965.8 | **+4.2** |
+| Lactose lnt. | 4,656.8 | 4,679.8 (+23.0) | 4,680.4 | **+0.6** |
+
+Nineteen levels of all three buffs are worth about **0.4%**, and **not one extra
+tier** on either roster — the tiers are `10,12,12,11` and `9,11,11,11` at every rung.
+Re-optimising on top of that adds four points in five thousand. This discharges the
+"price the ladder" question in `research/community-buffs.md` §4 with the same kind of
+negative result the shrine payback table produced, and it is why the level-20
+**counterfactual page was retired** (`TRIALS_PUBLISH_MAXBUFF_PAGE = False`): it cost
+a second complete optimiser run, ~90s a guild, to buy a number the slider now brackets
+to within a tenth of a percent. Its path is intact and still tested; `True` restores
+it, and the two controls coexist.
+
+What the slider *does* move, and the reason it earns its place, is **safety**. On
+2026-08-14 Survey Corps' Enhancing trial banks tier 10 with **0 seconds spare and
+holds 50% of the time** at level 1, and with **222 seconds spare, holding > 99.9%**,
+at level 20 — a coin flip becoming a certainty, for no change in tier and 6 points.
+The chosen level rides in the URL (`#buffs=12`) rather than in localStorage, so it is
+shareable and cannot silently persist into next week; off the published level the
+summary strip is outlined and captioned to say so.
 
 The shipped default is the ensemble strategy `"best"`
 (`config.TRIAL_OPTIMIZER_STRATEGY`): it runs several strong pipelines — including
@@ -111,33 +148,70 @@ a **beam-search-seeded genetic algorithm** — and returns the single best resul
 `# BAKE-OFF RESULTS` block in `config.py`). To restore the Phase-1 random split,
 set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 
-### The safety pass, and why the optimum IS now on the buzzer
+### The objective is E[points], and that is what took the optimum off the buzzer
 
-Under the step objective the search could not see how narrowly a tier was held, so
-a final pass (`optimizer._refine_slack`) picked, from among the many assignments
-scoring the same points, the one whose *thinnest* trial had the most time to spare.
-On the 2026-07-31 rosters that lifted the minimum margin from 4.28% → 17.92% (SC)
-and from 0.26% — nine seconds — to 16.41% (LI), for no change in points.
+**The optimizer maximises the *expected* credit score** —
+`trials.expected_credit_points`, the deterministic score integrated over the
+calibrated multiplicative shock (`config.OPT_OBJECTIVE = "expected"`;
+`"credit"` is the one-line rollback to the deterministic score).
 
-**Partial credit reversed that outcome, and deliberately.** Completing a tier is
-still worth a 50-point step, which dwarfs anything a wider margin is worth, so the
-optimizer now *reaches* for tiers it can only just hold — and it should, because
-falling short no longer forfeits the tier: the party lands on the one below with
-almost all of its progress credited. Measured live, three of eight trials now bank
-their tier with 1–4 seconds to spare at `P(holds) ≈ 0.51`, and that reaching is
-what bought LI its two extra tiers. The safety pass survives with a narrower job —
-the objective is a *sum* over trials while risk is a *minimum* over them, so it is
-the max-min correction to a max-sum search — re-founded on a stated points
-tolerance (`OPT_SLACK_POINTS_TOLERANCE`) now that exact ties no longer exist.
+It did not always. The history is worth keeping, because each step was a correction
+to the last:
 
-Because the deterministic score prices a coin-flip tier as a certainty, the pages
-also publish **E[points]** (`trials.expected_credit_points`), the same score
-integrated over the calibrated shock. It is reporting, not the objective —
-optimising it would choose the same parties. Live, it runs 0.5–1.0% below the
-deterministic total, or about 24 points per knife-edge trial.
-`RISK_EXPECTED_POINTS = False` and `OPT_SLACK_PASS = False` are the respective
-one-line rollbacks; `research/partial-tier-credit.md` §9 has the full before/after,
-including the one prediction the implementation plan got backwards.
+1. **Step objective.** The search could not see how narrowly a tier was held, so a
+   final pass (`optimizer._refine_slack`) picked, from among the many assignments
+   scoring the same points, the one whose *thinnest* trial had the most time to
+   spare. On the 2026-07-31 rosters that lifted the minimum margin from 4.28% →
+   17.92% (SC) and 0.26% — nine seconds — to 16.41% (LI), for no change in points.
+2. **Partial credit reversed that, deliberately.** Completing a tier is still worth
+   a 50-point step, which dwarfs any margin, so the optimizer *reached* for tiers it
+   could only just hold — correctly, since falling short no longer forfeits the tier.
+   Three of eight trials then banked their tier with 1–4 seconds to spare at
+   `P(holds) ≈ 0.51`. The safety pass could not undo it: stepping back to a
+   comfortable tier costs ~55 points and `OPT_SLACK_POINTS_TOLERANCE = 0.0` forbids
+   spending any.
+3. **E[points] as the objective fixes it at the source** (2026-08-14). The
+   deterministic score prices a coin-flip tier as a certainty; the expectation does
+   not, so the search stops buying tiers it cannot hold — while still reaching
+   wherever reaching really does pay, because E prices that correctly too.
+
+`research/partial-tier-credit.md` §9.1 had shipped E[points] as *reporting only*, on
+the stated prediction that "optimising it would pick the same parties". **That
+prediction is refuted.** Measured on the live 2026-08-14 rosters, same draw, same
+seed:
+
+| | objective | banked | credit | **E[points]** | thinnest margin | min `P(holds)` |
+|---|---|---|---|---|---|---|
+| Survey Corps | credit | 4900 | 4,939.9 | 4,891.3 | **0.01%** | **0.502** |
+| Survey Corps | **expected** | 4900 | 4,934.3 | **4,932.7** | **3.44%** | **0.977** |
+| Lactose lnt. | credit | 4600 | 4,656.8 | 4,632.5 | **0.01%** | **0.501** |
+| Lactose lnt. | **expected** | 4600 | 4,656.1 | **4,656.1** | **6.10%** | **0.999** |
+
+Both guilds bank **exactly the same tiers** and the same step points. What changes is
+that four coin-flip trials become near-certainties: SC gains **+41.4 expected points
+for 5.6 deterministic ones**, LI **+23.6 for 0.7**. The mechanism is the ramp —
+credit is piecewise linear with a 50-point step at each boundary, so a party that has
+just crossed one is worth almost nothing extra per unit of rate while one mid-ramp is
+worth half a point per 1% of progress; the deterministic score therefore spends rate
+where it pays on paper and leaves the just-crossed tier balanced on a coin.
+
+**It costs about 3× per evaluation** — `simulate_race` is 0.145–0.164 ms and
+`expected_credit_points` a further 0.269–0.318 ms (an 81-node quadrature plus the
+Wald sigma) — so the build's optimise phase goes from ~1m54s to ~5m34s wall. §9.2
+already took this position on a smaller version of the same bill: a cost that buys
+correctness is worth paying rather than a regression to chase.
+
+The safety pass survives with a narrower job still — the objective is a *sum* over
+trials while risk is a *minimum* over them, so it remains the max-min correction to
+a max-sum search — but it now finds far less to do, which is the point.
+`OPT_OBJECTIVE = "credit"`, `RISK_EXPECTED_POINTS = False` and
+`OPT_SLACK_PASS = False` are the respective one-line rollbacks.
+
+Note the consequence for `signup.html`: **its plan totals are now expected points
+too**, since they are compared directly against scorer figures. Mixing the two
+currencies would leave the page quoting an "enforced → reachable" arithmetic that did
+not add up, so `optimizer.objective_of` is the single selector both sides read, and
+the deterministic total rides alongside as the ceiling.
 
 The pass applies to the **unconstrained optimum only** (`optimizer.optimize`, i.e.
 `trials.html`). The sign-up plan locks real volunteers into the trials they ticked,
@@ -165,8 +239,10 @@ Three decisions worth keeping:
   overwrite each other. Pinned by the `test_pin_key_is_namespaced_per_guild` test.
 - **The panel ships hidden and every star ships hollow.** The page is a static
   file on a CDN and the pins are per-device, so no pin can be known at build time;
-  the script fills them in on load. `trials.html` and `trials-maxbuffs.html` share
-  the one key, so a pin follows the reader across the buff switch.
+  the script fills them in on load. The panel also re-renders when the buff-level
+  slider moves — it quotes the trial's score and margin, and those are exactly what
+  the slider changes, so a pinned member must never be left reading level 1's
+  figures inside a level-20 view.
 
 State lives entirely in the reader's browser — nothing is written to the sheet,
 and clearing site data clears the pins.
@@ -259,19 +335,21 @@ The gate is on publishing, not on building — `deploy-pages` is the only step t
 makes anything public — so a red suite still ships nothing while the two jobs share
 the clock instead of queueing.
 
-`build` runs the four independent optimiser units concurrently in separate processes
-(two guilds × {published regime, maxed-buff counterfactual}); see the long note above
-`build._GuildInputs`. Measured per unit on live rosters, 2026-08-14:
+`build` runs the independent optimiser units concurrently in separate processes — one
+per guild as shipped, two per guild with the counterfactual switched back on; see the
+long note above `build._GuildInputs`. Measured per unit on live rosters, 2026-08-14:
 
-| | `run_week` L1 | `run_week` L20 | `signup.plan` | serial total |
+| | `run_week` L1 | buff ladder (×20) | `signup.plan` | `run_week` L20 *(off)* |
 |---|---|---|---|---|
-| SC | 84.8s | 90.8s | 18.6s | 194.6s |
-| LI | 56.2s | 95.1s | ~18.0s | ~170.0s |
+| SC | 84.8s | 0.20s | 18.6s | 90.8s |
+| LI | 56.2s | 0.20s | ~18.0s | 95.1s |
 
-Serially that is ~365s; the critical path of the fan-out is
-`max(L1 + signup, L20)` per guild, ~103s. Note that the counterfactual is *dearer*
-than the published run — at level-20 buffs the parties reach higher tiers, so every
-`simulate_race` in the hot loop runs longer.
+The whole twenty-rung ladder costs **0.20s** because it is `score_assignment` alone —
+no search — against ~90s for the one re-*optimised* rung it replaced. With the
+counterfactual off the critical path is `L1 + signup` for the slower guild, ~103s;
+with it on, `max(L1 + signup, L20)`, and note it is the *dearer* run, since at
+level-20 buffs the parties reach higher tiers and every `simulate_race` in the hot
+loop runs longer.
 
 The output is byte-identical either way: every seed is fixed and no unit reads
 another's state. `config.BUILD_PARALLEL = False` runs the same units serially in one

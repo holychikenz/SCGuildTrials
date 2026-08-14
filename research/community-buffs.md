@@ -111,15 +111,62 @@ rule, with the "not the shortcut" case pinned by a test.
 
 So the shipped model was implicitly assuming level 1 for two buffs and level ~4½ for
 the third. Level **1** is now the single published default (`COMMUNITY_BUFF_LEVEL`),
-and the trials page carries a **level-20 counterfactual** built by a second full
-optimiser run under `trials.community_buff_level(20)` — a switch at the top of the
-page, not a change of default, because the guild's real levels are unknown.
+and the trials page carries the **whole 1–20 ladder** behind a slider — not a change
+of default, because the guild's real levels are unknown.
 
-The counterfactual is a *second whole optimisation*, not this week's parties re-rated.
-That is deliberate: a community buff is **common-mode** — one draw applied to every
-member of the party, undiluted by party size (`calibrate.py`'s note on why buff
+### 2.1 The counterfactual, and why it was retired (2026-08-14)
+
+This section used to argue the opposite of what ships, and the argument is kept
+because the correction is the interesting part.
+
+It said: the raised-buff view must be a *second whole optimisation*, not this week's
+parties re-rated, because a community buff is **common-mode** — one draw applied to
+every member of the party, undiluted by party size (`calibrate.py`'s note on why buff
 uncertainty outweighs gear uncertainty point for point) — so raising it changes which
 members are worth seating, not merely how fast the seated ones work.
+
+The reasoning is sound and the conclusion was still wrong, because nobody had asked
+**how much** reseating is worth. Measured on the 2026-08-14 live rosters:
+
+| | L1 | L20 re-rated | L20 re-optimised | reseating buys |
+|---|---|---|---|---|
+| Survey Corps | 4,939.9 | 4,961.6 | 4,965.8 | **+4.2** (0.08%) |
+| Lactose lnt. | 4,656.8 | 4,679.8 | 4,680.4 | **+0.6** (0.01%) |
+
+Four points in five thousand, for ~90 seconds of search per guild — and the tiers are
+identical either way (`10,12,12,11` and `9,11,11,11`). The re-rated figure is a lower
+bound, exactly as the argument above predicts; it is simply a bound that bites at the
+third decimal place. `TRIALS_PUBLISH_MAXBUFF_PAGE = False` since, with the whole path
+intact and tested so `True` restores it.
+
+Two things the retired page did badly that the slider does not. It covered **one**
+rung where the ladder has twenty. And it **reshuffled every party** when clicked, so
+the one question most readers bring to `trials.html` — *which trial am I in* — changed
+its answer under their hand; the slider holds the roster still and moves only the
+numbers, which is the whole point of re-rating.
+
+### 2.2 What the ladder is actually worth
+
+The answer to §4's "price the ladder", and it is another negative result:
+
+| | L1 | L20 | gain | tiers gained |
+|---|---|---|---|---|
+| Survey Corps | 4,939.9 | 4,961.6 | +21.7 (0.44%) | **none** |
+| Lactose lnt. | 4,656.8 | 4,679.8 | +23.0 (0.49%) | **none** |
+
+Nineteen levels of all three buffs, bought with cowbells, move both guilds by under
+half a percent and across **no tier boundary at all**. The curve is a smooth creep,
+not the staircase one might expect — because the creep (`0.005`/level, `0.003` for
+production) is small against the ~9% of rate a tier boundary costs at these sizes.
+Compare the buildings, where `probe_building_upgrade` finds a tier for 10,225 guild
+points on Enhancing: a building beats the community ladder outright as a place to
+spend, which is the same verdict `guild-shrines.md` reached about shrines.
+
+What the ladder *does* buy is **margin**, and that is invisible in the points. Survey
+Corps' Enhancing trial banks tier 10 with 0 seconds spare at `P(holds) = 0.50` at
+level 1, and with 222 seconds spare at `P(holds) > 0.999` at level 20 — the same
+tier, six more points, and a coin flip turned into a certainty. An officer deciding
+whether to fund a buff should be reading the safety line, not the total.
 
 ---
 
@@ -181,8 +228,15 @@ stated on the page in those terms rather than buried as a placeholder.
       which displays resolved Skilling buff magnitudes with no inference needed. The
       same measurement that closes `guild-shrines.md` §6, and it would replace
       `COMMUNITY_BUFF_LEVEL = 1` with the truth.
-- [ ] **Price the ladder.** `cowbellCost` is per level in the dump, so
-      "what does one more level of the production buff buy the guild, and at what
-      cowbell cost?" is answerable in the same shape as the shrine payback table —
-      and, given the creep is only `0.003`/level, likely another negative result
-      worth publishing.
+- [x] **Price the ladder.** Done, §2.2, and the guess was right: another negative
+      result. All twenty levels of all three buffs are worth ~0.45% and no tier on
+      either live roster. What remains is the *cowbell* side of it — `cowbellCost`
+      is 10 per level in the dump, so a payback table in the shrines' shape is now
+      one small function away, and would say plainly that buildings dominate.
+- [ ] **Three ladders, not one.** `COMMUNITY_BUFF_LEVEL` drives all three families
+      together, which was a fair economy when each level cost a full optimiser run.
+      Under re-rating it is no longer: each skill reads exactly ONE family
+      (`trials.py` — enhancing → speed, gathering → `double_chance`, everything else
+      → efficiency), so with the parties fixed the four trials are independent and
+      three sliders need `4 × 20 = 80` ratings, not `20³`. That would let the page
+      show the guild's real, unequal levels once anyone records them.

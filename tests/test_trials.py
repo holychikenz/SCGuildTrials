@@ -7,6 +7,7 @@ formula. All member fixtures are built inline so nothing here touches Google
 Sheets.
 """
 
+import json
 import math
 
 import pytest
@@ -1168,15 +1169,98 @@ def test_shipped_config_publishes_level_one():
     """The published default. Deliberately a test rather than a comment.
 
     This one FAILS the day someone changes the default level, which is the
-    intended behaviour: the level-20 view is a counterfactual reached by the
-    toggle, and moving the default silently would republish the whole site's
+    intended behaviour: the raised-buff views are counterfactuals reached by the
+    selector, and moving the default silently would republish the whole site's
     plan under a regime the guild may not have funded.
     """
     assert config.COMMUNITY_BUFF_LEVEL == 1
     assert config.COMMUNITY_BUFF_MAX_LEVEL == 20
-    # And the counterfactual page ships. False is the one-line rollback (it costs a
-    # whole second optimiser run per guild), so it is pinned rather than assumed.
-    assert config.TRIALS_PUBLISH_MAXBUFF_PAGE is True
+    # The level selector ships; the second optimiser run it replaced does not. Both
+    # are pinned rather than assumed, because each is a one-line switch and the pair
+    # is the whole trade: twenty re-rated rungs at ~2ms each, in place of one
+    # re-optimised rung at ~90s.
+    assert config.TRIALS_BUFF_LEVEL_SLIDER is True
+    assert config.TRIALS_PUBLISH_MAXBUFF_PAGE is False
+
+
+def test_run_week_ladder_rates_one_plan_at_every_rung():
+    """One search, twenty ratings: same parties throughout, different numbers.
+
+    The guarantee the whole selector rests on. If the ladder ever re-optimised, the
+    rosters would diverge and the page would be writing one plan's rates into
+    another plan's rows.
+    """
+    members = [
+        _member(f"M{i}", {"Foraging": 100 + i, "Brewing": 100 + i, "Enhancing": 90 + i})
+        for i in range(8)
+    ]
+    skills = ["Foraging", "Brewing"]
+    published, ladder = trials.run_week_ladder(
+        members, skills=skills, strategy="random"
+    )
+
+    assert set(ladder) == set(range(1, config.COMMUNITY_BUFF_MAX_LEVEL + 1))
+    # The published rung IS the published week, not a copy that might drift.
+    assert ladder[config.COMMUNITY_BUFF_LEVEL] is published
+    # One build, one timestamp.
+    assert {w.generated_at for w in ladder.values()} == {published.generated_at}
+
+    def roster(week):
+        return [[r.name for r in t.roster] for t in week.trials]
+
+    for level, rung in ladder.items():
+        assert rung.community_buff_level == level
+        assert roster(rung) == roster(published), level
+        assert [t.skill for t in rung.trials] == skills
+        assert rung.bench == published.bench
+
+    # And the rungs are not all the same number: a raised buff has to move the score
+    # somewhere, or the control would be decorative.
+    totals = {round(w.total_credit_points, 6) for w in ladder.values()}
+    assert len(totals) > 1
+    assert (
+        ladder[config.COMMUNITY_BUFF_MAX_LEVEL].total_credit_points
+        >= published.total_credit_points
+    )
+
+
+def test_run_week_ladder_restores_the_ambient_regime():
+    """community_buff_level rebinds config globals; twenty of them in a loop must
+    leave the process exactly as they found it."""
+    before = (
+        config.COMMUNITY_BUFF_LEVEL,
+        config.COMMUNITY_GATHERING_BUFF_DOUBLE,
+        config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF,
+        config.COMMUNITY_ENHANCING_SPEED_BUFF,
+        config.DOUBLE_CHANCE,
+    )
+    members = [_member(f"M{i}", {"Foraging": 100 + i}) for i in range(4)]
+    trials.run_week_ladder(members, skills=["Foraging"], strategy="random")
+    assert (
+        config.COMMUNITY_BUFF_LEVEL,
+        config.COMMUNITY_GATHERING_BUFF_DOUBLE,
+        config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF,
+        config.COMMUNITY_ENHANCING_SPEED_BUFF,
+        config.DOUBLE_CHANCE,
+    ) == before
+
+
+def test_run_week_equals_choose_then_score():
+    """The refactor's invariant: run_week is exactly its two halves, in order."""
+    members = [
+        _member(f"M{i}", {"Foraging": 100 + i, "Brewing": 100 + i}) for i in range(6)
+    ]
+    skills = ["Foraging", "Brewing"]
+    whole = trials.run_week(members, skills=skills, strategy="random")
+    assignment = trials.choose_assignment(members, skills=skills, strategy="random")
+    halves = trials.score_assignment(
+        assignment, members, skills=skills, strategy="random"
+    )
+    assert whole.total_credit_points == halves.total_credit_points
+    assert [t.tier_reached for t in whole.trials] == [
+        t.tier_reached for t in halves.trials
+    ]
+    assert whole.bench == halves.bench
 
 
 def test_config_constants_agree_with_the_ladder_at_the_default_level():
@@ -1321,6 +1405,127 @@ def test_trials_page_switch_cross_links_and_marks_the_active_level():
     assert "community buffs L20" in maxbuff_page.split("</title>")[0]
     assert f"<code>{build.TRIALS_JSON}</code>" in default_page
     assert f"<code>{build.TRIALS_MAXBUFF_JSON}</code>" in maxbuff_page
+
+
+# ---------------------------------------------------------------------------
+# The trials page's community-buff level SELECTOR (one plan, every rung)
+# ---------------------------------------------------------------------------
+def _ladder_page():
+    """A rendered trials page carrying the whole inline buff ladder."""
+    from src import build
+
+    members = [
+        _member(f"M{i}", {sk: 100 + i for sk in config.SKILLS}) for i in range(10)
+    ]
+    skills = ["Foraging", "Brewing"]
+    published, rungs = trials.run_week_ladder(
+        members, skills=skills, strategy="random"
+    )
+    week = published.to_dict()
+    ladder = {str(k): v.to_dict() for k, v in rungs.items()}
+    page = build._render_trials_html(week, build.GUILD_SITES[0], "", ladder=ladder)
+    return build, week, ladder, page
+
+
+def test_trials_page_ships_the_selector_and_every_rung_inline():
+    build, week, ladder, page = _ladder_page()
+
+    assert 'id="buff-range"' in page
+    assert f'data-published="{week["community_buff_level"]}"' in page
+    assert f'max="{config.COMMUNITY_BUFF_MAX_LEVEL}"' in page
+    # The ladder is a SECOND island, so the search index stays the small thing that
+    # is parsed on every keystroke.
+    assert 'id="levels-data"' in page
+    assert 'id="assign-data"' in page
+
+    blob = page.split('<script id="levels-data" type="application/json">')[1]
+    payload = json.loads(blob.split("</script>")[0])
+    assert set(payload) == set(ladder)
+    for level, rung in payload.items():
+        assert len(rung["cards"]) == len(week["trials"])
+        assert set(rung["assign"]) == {t["skill"] for t in week["trials"]}
+        for card, trial in zip(rung["cards"], week["trials"]):
+            assert len(card["rates"]) == len(trial["roster"])
+
+
+def test_selector_says_the_rungs_are_a_lower_bound():
+    """The one claim the control MUST make. Re-rating a fixed plan understates what
+    the guild could score at a raised level, because the optimiser would reseat —
+    and a reader who mistakes the floor for the forecast under-invests."""
+    _, _, _, page = _ladder_page()
+    note = page.split('class="bl-note"')[1].split("</p>")[0]
+    assert "lower\n       bound" in note or "lower bound" in note
+    assert "parties never change" in note
+
+
+def test_ladder_payload_keeps_the_published_row_order():
+    """Rows carry ids assigned from the PUBLISHED sort order. A rung re-sorted by
+    its own rates would write each member's numbers into a stranger's row."""
+    build, week, ladder, _ = _ladder_page()
+    payload = build._buff_ladder_payload(week, ladder)
+    top = str(config.COMMUNITY_BUFF_MAX_LEVEL)
+
+    for t_index, trial in enumerate(week["trials"]):
+        order = [r["name"] for r in build._sorted_roster(trial)]
+        rung = ladder[top]["trials"][t_index]
+        by_name = {r["name"]: r for r in rung["roster"]}
+        expected = [
+            [build._num(by_name[n]["rate_tier1"]), build._num(by_name[n]["rate_final"])]
+            for n in order
+        ]
+        assert payload[top]["cards"][t_index]["rates"] == expected
+
+    # The level-20 roster genuinely IS in a different rate order from the level-1
+    # one for at least one trial, or this test would pass on a tautology.
+    reordered = any(
+        [r["name"] for r in build._sorted_roster(week["trials"][i])]
+        != [r["name"] for r in build._sorted_roster(ladder[top]["trials"][i])]
+        for i in range(len(week["trials"]))
+    ) or any(
+        build._num(r["rate_final"]) != build._num(s["rate_final"])
+        for i in range(len(week["trials"]))
+        for r, s in zip(
+            build._sorted_roster(week["trials"][i]),
+            build._sorted_roster(ladder[top]["trials"][i]),
+        )
+    )
+    assert reordered
+
+
+def test_published_rung_matches_the_server_rendered_page():
+    """The selector's default rung and the HTML it sits on are one render, so
+    sliding away and back cannot change a single figure."""
+    build, week, ladder, page = _ladder_page()
+    payload = build._buff_ladder_payload(week, ladder)
+    here = payload[str(week["community_buff_level"])]
+
+    assert here["strip"] == build._stat_strip(week)
+    for t_index, trial in enumerate(week["trials"]):
+        card = here["cards"][t_index]
+        assert card["head"] == build._card_headline(trial)
+        assert card["safe"] == build._card_safety(trial)
+        assert card["rh"] == build._rate_header(trial)
+        # And those fragments are the ones actually on the page, in their slots.
+        assert f'id="c{t_index}-head">{card["head"]}</p>' in page
+        assert f'id="c{t_index}-tl">{build._timeline_rows(trial)}</tbody>' in page
+
+
+def test_no_ladder_renders_the_page_exactly_as_before():
+    """The rollback. TRIALS_BUFF_LEVEL_SLIDER = False passes ladder=None, and no
+    control, no ladder and no island reach the page."""
+    build, week, _, _ = _ladder_page()
+    bare = build._render_trials_html(week, build.GUILD_SITES[0], "", ladder=None)
+    body = bare.split("<body>")[1].split('<script id="assign-data"')[0]
+    assert 'id="buff-range"' not in body
+    assert 'class="bl-note"' not in body
+    assert '<script id="levels-data"' not in bare
+    # Still a complete page, with the numbers it always had.
+    assert build._stat_strip(week) in bare
+    # The page script ships whole either way and simply finds nothing to bind to:
+    # one JS payload for both regimes, so the two can never drift apart. It must
+    # therefore be safe for it to look for a control that is not there.
+    assert 'document.getElementById("levels-data")' in bare
+    assert "if (LEVELS && lvlBox && lvlRange)" in bare
 
 
 def test_trials_page_footnote_states_the_level_it_was_built_at():

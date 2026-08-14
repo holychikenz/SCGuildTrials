@@ -616,9 +616,59 @@ beyond:
    Plan §Phase 7 recorded it as "cheap and well-posed, but not to ship with the
    rest". This measurement was the argument for shipping it, and
    `trials.expected_credit_points` now does
-   (`config.RISK_EXPECTED_POINTS`). It does **not** enter the objective: optimising
+   (`config.RISK_EXPECTED_POINTS`). ~~It does **not** enter the objective: optimising
    it would pick the same parties, because the gamble it prices survives its own
-   test. It exists so the published figure is the right one.
+   test.~~ It exists so the published figure is the right one.
+
+### 9.1.1 …and the result THIS section got backwards (2026-08-14)
+
+**The struck-through claim above is false, and the live run is the refutation** — the
+same shape of error §9.1 opens by confessing, made one level up. E[points] is now the
+objective (`config.OPT_OBJECTIVE = "expected"`).
+
+The reasoning error is again worth stating precisely, because again the first half is
+sound. The gamble the optimizer takes *does* survive its own test: a knife-edge tier
+11 beats a comfortable tier 10 in expectation, as computed above. What that argument
+ignores is that **those are not the only two lineups on offer.** Between them sit
+assignments that hold the same tier with room to spare, paid for out of a *different*
+trial's mid-ramp progress — and the deterministic score cannot see them, because it
+prices the extra rate on a just-crossed boundary at nearly nothing. Comparing the
+gamble against the safe alternative was the right test applied to the wrong pair.
+
+The first counter-example was found by hand on the 2026-08-14 SC roster: moving Leevi
+(Enhancing 108 + tool, Brewing 121) out of Brewing for IronThrone (Enhancing 102,
+Brewing 111) costs **0.867 credit** and gains **8.736 expected**, taking Enhancing
+from 0.3 s of spare time at `P = 0.502` to 31.8 s at `P = 0.694`. Note Brewing was
+45.7% into tier 12 — squarely mid-ramp, where progress pays — while Enhancing had
+just stepped over its boundary at +0.02%. That is the whole mechanism in one swap.
+
+Optimising E finds the entire basket of such trades, not just that one. Same draw,
+same seed, live rosters:
+
+| | objective | banked | credit | **E** | thinnest | min `P` |
+|---|---|---|---|---|---|---|
+| SC | credit | 4900 | 4,939.9 | 4,891.3 | 0.01% | 0.502 |
+| SC | **expected** | 4900 | 4,934.3 | **4,932.7** | **3.44%** | **0.977** |
+| LI | credit | 4600 | 4,656.8 | 4,632.5 | 0.01% | 0.501 |
+| LI | **expected** | 4600 | 4,656.1 | **4,656.1** | **6.10%** | **0.999** |
+
+**The banked tiers are identical.** Nothing was surrendered: both guilds reach exactly
+the same tiers and the same step total, and four coin flips become near-certainties
+for 5.6 (SC) and 0.7 (LI) deterministic points. §9.1's consolation — that a thin
+margin is "the *expected* outcome of a correct decision", and the page must say so or
+officers will think the tool has broken — turns out to have been conceding too much.
+The thin margins were an artefact of the objective, not a property of the problem.
+
+What §9.1 got right and still holds: the *safety pass* could never have found this.
+It may spend no points at all (`OPT_SLACK_POINTS_TOLERANCE = 0.0`), and every one of
+these trades costs some. Raising that tolerance to ~1.5 would have admitted the Leevi
+swap alone; changing the objective admits the whole family, and prices each on its
+merits rather than against a flat allowance.
+
+The bill is ~3× per evaluation (`simulate_race` 0.145–0.164 ms, then
+`expected_credit_points` 0.269–0.318 ms), taking the build from ~1m54s to ~5m34s.
+§9.2's verdict on the previous cost increase applies unchanged: it is the mechanism
+of the improvement, not a regression to chase.
 
 ### 9.3 E[points], measured
 

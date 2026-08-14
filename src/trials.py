@@ -1852,7 +1852,27 @@ class WeekResult:
         }
 
 
-def run_week(
+def _week_defaults(
+    skills: Optional[list[str]],
+    seed: Optional[int],
+    cap: Optional[int],
+    target_scale: Optional[float],
+    strategy: Optional[str],
+    min_levels: Optional[dict[str, Optional[int]]],
+) -> tuple[list[str], int, int, float, str, dict[str, Optional[int]]]:
+    """Resolve the six ``run_week`` knobs against ``config``. Shared, so the
+    assignment half and the scoring half can never disagree about a default."""
+    return (
+        list(skills if skills is not None else config.TRIAL_SKILLS_CURRENT),
+        seed if seed is not None else config.TRIAL_RNG_SEED,
+        cap if cap is not None else config.TRIAL_PARTY_CAP,
+        config.TARGET_SCALE if target_scale is None else target_scale,
+        config.TRIAL_OPTIMIZER_STRATEGY if strategy is None else strategy,
+        dict(min_levels or {}),
+    )
+
+
+def choose_assignment(
     members: list[MemberRow],
     skills: Optional[list[str]] = None,
     seed: Optional[int] = None,
@@ -1860,23 +1880,22 @@ def run_week(
     target_scale: Optional[float] = None,
     strategy: Optional[str] = None,
     min_levels: Optional[dict[str, Optional[int]]] = None,
-) -> WeekResult:
-    """Assign parties and simulate all of this week's skilling trials.
+) -> Assignment:
+    """Choose who races in which trial. THE EXPENSIVE HALF: 56-95s per guild.
+
+    Split out from :func:`run_week` so the *cheap* half (:func:`score_assignment`,
+    ~2ms) can be run repeatedly against ONE set of parties — which is what the
+    trials page's community-buff selector is: one search, twenty ratings. See
+    :func:`run_week_ladder`.
 
     ``strategy`` selects the Phase 2 assignment algorithm (see
     :mod:`src.optimizer`); ``"random"`` restores the Phase 1 shuffle. Defaults to
     ``config.TRIAL_OPTIMIZER_STRATEGY``. The optimizer is imported lazily to keep
     the ``trials`` <-> ``optimizer`` dependency one-directional at import time.
     """
-    skills = list(skills if skills is not None else config.TRIAL_SKILLS_CURRENT)
-    seed = seed if seed is not None else config.TRIAL_RNG_SEED
-    cap = cap if cap is not None else config.TRIAL_PARTY_CAP
-    if target_scale is None:
-        target_scale = config.TARGET_SCALE
-    if strategy is None:
-        strategy = config.TRIAL_OPTIMIZER_STRATEGY
-
-    min_levels = dict(min_levels or {})
+    skills, seed, cap, target_scale, strategy, min_levels = _week_defaults(
+        skills, seed, cap, target_scale, strategy, min_levels
+    )
     if strategy == "random":
         assignment = random_assignment(members, skills, seed, cap)
         # The Phase-1 control strategy does no eligibility filtering of its own, so
@@ -1889,19 +1908,52 @@ def run_week(
                     m for m in assignment.parties[skill]
                     if meets_min_level(m, skill, limit)
                 ]
-    else:
-        from .optimizer import optimize
+        return assignment
 
-        assignment = optimize(
-            members,
-            skills,
-            seed=config.TRIAL_OPTIMIZER_SEED,
-            cap=cap,
-            target_scale=target_scale,
-            strategy=strategy,
-            min_levels=min_levels,
-        )
+    from .optimizer import optimize
 
+    return optimize(
+        members,
+        skills,
+        seed=config.TRIAL_OPTIMIZER_SEED,
+        cap=cap,
+        target_scale=target_scale,
+        strategy=strategy,
+        min_levels=min_levels,
+    )
+
+
+def score_assignment(
+    assignment: Assignment,
+    members: list[MemberRow],
+    skills: Optional[list[str]] = None,
+    seed: Optional[int] = None,
+    cap: Optional[int] = None,
+    target_scale: Optional[float] = None,
+    strategy: Optional[str] = None,
+    min_levels: Optional[dict[str, Optional[int]]] = None,
+    now: Optional[datetime] = None,
+) -> WeekResult:
+    """Rate a FIXED set of parties. THE CHEAP HALF: ~2ms for the whole week.
+
+    Every number the page prints, for parties somebody else has already chosen.
+    :func:`simulate_race` is deterministic closed-form arithmetic and the two risk
+    figures are quadrature, not sampling, so this is ~0.15ms per party and is safe
+    to run twenty times over — once per rung of ``config.COMMUNITY_BUFF_LADDER``.
+
+    ``now`` pins ``generated_at``/``week_date`` so a whole ladder of results can
+    carry ONE timestamp: they describe one build, not twenty.
+
+    NOTE the seam this exposes. Re-scoring fixed parties under a different regime
+    answers "what would THIS plan score there", which is a LOWER BOUND on "what is
+    the best plan there" — the optimiser would seat different members. That is the
+    same fixed-party bound :func:`probe_building_upgrade` and
+    :func:`probe_shrine_upgrade` already publish, and it must be labelled the same
+    way wherever it is shown.
+    """
+    skills, seed, cap, target_scale, strategy, min_levels = _week_defaults(
+        skills, seed, cap, target_scale, strategy, min_levels
+    )
     trials = [
         simulate_race(assignment.parties[skill], skill, target_scale)
         for skill in skills
@@ -1934,7 +1986,7 @@ def run_week(
         probe_shrine_upgrade(assignment.parties, skills, shrine, target_scale)
         for shrine in config.GUILD_SHRINE_SKILLING_BUFFS
     ]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) if now is None else now
     return WeekResult(
         generated_at=now.isoformat(),
         week_date=now.strftime("%Y-%m-%d"),
@@ -1979,3 +2031,76 @@ def run_week(
         community_buff_production=config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF,
         community_buff_enhancing=config.COMMUNITY_ENHANCING_SPEED_BUFF,
     )
+
+
+def run_week(
+    members: list[MemberRow],
+    skills: Optional[list[str]] = None,
+    seed: Optional[int] = None,
+    cap: Optional[int] = None,
+    target_scale: Optional[float] = None,
+    strategy: Optional[str] = None,
+    min_levels: Optional[dict[str, Optional[int]]] = None,
+) -> WeekResult:
+    """Assign parties and simulate all of this week's skilling trials.
+
+    Unchanged in behaviour: :func:`choose_assignment` followed by
+    :func:`score_assignment`, which is exactly what this function's body used to be
+    in one piece.
+    """
+    assignment = choose_assignment(
+        members, skills, seed, cap, target_scale, strategy, min_levels
+    )
+    return score_assignment(
+        assignment, members, skills, seed, cap, target_scale, strategy, min_levels
+    )
+
+
+def run_week_ladder(
+    members: list[MemberRow],
+    skills: Optional[list[str]] = None,
+    seed: Optional[int] = None,
+    cap: Optional[int] = None,
+    target_scale: Optional[float] = None,
+    strategy: Optional[str] = None,
+    min_levels: Optional[dict[str, Optional[int]]] = None,
+    levels: Optional[list[int]] = None,
+) -> tuple[WeekResult, dict[int, WeekResult]]:
+    """ONE optimiser run, then that same plan rated at every community-buff level.
+
+    Returns ``(published, ladder)``: the week as ``run_week`` would have produced
+    it under the ambient ``config.COMMUNITY_BUFF_LEVEL``, and a ``{level:
+    WeekResult}`` map over ``levels`` (default the game's whole 1..20 ladder). Every
+    entry seats the SAME members in the SAME trials — only the rates, tiers, margins
+    and points move.
+
+    WHY THIS SHAPE, AND WHAT IT IS NOT. Re-optimising per level would cost ~85s a
+    rung, ~30 minutes a guild; re-rating costs ~2ms a rung, so the whole ladder is
+    free beside the one search that produced it. The price of that bargain is stated
+    in :func:`score_assignment`: each rung is a LOWER BOUND on what the guild could
+    score at that level, because the optimiser would seat different members. The
+    page carrying these numbers must say so.
+
+    The published entry is *also* in the ladder (at its own level) and is the same
+    object, so the selector's default rung and the page it sits on can never drift
+    apart. Every rung shares one ``generated_at``: they describe one build.
+    """
+    if levels is None:
+        levels = list(range(1, config.COMMUNITY_BUFF_MAX_LEVEL + 1))
+    assignment = choose_assignment(
+        members, skills, seed, cap, target_scale, strategy, min_levels
+    )
+    now = datetime.now(timezone.utc)
+    args = (assignment, members, skills, seed, cap, target_scale, strategy, min_levels)
+    published = score_assignment(*args, now=now)
+    ladder: dict[int, WeekResult] = {published.community_buff_level: published}
+    for level in levels:
+        if level in ladder:
+            continue
+        # community_buff_level rebinds config globals and restores them on the way
+        # out, so each rung is scored in isolation and the ambient regime survives
+        # the loop. NB: never hand an optimizer.AssignmentScorer across this
+        # boundary — its cache is keyed on the party alone and is regime-blind.
+        with community_buff_level(level):
+            ladder[level] = score_assignment(*args, now=now)
+    return published, dict(sorted(ladder.items()))

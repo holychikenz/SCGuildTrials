@@ -63,7 +63,7 @@ import requests
 
 from . import config
 from .reader import MemberRow, SheetStructureError, _cell, _to_bool
-from .optimizer import AssignmentScorer, _min_banking
+from .optimizer import AssignmentScorer, _min_banking, objective_of
 from .trials import (
     RosterEntry,
     expected_credit_points,
@@ -399,26 +399,41 @@ class SignupPlan:
     signup_count: int
     non_signups: list[str]
     conflicts: list[str]
-    # THE FOUR TOTALS ARE CREDIT POINTS (floats) since the 2026-08-11 patch, i.e. the
-    # quantity the optimizer maximises and the one every comparison in this module is
-    # made against (scorer.total_points). They must stay in the SAME currency as each
-    # other or the page's arithmetic silently stops adding up: `reachable_total` comes
-    # from the scorer, so `enforced_total` cannot be a step-points sum.
+    # THE FOUR TOTALS ARE IN THE OBJECTIVE'S CURRENCY (floats), i.e. whatever
+    # config.OPT_OBJECTIVE selects and every comparison in this module is made against
+    # (scorer.total_points): E[credit points] as shipped, deterministic credit points
+    # under the "credit" rollback. They must stay in the SAME currency as each other or
+    # the page's arithmetic silently stops adding up — `reachable_total` comes from the
+    # scorer, so `enforced_total` can be neither a step-points sum nor, since
+    # 2026-08-14, a credit one. optimizer.objective_of is the single selector both
+    # sides read.
     enforced_total: float
     optimal_total: float
     gap: float
     reachable_total: float  # score after applying the listed swaps
     # The same two figures in STEP points — the confirmed award for the tiers actually
     # banked, with no partial credit. Carried for the page, which quotes both: the
-    # tiers are what the guild will see in-game, the credit total is what the plan was
-    # chosen on.
+    # tiers are what the guild will see in-game, the four totals above are what the
+    # plan was chosen on.
     enforced_step_total: int = 0
     optimal_step_total: int = 0
     # The enforced plan's total in EXPECTATION, and the optimum's. None when any trial
-    # could not be priced. The gap to enforced_total / optimal_total is what the
-    # deterministic figures over-claim.
+    # could not be priced.
+    #
+    # SINCE 2026-08-14 THESE ARE USUALLY THE SAME NUMBER as enforced_total /
+    # optimal_total, because the objective moved to the expectation. They are kept
+    # separate rather than collapsed for two reasons: they are None-able where the
+    # objective never is (it degrades per trial to credit), and OPT_OBJECTIVE =
+    # "credit" pulls the two apart again. Anything comparing against the four totals
+    # above must use those, not these.
     enforced_expected_total: Optional[float] = None
     optimal_expected_total: Optional[float] = None
+    # The DETERMINISTIC totals — what the lineup earns if every die lands on its
+    # expectation. Formerly the headline figures; since the objective became the
+    # expectation they are the aside, and the page prints them beside it as the
+    # ceiling. Always present, since credit_points is never None.
+    enforced_credit_total: float = 0.0
+    optimal_credit_total: float = 0.0
     # Thinnest time margin across the trials that actually banked a tier (the
     # weakest link in the lineup's safety), or None when no trial banked one.
     # Trials that reached no tier are EXCLUDED rather than counted as 0.0, so
@@ -475,6 +490,8 @@ class SignupPlan:
             "optimal_step_total": self.optimal_step_total,
             "enforced_expected_total": self.enforced_expected_total,
             "optimal_expected_total": self.optimal_expected_total,
+            "enforced_credit_total": self.enforced_credit_total,
+            "optimal_credit_total": self.optimal_credit_total,
             "min_slack_fraction": self.min_slack_fraction,
             "budget_seconds": self.budget_seconds,
             "safety_min_slack": self.safety_min_slack,
@@ -1375,10 +1392,16 @@ def plan(
             )
         )
 
-    # CREDIT points, to match scorer.total_points — which is where reachable_total and
-    # the optimum come from. Mixing the two currencies would leave the page quoting an
-    # "enforced -> reachable" arithmetic that does not add up.
-    enforced_total = sum(t.credit_points for t in trials)
+    # THE OBJECTIVE'S OWN CURRENCY, to match scorer.total_points — which is where
+    # reachable_total and every swap gain come from. Mixing the two would leave the
+    # page quoting an "enforced -> reachable" arithmetic that does not add up, which is
+    # exactly what happened when the objective moved to the expectation and this line
+    # still said credit_points. optimizer.objective_of picks the same number the
+    # scorer's own oracle would, from figures already computed above, so the identity
+    # `reachable_total == enforced_total + sum(gains)` stays exact.
+    enforced_total = sum(
+        objective_of(t.credit_points, t.expected_points) for t in trials
+    )
     enforced_step_total = sum(t.points for t in trials)
     enforced_expected_total = (
         sum(t.expected_points for t in trials)
@@ -1399,10 +1422,15 @@ def plan(
     # here strictly raises the score, so the list is short and actionable. The
     # optimal per-trial tiers/points (from the summary) let a stalled climb cross
     # a tier plateau with a short break-even reshuffle — see _improving_swaps.
-    # Credit points, for the same currency reason. ``.get`` falls back to the step
-    # points so a hand-built summary (the tests do this) still works.
+    # The objective's currency, for the same reason: _improving_swaps compares this
+    # ceiling against a running scorer total. ``.get`` falls back to the step points so
+    # a hand-built summary (the tests do this) still works, and objective_of falls back
+    # to credit for a summary entry with no expectation recorded.
     optimal_points = {
-        o["skill"]: o.get("credit_points", o["points"]) for o in optimal_summary
+        o["skill"]: objective_of(
+            o.get("credit_points", o["points"]), o.get("expected_points")
+        )
+        for o in optimal_summary
     }
     optimal_tier = {o["skill"]: o["tier_reached"] for o in optimal_summary}
     swaps, reachable_total = _improving_swaps(
@@ -1453,6 +1481,10 @@ def plan(
             and all(o.get("expected_points") is not None for o in optimal_summary)
             else None
         ),
+        enforced_credit_total=sum(t.credit_points for t in trials),
+        optimal_credit_total=sum(
+            float(o.get("credit_points", o["points"])) for o in optimal_summary
+        ),
         reachable_total=reachable_total,
         min_slack_fraction=min_slack_fraction,
         budget_seconds=config.TRIAL_TIME_BUDGET_SECONDS,
@@ -1499,7 +1531,13 @@ def optimal_from_week(week) -> tuple[float, list[dict]]:
         }
         for t in week.trials
     ]
-    # The CREDIT total, because that is what the optimizer maximised and what the
-    # sign-up plan must be compared against. week.total_points (step) travels alongside
-    # in each summary entry for the page to quote the banked tiers.
-    return week.total_credit_points, optimal_summary
+    # The total IN THE OBJECTIVE'S CURRENCY, because that is what the optimiser
+    # maximised and what the sign-up plan must be compared against. Summed per trial
+    # rather than read off week.total_expected_points, so that a single trial with no
+    # derivable expectation degrades to its own credit score exactly as the scorer
+    # would, instead of collapsing the whole total to None. week.total_points (step)
+    # travels alongside in each summary entry for the page to quote the banked tiers.
+    optimal_total = sum(
+        objective_of(t.credit_points, t.expected_points) for t in week.trials
+    )
+    return optimal_total, optimal_summary

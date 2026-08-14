@@ -56,6 +56,7 @@ from .reader import MemberRow
 from .trials import (
     Assignment,
     clear_probability,
+    expected_credit_points,
     guild_building_skill_levels,
     meets_min_level,
     rate,
@@ -66,6 +67,65 @@ from .trials import (
 # Sentinel for the reporting-only probability cache: None is a legitimate cached
 # value there (a party that banks no tier), so absence needs its own marker.
 _MISSING = object()
+
+
+def _objective_value(party: list[MemberRow], skill: str, result) -> float:
+    """The number every strategy in this module maximises, per config.OPT_OBJECTIVE.
+
+    ONE function, called from exactly one place (:meth:`AssignmentScorer._evaluate`),
+    so the whole search — constructors, refiners, the simulated annealer, the genetic
+    pipeline, the bench fill, and ``src.signup``'s swap searches, which all reach the
+    oracle through :meth:`AssignmentScorer.party_points` — cannot disagree about what
+    it is optimising. See ``config.OPT_OBJECTIVE`` for why the default moved to the
+    expectation and what it costs.
+
+    ``expected_credit_points`` returns None for a party that cannot move or whose
+    sigma cannot be derived. Those are exactly the parties whose deterministic score
+    is 0.0 or near it, and falling back to ``credit_points`` for them is not a mixing
+    of currencies but the limit the expectation takes as sigma vanishes: with no
+    uncertainty to integrate over, E IS the deterministic score (asserted to 1e-9 in
+    the tests).
+    """
+    if config.OPT_OBJECTIVE == "credit":
+        return result.credit_points
+    if config.OPT_OBJECTIVE != "expected":
+        raise ValueError(
+            f"config.OPT_OBJECTIVE must be 'expected' or 'credit', "
+            f"not {config.OPT_OBJECTIVE!r}"
+        )
+    if not config.RISK_EXPECTED_POINTS:
+        # Refused rather than degraded. RISK_EXPECTED_POINTS = False makes
+        # expected_credit_points return None for EVERY party, so the fallback below
+        # would silently turn the expected objective back into the deterministic one
+        # while every comment, page and note still said otherwise.
+        raise ValueError(
+            "config.OPT_OBJECTIVE = 'expected' requires RISK_EXPECTED_POINTS = True; "
+            "set OPT_OBJECTIVE = 'credit' to optimise the deterministic score."
+        )
+    expected = expected_credit_points(party, skill, result)
+    return objective_of(result.credit_points, expected)
+
+
+def objective_of(credit: float, expected: Optional[float]) -> float:
+    """Pick the objective out of a (credit, expected) pair computed elsewhere.
+
+    The same choice :func:`_objective_value` makes, for callers that already hold both
+    numbers and must not pay for a second quadrature to re-derive one of them —
+    ``src.signup``, which reads them off its own ``simulate_race`` results and off the
+    optimum's summary dicts.
+
+    THIS EXISTS SO THE SIGN-UP PAGE CANNOT MIX CURRENCIES. Its plan totals
+    (``enforced_total``, ``optimal_total``, ``gap``) are compared directly against
+    numbers that come from :meth:`AssignmentScorer.party_points` (``reachable_total``,
+    every swap's gain, every fill's gain). Before this function they were credit on one
+    side of the comparison and, once the objective moved, the expectation on the other
+    — a page whose arithmetic silently stopped adding up. One selector, read by both
+    sides, is what keeps ``reachable_total == enforced_total + sum(gains)`` an identity
+    rather than an approximation.
+    """
+    if config.OPT_OBJECTIVE == "credit":
+        return credit
+    return credit if expected is None else expected
 
 # Internal representation during search:
 #   * members are referred to by their INDEX into the input ``members`` list;
@@ -94,8 +154,20 @@ class AssignmentScorer:
     cache entry because they come from the same ``simulate_race`` call, so slack
     costs no extra simulations at all.
 
-    THE OBJECTIVE IS NOW ``credit_points``, A FLOAT (game patch 2026-08-11). It was
-    ``simulate_race(...).points`` — an ``int``, a step function of the tier banked.
+    THE OBJECTIVE IS NOW ``E[credit_points]`` (2026-08-14), selected by
+    ``config.OPT_OBJECTIVE`` and computed by :func:`_objective_value`. It was the
+    deterministic ``credit_points``, which priced a tier held on a coin flip as a
+    certainty and so kept buying tiers the party could not hold; see
+    ``config.OPT_OBJECTIVE`` for the measurement that refuted
+    ``research/partial-tier-credit.md`` §9.1's prediction that the two would agree.
+    ``OPT_OBJECTIVE = "credit"`` is the one-line rollback and restores every
+    trajectory below exactly. Note what this costs the cache: an entry is now ~3x
+    dearer to fill (a quadrature on top of the race), so the memoisation this class
+    exists for matters ~3x more than it did.
+
+    THE OBJECTIVE BECAME A FLOAT earlier, with ``credit_points`` (game patch
+    2026-08-11). It was ``simulate_race(...).points`` — an ``int``, a step function of
+    the tier banked.
     Partial-tier credit made the score continuous, so :meth:`party_points` returns a
     ``float`` and callers must compare against ``config.OPT_POINTS_EPS`` rather than
     against 0. Two consequences worth stating plainly, because a great deal of this
@@ -170,7 +242,7 @@ class AssignmentScorer:
         self.sim_calls += 1
         result = simulate_race(party, skill, self.target_scale)
         value = (
-            result.credit_points,
+            _objective_value(party, skill, result),
             time_slack_fraction(result),
             result.tier_reached,
         )
@@ -192,10 +264,17 @@ class AssignmentScorer:
         return set(self._eligible[skill_idx])
 
     def party_points(self, skill_idx: int, member_ids) -> float:
-        """Credit points for the party ``member_ids`` running ``skills[skill_idx]``.
+        """The OBJECTIVE for the party ``member_ids`` running ``skills[skill_idx]``.
 
-        Includes partial-tier credit, and is therefore a ``float``: compare deltas
-        against ``config.OPT_POINTS_EPS``, never against 0. Identical to
+        E[credit points] by default, the deterministic credit points under
+        ``config.OPT_OBJECTIVE = "credit"`` — :func:`_objective_value` decides, and
+        this is the only way any caller reaches it, so the whole search speaks one
+        currency. The name is left as it was because every strategy, refiner and
+        sign-up swap in the codebase calls it; what changed is which number it is,
+        not what it means to a caller (bigger is better, deltas compare against
+        ``config.OPT_POINTS_EPS`` and never against 0).
+
+        A ``float`` either way. Under ``"credit"`` it is identical to
         ``float(simulate_race(...).points)`` when
         ``config.TRIAL_PARTIAL_CREDIT_RATE`` is 0.0.
         """

@@ -311,8 +311,11 @@ OPT_ENSEMBLE_PIPELINES = ["beam+genetic+hill_climb"] * OPT_RESTARTS
 # because the plateaus the search used to grope across became slopes it can walk.
 # research/risk-aware-objective.md R1 predicted exactly this ("smoothing the
 # objective should make the existing search strictly better"). SC held at 4900.
-# The price is a collapsed time margin — see research/partial-tier-credit.md §9.1,
-# which is required reading before anyone touches OPT_SLACK_POINTS_TOLERANCE.
+# The price was a collapsed time margin — see research/partial-tier-credit.md §9.1,
+# which is required reading before anyone touches OPT_SLACK_POINTS_TOLERANCE. That
+# price has since been PAID OFF by moving the objective to the expectation (§9.1.1,
+# OPT_OBJECTIVE below): same banked tiers, thinnest margin 0.01% -> 3.44% (SC) and
+# 0.01% -> 6.10% (LI). The +200 recorded here survives the change.
 #
 # --- BAKE-OFF RESULTS (PRE-PATCH — step objective) --------------------------
 # `python -m src.optimize_bakeoff` — synthetic roster n=86, seeds 1-3, at the
@@ -412,8 +415,56 @@ OPT_SA_T_END = 0.05
 # chooses which of the equally-scoring optima ships. Slack is read from the same
 # simulate_race call the scorer already cached, so it adds no simulations for any
 # party the search already visited.
+# --- What the optimiser maximises --------------------------------------------
+# "expected" -> trials.expected_credit_points, the credit score integrated over the
+#               calibrated multiplicative shock. THE SHIPPED DEFAULT since 2026-08-14.
+# "credit"   -> trials.simulate_race(...).credit_points, the deterministic score.
+#               The one-line rollback, and every strategy's trajectory returns to
+#               exactly what it was.
+#
+# WHY IT CHANGED. research/partial-tier-credit.md §9.1 shipped E[points] as reporting
+# only, on a stated prediction: "It does not enter the objective: optimising it would
+# pick the same parties, because the gamble it prices survives its own test." THAT
+# PREDICTION IS REFUTED. Measured on the 2026-08-14 live SC roster, moving Leevi
+# (Enhancing 108 + tool, Brewing 121) out of Brewing for IronThrone (Enhancing 102,
+# Brewing 111) costs 0.867 CREDIT points and gains 8.736 EXPECTED ones, taking the
+# Enhancing trial from 0.3 seconds of spare time at P(holds) = 0.502 to 31.8 seconds
+# at 0.694. The deterministic objective declines that trade by construction, and the
+# safety pass cannot rescue it: OPT_SLACK_POINTS_TOLERANCE = 0.0 forbids spending the
+# 0.867. So the two objectives do NOT pick the same parties, and the one the README
+# already calls "the honest one" was not the one being maximised.
+#
+# The mechanism, stated plainly, is the ramp. Credit is piecewise linear with a
+# 50-point step at every tier boundary, so a party that has just stepped over a
+# boundary is worth almost nothing extra per unit of rate, while one mid-ramp is
+# worth half a point per 1% of progress. The deterministic score therefore spends
+# rate where it pays on paper and leaves the just-crossed tier balanced on a coin.
+# E prices that coin, so the search stops buying tiers it cannot hold.
+#
+# THE COST IS REAL AND IT IS ~3x PER EVALUATION. Measured on the live parties:
+# simulate_race 0.145-0.164ms, expected_credit_points a further 0.269-0.318ms (an
+# 81-node quadrature plus the Wald sigma), so the oracle goes from ~0.15ms to ~0.45ms
+# and the optimiser's ~87k-party pipeline scales with it. §9.2 already took this
+# position on a smaller version of the same bill — a cost that buys correctness is
+# "worth paying rather than a regression to chase" — and OPT_RESTARTS remains the
+# dial. If it ever does matter, the cheap win is that expected_credit_points re-races
+# the party for its tau curve when simulate_race has just built most of one.
+#
+# REQUIRES RISK_EXPECTED_POINTS. With that False, expected_credit_points returns None
+# and the scorer falls back to credit per party, which would silently mix two
+# currencies inside one search; _objective_value therefore refuses the combination
+# loudly rather than shipping a plan scored half one way and half the other.
+OPT_OBJECTIVE = "expected"
+
 # Set OPT_SLACK_PASS = False to restore the pre-2026-07-31 behaviour (a one-line
 # rollback; nothing else in the pipeline reads the margin).
+#
+# NOTE its changed standing under OPT_OBJECTIVE = "expected". The pass exists to
+# recover margin the deterministic objective could not see; E sees it, and prices it.
+# The pass is kept because it is not redundant — E is a sum over trials while risk is
+# a MINIMUM over them, so a lineup can maximise E while leaving one trial thin — but
+# at OPT_SLACK_POINTS_TOLERANCE = 0.0 it now finds far less to do, which is the
+# intended outcome rather than a fault.
 OPT_SLACK_PASS = True
 # Iteration bound on the pass. Every accepted move strictly increases a bounded
 # lexicographic key over a finite state space, so the pass terminates on its own;
@@ -795,27 +846,53 @@ COMMUNITY_BUFF_LADDER = {
     "enhancing": (0.20, 0.005),
 }
 
-# The level the site PUBLISHES by default. 1 is the honest default: it is the
-# level a buff sits at the moment anyone funds it at all, and the guild's real
-# levels are not in any capture this repo holds (the same gap
-# GUILD_SHRINE_LEVELS carries). The trials page additionally publishes a
-# level-20 counterfactual — a second full optimiser run under
-# trials.community_buff_level(COMMUNITY_BUFF_MAX_LEVEL) — so the reader can see
-# what maxed buffs would be worth without this default moving.
+# The level the site PUBLISHES by default, and the level the OPTIMISER runs at. 1 is
+# the honest default: it is the level a buff sits at the moment anyone funds it at
+# all, and the guild's real levels are not in any capture this repo holds (the same
+# gap GUILD_SHRINE_LEVELS carries). The trials page additionally carries the whole
+# 1..20 ladder behind a selector — see TRIALS_BUFF_LEVEL_SLIDER.
 COMMUNITY_BUFF_LEVEL = 1
 
-# Publish that counterfactual, or don't. The one-line rollback: False drops
-# trials-maxbuffs.html/.json and the switch, leaving the trials page exactly as it
-# was before. It is a *second complete optimiser run* per guild — the expensive part
-# of the build, near enough doubled.
+# The community-buff level selector on the trials page: ONE optimiser run at
+# COMMUNITY_BUFF_LEVEL, then that same plan re-rated at every rung of the ladder and
+# shipped inline, so the reader can move the level without the page fetching or
+# recomputing anything (trials.run_week_ladder).
 #
-# Measured 2026-08-14: it is in fact slightly DEARER than the published run, because
-# at level-20 buffs the parties reach higher tiers and every simulate_race in the hot
-# loop runs longer (SC 90.8s against 84.8s; LI 95.1s against 56.2s — 69% more). Since
-# build.py now runs the two regimes concurrently in separate processes, that no longer
-# doubles the WALL CLOCK, so this is a page-content switch again rather than the
-# build's cost lever it briefly became.
-TRIALS_PUBLISH_MAXBUFF_PAGE = True
+# WHAT IT ANSWERS, AND WHAT IT DOES NOT. Moving the selector answers "what would THIS
+# WEEK'S PLAN score if the buffs were at level N". It does NOT answer "what is the
+# best plan at level N" — the optimiser would seat different members, and would score
+# at least as much. Every rung is therefore a LOWER BOUND, which is the same
+# fixed-party bound probe_building_upgrade and probe_shrine_upgrade already publish
+# and must be labelled the same way on the page.
+#
+# The bound is also the more OPERATIONAL of the two questions: the parties are settled
+# early in the week and nobody redrafts them, while cowbells can be spent at any hour.
+# If a buff is funded mid-week, the re-rated figure is what actually happens.
+#
+# Cost: ~2ms per rung against 56-95s for an optimiser run, so the entire ladder is
+# free beside the one search that produced it. False is the one-line rollback —
+# no selector, no inline ladder, trials.html exactly as it was.
+TRIALS_BUFF_LEVEL_SLIDER = True
+
+# The level-20 COUNTERFACTUAL page (trials-maxbuffs.html/.json): a SECOND, complete
+# optimiser run under trials.community_buff_level(COMMUNITY_BUFF_MAX_LEVEL), with the
+# parties it seats redrawn rather than merely re-rated.
+#
+# OFF since 2026-08-14, superseded by TRIALS_BUFF_LEVEL_SLIDER. The selector covers
+# all twenty rungs where this covered one, keeps the roster still while the reader
+# moves the level (this page reshuffled every party, so "which trial am I in" changed
+# under the reader's hand), and costs milliseconds where this cost a whole second
+# search — measured at SC 90.8s / LI 95.1s, DEARER than the published run, because at
+# level-20 buffs the parties reach higher tiers and every simulate_race in the hot
+# loop runs longer.
+#
+# What was lost with it is real and is the one thing the selector cannot give: the
+# TRUE optimum at a raised level, i.e. the size of the reallocation the selector's
+# lower bound leaves on the table. The whole path is intact — _unit_jobs still queues
+# the unit, _compute_unit still runs it, _render_buff_toggle still renders the switch,
+# and the tests still exercise all three — so True restores it, and the two controls
+# coexist by design.
+TRIALS_PUBLISH_MAXBUFF_PAGE = False
 
 # --- Build concurrency (src/build.py) ---------------------------------------
 # The build's four optimiser units — two guilds x {published regime, maxed-buff

@@ -340,17 +340,24 @@ def test_plan_is_deterministic():
 
 
 def test_enforced_never_exceeds_real_optimum():
-    from src.optimizer import optimize
-    from src.trials import simulate_race
+    from src.optimizer import objective_of, optimize
+    from src.trials import expected_credit_points, simulate_race
 
     members, picks, draw = _scenario()
     cap = 3
     opt = optimize(members, draw, cap=cap, strategy="best")
-    # CREDIT points: SignupPlan's totals are the objective the optimizer maximises, so
-    # the ceiling must be measured in the same currency (see SignupPlan.enforced_total).
-    optimal_total = sum(
-        simulate_race(opt.parties[s], s).credit_points for s in draw
-    )
+    # THE OBJECTIVE'S currency: SignupPlan's totals are the quantity the optimizer
+    # maximises, so the ceiling must be measured in the same one, or "the optimum" is
+    # not maximal in the units being compared (see SignupPlan.enforced_total). Reading
+    # it through objective_of rather than naming a field keeps this test honest under
+    # the config.OPT_OBJECTIVE = "credit" rollback too.
+    optimal_total = 0.0
+    for s in draw:
+        result = simulate_race(opt.parties[s], s)
+        optimal_total += objective_of(
+            result.credit_points,
+            expected_credit_points(opt.parties[s], s, result),
+        )
     p = signup.plan(
         members, picks, optimal_total=optimal_total,
         optimal_summary=[], draw=draw, cap=cap,
@@ -834,9 +841,20 @@ def test_optimal_summary_carries_the_optimums_own_margin():
     week = run_week(members, skills=draw, cap=3)
     total, summary = signup.optimal_from_week(week)
 
-    # The CREDIT total — what the optimizer maximised, and the currency the sign-up
-    # plan compares itself against.
-    assert total == week.total_credit_points
+    # The total in THE OBJECTIVE'S currency — what the optimizer maximised, and the
+    # currency the sign-up plan compares itself against. Summed per trial rather than
+    # read off week.total_expected_points, so one trial with no derivable expectation
+    # degrades to its own credit score instead of collapsing the total to None.
+    from src.optimizer import objective_of
+
+    assert total == sum(
+        objective_of(t.credit_points, t.expected_points) for t in week.trials
+    )
+    # And it is genuinely NOT the deterministic total any more: the expectation
+    # exceeds it here, which is the comfortable-margin asymmetry
+    # research/partial-tier-credit.md §9.3 measured (a favourable shock buys extra
+    # partial credit while an unfavourable one eats the margin first).
+    assert total != week.total_credit_points
     for o, t in zip(summary, week.trials):
         assert o["skill"] == t.skill
         assert ("clear_seconds" in o) and ("slack_fraction" in o)

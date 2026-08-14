@@ -95,15 +95,44 @@ def test_scorer_cache_matches_fresh():
     assert a.total_points(parties) == b.total_points(parties)
 
 
-def test_scorer_total_matches_simulate_race_directly():
-    """The scorer's total is exactly the sum of the oracle's own credit points.
+def test_shipped_objective_is_the_expectation():
+    """What the search maximises, pinned rather than commented.
 
-    Reads ``credit_points`` rather than ``points`` since the 2026-08-11 patch: the
-    objective now includes partial-tier credit (see AssignmentScorer). Compared with
-    ``==`` rather than approx deliberately — the scorer must not merely agree with the
-    oracle, it must return the oracle's own float, so any re-association or rounding
-    creeping into the cache fails here.
+    Deliberately a test: `"credit"` is a one-line rollback, and a silent flip back to
+    it would restore an optimiser that prices a coin-flip tier as a certainty without
+    a single other line of the repo admitting it.
     """
+    assert config.OPT_OBJECTIVE == "expected"
+    assert config.RISK_EXPECTED_POINTS is True
+
+
+def test_scorer_total_matches_expected_credit_points_directly():
+    """The scorer's total is exactly the sum of the oracle's own E[credit points].
+
+    Compared with ``==`` rather than approx deliberately — the scorer must not merely
+    agree with the oracle, it must return the oracle's own float, so any
+    re-association or rounding creeping into the cache fails here.
+    """
+    members = _roster(16)
+    scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
+    parties = [set(range(0, 4)), set(range(4, 8)), set(range(8, 12)), set(range(12, 16))]
+    expected = 0.0
+    for s, skill in enumerate(SKILLS):
+        party = [members[i] for i in sorted(parties[s])]
+        result = trials.simulate_race(party, skill, config.TARGET_SCALE)
+        e = trials.expected_credit_points(party, skill, result)
+        expected += result.credit_points if e is None else e
+    assert scorer.total_points(parties) == expected
+
+
+def test_scorer_total_matches_simulate_race_directly(monkeypatch):
+    """Under the ``"credit"`` rollback, the scorer's total is the oracle's own
+    credit points — exactly, not approximately.
+
+    Reads ``credit_points`` rather than ``points`` since the 2026-08-11 patch: that
+    objective includes partial-tier credit (see AssignmentScorer).
+    """
+    monkeypatch.setattr(config, "OPT_OBJECTIVE", "credit")
     members = _roster(16)
     scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
     parties = [set(range(0, 4)), set(range(4, 8)), set(range(8, 12)), set(range(12, 16))]
@@ -123,7 +152,13 @@ def test_credit_points_reduce_to_step_points_when_the_patch_is_off(monkeypatch):
     asserted-in-a-comment: with the rate at zero the scorer must return
     ``float(simulate_race(...).points)`` bit for bit, for every party shape, so every
     strategy's trajectory is provably the one it took before the patch.
+
+    Pinned against the deterministic objective, because that is the objective the
+    rollback is a rollback OF. E[points] integrates over a shock the step function
+    knows nothing about, so it does not reduce to the step award and was never
+    claimed to.
     """
+    monkeypatch.setattr(config, "OPT_OBJECTIVE", "credit")
     monkeypatch.setattr(config, "TRIAL_PARTIAL_CREDIT_RATE", 0.0)
     members = _roster(24)
     scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
@@ -133,6 +168,42 @@ def test_credit_points_reduce_to_step_points_when_the_patch_is_off(monkeypatch):
             party = [members[i] for i in sorted(ids)]
             step = trials.simulate_race(party, skill, config.TARGET_SCALE).points
             assert scorer.party_points(s, ids) == float(step)
+
+
+def test_objective_falls_back_to_credit_where_the_expectation_is_undefined():
+    """A party with nothing to integrate over still scores, and scores the limit.
+
+    expected_credit_points returns None when it cannot derive a sigma — an empty
+    party, or one that cannot move. Those must not poison the search with a None;
+    the deterministic score IS the expectation there, sigma being zero.
+    """
+    members = _roster(4)
+    scorer = optimizer.AssignmentScorer(members, SKILLS, config.TARGET_SCALE, 20)
+    assert scorer.party_points(0, set()) == 0.0
+
+    empty = trials.simulate_race([], SKILLS[0], config.TARGET_SCALE)
+    assert trials.expected_credit_points([], SKILLS[0], empty) is None
+    assert optimizer._objective_value([], SKILLS[0], empty) == empty.credit_points
+
+
+def test_expected_objective_refuses_to_run_without_the_risk_model(monkeypatch):
+    """RISK_EXPECTED_POINTS = False would make every expectation None and silently
+    demote the search back to the deterministic score. Refused, loudly."""
+    monkeypatch.setattr(config, "RISK_EXPECTED_POINTS", False)
+    members = _roster(4)
+    party = [members[0]]
+    result = trials.simulate_race(party, SKILLS[0], config.TARGET_SCALE)
+    with pytest.raises(ValueError, match="RISK_EXPECTED_POINTS"):
+        optimizer._objective_value(party, SKILLS[0], result)
+
+
+def test_unknown_objective_is_refused(monkeypatch):
+    monkeypatch.setattr(config, "OPT_OBJECTIVE", "vibes")
+    members = _roster(4)
+    party = [members[0]]
+    result = trials.simulate_race(party, SKILLS[0], config.TARGET_SCALE)
+    with pytest.raises(ValueError, match="OPT_OBJECTIVE"):
+        optimizer._objective_value(party, SKILLS[0], result)
 
 
 # ---------------------------------------------------------------------------
