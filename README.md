@@ -7,6 +7,17 @@ Survey Corps at the site root (`_site/`) and Lactose lntolerance under
 `_site/li/` — the two guilds share one spreadsheet (and one weekly trial draw)
 but have their own member and sign-up tabs. See `GUILD_SITES` in `src/build.py`.
 
+**The weekly draw** — which four skilling trials the game rolled — is read from the
+header row of the tab named by `config.DRAW_SOURCE_TAB` (**SC Trial Signup**), whose
+four tick-box columns *are* the draw. That tab is written by the game. It replaced a
+read of the hand-maintained **Trial Assignments** tab on 2026-08-14, after the
+officers rebuilt that tab for the third time and the parser — which knew both of its
+previous shapes — found neither, fell back to `config.TRIAL_SKILLS_CURRENT`, and the
+site optimised the wrong four trials for a day behind its "MAY BE STALE" banner.
+There is deliberately **no layout fallback** now: the chain of fallbacks across
+hand-made shapes is what let a stale draw ship quietly. See the `src/draw.py`
+docstring for the full account.
+
 The pipeline is one-directional and credential-free:
 
 ```
@@ -166,6 +177,16 @@ and clearing site data clears the pins.
 **LI Trial Signup**, see `signup.SIGNUP_TABS`) — that guild's *actual* weekly
 volunteers — and builds its `signup.html` + `signup.json`:
 
+> **The plan is withheld when a guild's tab is a week behind.** The game refreshes
+> each guild's sign-up tab when a new cycle opens, and not for both guilds at once.
+> On 2026-08-14 the LI tab still held the entire 8/10 cycle — its four skills *and*
+> both its combat bosses — while SC's had moved on. Nothing noticed, because all four
+> of last week's headers are perfectly valid skills. `build._fetch_guild` now compares
+> each guild's four sign-up columns against the draw and emits the inactive
+> placeholder instead of a plan when they disagree: advice built from the wrong week's
+> volunteers is indistinguishable from good advice, which makes it worse than none.
+> It returns by itself once the tab catches up.
+
 1. **Sign-ups are enforced.** Every member who ticked a trial is locked into it
    (shown green) and is never moved or benched.
 2. **Open seats are recommended fills.** Remaining seats (to the per-party cap)
@@ -225,8 +246,36 @@ every scheduled run on record has started 2h13m–4h00m late, which is why the c
 asks for 01:00 UTC rather than the hour anyone wants (see the comment in the
 workflow). Do not read the cron as a promise of when the site refreshes.
 
-The schedule is daily rather than hourly because the Phase 2 optimizer takes a
-couple of minutes per run; hourly would burn ~2000+ Actions minutes/month.
+The schedule is daily rather than hourly because the **inputs** move daily at most —
+the draw is weekly and the member data is slow. It is *not* an Actions-minutes
+economy: this repository is public, and public repositories get standard
+GitHub-hosted runners free and unlimited (4-vCPU/16 GiB at that). The
+"~2000 minutes/month" figure this section used to cite never applied here.
+
+### Where the run time goes
+
+The three jobs are `test` and `build` **in parallel**, then `deploy` gated on both.
+The gate is on publishing, not on building — `deploy-pages` is the only step that
+makes anything public — so a red suite still ships nothing while the two jobs share
+the clock instead of queueing.
+
+`build` runs the four independent optimiser units concurrently in separate processes
+(two guilds × {published regime, maxed-buff counterfactual}); see the long note above
+`build._GuildInputs`. Measured per unit on live rosters, 2026-08-14:
+
+| | `run_week` L1 | `run_week` L20 | `signup.plan` | serial total |
+|---|---|---|---|---|
+| SC | 84.8s | 90.8s | 18.6s | 194.6s |
+| LI | 56.2s | 95.1s | ~18.0s | ~170.0s |
+
+Serially that is ~365s; the critical path of the fan-out is
+`max(L1 + signup, L20)` per guild, ~103s. Note that the counterfactual is *dearer*
+than the published run — at level-20 buffs the parties reach higher tiers, so every
+`simulate_race` in the hot loop runs longer.
+
+The output is byte-identical either way: every seed is fixed and no unit reads
+another's state. `config.BUILD_PARALLEL = False` runs the same units serially in one
+process when a traceback needs reading in peace.
 
 ### One-time manual step
 

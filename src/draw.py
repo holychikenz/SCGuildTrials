@@ -1,82 +1,77 @@
 """Read this week's skilling-trial draw from the guild sheet.
 
-The four skilling trials the guild runs each cycle are NOT a code constant —
-they are drawn (seemingly randomly) each cycle and published by the officers in
-the **"Trial Assignments"** tab. The officers have published it in two shapes;
-this module reads BOTH, because the tab has already been rebuilt under us once.
+The four skilling trials the guild runs each cycle are NOT a code constant — they
+are drawn (seemingly randomly) each cycle. This module reads them from the
+**sign-up tab the game itself writes** (``config.DRAW_SOURCE_TAB``, i.e.
+"SC Trial Signup"), whose header row heads one tick-box column per drawn trial::
 
-CURRENT layout (since the 2026-07-31 rebuild) — a two-column ``Trial Priority``
-table, skill in the banner's own column and the priority number beside it. There
-are no ``Trial N`` slot labels any more, and the skilling section carries no date
-of its own (only the ``Combat Trials`` block below it does)::
+    User,Enhancing,Milking,Cooking,Brewing,Hedgehog,Swarm
 
-                                          Trial Priority
-                                          Milking          3
-                                          Foraging         4
-                                          Crafting         2
-                                          Alchemy          1
+Columns B–E (0-based 1..4) are the four SKILLING trials, in the game's own order.
+Everything from column F on is the two COMBAT trials and is ignored by position —
+the same fixed geometry :func:`src.signup.parse_signup` reads the tick-boxes
+against, and for the same reason: the game writes this row, so its shape is the
+game's, not an officer's.
 
-An OPTIONAL THIRD column carries the per-trial **minimum sign-up level** the game
-lets leaders and generals set (patch 2026-08-11). It is read when present and
-numeric and ignored otherwise, so the officers can add it whenever they like and the
-build keeps working until they do::
+WHY THIS TAB AND NOTHING ELSE (2026-08-14). The draw used to be read from the
+hand-maintained "Trial Assignments" tab, in either of two shapes — a
+``Skilling Trial Info`` banner with ``Trial N`` rows, or a two-column
+``Trial Priority`` table. On 2026-08-14 the officers rebuilt that tab a third
+time and BOTH anchors vanished, so the parser found neither, and
+``build.build_guild`` did what it is designed to do: it fell back to
+``config.TRIAL_SKILLS_CURRENT`` behind an on-page "MAY BE STALE" banner. The
+banner worked — it is how the breakage was noticed — but the whole site had
+meanwhile optimised the wrong four trials for a day, because the fallback is a
+hand-edited constant and the real draw had moved on.
 
-                                          Trial Priority
-                                          Milking          3      95
-                                          Foraging         4
-                                          Crafting         2     100
-                                          Alchemy          1
+The lesson is not "add a third layout". It is that the draw should be read from
+the ONE place that is written by the game rather than by a person, and that a
+chain of fallbacks across hand-maintained shapes is precisely what let a wrong
+draw ship quietly. So:
 
-Here Milking and Crafting carry minimums, Foraging and Alchemy are unrestricted. An
-absent column means every trial is unrestricted, which is why absence is the feature's
-rollback: clear the cells and the constraint disappears.
+  * The rebuilt "Trial Assignments" tab is no longer consulted at all. Its own
+    row 28 reads "The above table follows the Guild Optimum from
+    https://holychikenz.github.io/SCGuildTrials/trials.html" — it is DOWNSTREAM of
+    this project's output, which makes it unfit to be an input to it.
+  * There is no layout fallback. An unreadable header raises
+    :class:`SheetStructureError`, which ``build.build_guild`` still turns into the
+    loud stale-draw banner rather than a dead deploy.
 
-LEGACY layout (up to 2026-07-25) — a ``Skilling Trial Info`` banner with one
-``Trial N`` row per drawn skill::
+CORROBORATION AND ITS LIMITS. ``research/trial-tabs.md`` §2.2 already named this
+tab "the more authoritative of the two", and the "Trial Data" results log shows
+both guilds drawing the SAME four skills in every cycle on record — which is why
+ONE draw (Survey Corps') still serves both guilds. That shared-draw model is the
+reason the source tab is fixed at SC's rather than read per guild: on 2026-08-14
+the LI tab still held the whole of the 8/10 cycle (its four skills AND both its
+combat bosses), i.e. the game had not yet refreshed it. Reading LI's own tab for
+LI's draw would therefore have planned this week's trials from last week's roll.
+``build.build_guild`` cross-checks each guild's sign-up columns against this draw
+and withholds that guild's plan when they disagree, so the staleness is reported
+rather than absorbed.
 
-    Skilling Trial Info   Date: 7/24        Priority
-    Trial 1               Milking           4
-    Trial 2               Woodcutting       3
-    Trial 3               Crafting          2
-    Trial 4               Alchemy           1
-    Priority goes from 1 to 4, with 1 being the highest
+WHAT WAS LOST WITH THE OLD TAB, and it is not this module's doing: the retired
+``Trial Priority`` table carried an optional third column holding each trial's
+MINIMUM SIGN-UP LEVEL (the lever added in the 2026-08-11 patch). The officers
+deleted that table, so the datum no longer exists anywhere on the sheet and
+:attr:`TrialDraw.min_levels` is now always empty — every trial unrestricted,
+which is exactly the documented rollback state of that feature. Nothing here can
+recover it; the officers would have to publish it again somewhere.
 
-This module fetches that tab (the anonymous gviz CSV export, exactly like
-:mod:`src.scraper` and :mod:`src.signup`) and returns the drawn skills in the
-order the officers list them. ``build.py`` threads the result into
-``trials.run_week`` and ``signup.plan`` so the published site always reflects the
-*current* draw rather than a hand-transcribed constant that goes stale the moment
-the officers reroll.
+Likewise there is no CYCLE DATE on this tab. The old banner carried one and
+:attr:`TrialDraw.date` is now always ``""``, which the trials page renders as an
+undated draw. The date was carried for logging only and never entered the model.
 
-``config.TRIAL_SKILLS_CURRENT`` remains only as an offline fallback/default for
-tests and direct library calls; the live build reads the sheet.
-
-Skill labels in the sheet use the trial's own names (``Alchemy``, ``Milking``,
-...). The one label that differs from the internal trial-skill name is
-``Cheesesmithing`` (internal ``C.Smithing``); it is aliased below. Parsing is
-anchored on the ``Skilling Trial Info`` / ``Trial Priority`` sentinels — gviz
-silently serves a *different* tab on a bad name, so an unrecognised layout must
-fail loudly rather than emit a stale/guessed draw (the whole point of reading it
-live).
-
-INDEPENDENT CORROBORATION: each guild's sign-up tab ("SC Trial Signup" /
-"LI Trial Signup") heads its four tick-box columns with the same four skills,
-written by the game itself. If this parser and those headers ever disagree, the
-sign-up headers are the more authoritative of the two — see
-``research/trial-tabs.md`` §2.2.
-
-The tab is fetched with gviz's header-collapsing turned OFF
-(``config.GVIZ_NO_HEADER_COLLAPSE``); see :func:`fetch_assignments_csv` for why
-that is not optional. ``build.build_guild`` catches a structure failure here and
-degrades to the last-known draw behind a loud on-page warning rather than felling
-the whole deploy — loud, but no longer fatal.
+Skill labels use the trial's own names (``Alchemy``, ``Milking``, ...). Two
+differ from the internal trial-skill name and are aliased below:
+``Cheesesmithing`` (internal ``C.Smithing``) and ``Bell Farming`` (the member
+tab's joke column name for ``Alchemy``, accepted defensively in case the game
+ever heads the column that way).
 """
 
 from __future__ import annotations
 
 import csv
 import io
-import re
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
@@ -85,38 +80,26 @@ from typing import Optional
 import requests
 
 from . import config
-from .reader import SheetStructureError, _cell, _to_int
+from .reader import SheetStructureError, _cell
 
 
 # ---------------------------------------------------------------------------
-# Layout constants for the "Trial Assignments" tab
+# Layout constants for the draw source (the game-written sign-up tab)
 # ---------------------------------------------------------------------------
-ASSIGNMENTS_TAB = "Trial Assignments"
+# The tab whose header row carries this week's draw. Fixed at Survey Corps'
+# because the draw is shared between guilds and SC's tab is the one the game
+# keeps current (see the module docstring on the 2026-08-14 LI staleness).
+DRAW_TAB = config.DRAW_SOURCE_TAB
 
-# LEGACY anchor (tab layout up to 2026-07-25). The draw lived under a row whose
-# column 1 is exactly this banner; the date sat in column 2 ("Date: 7/24") and
-# the drawn skills in the "Trial N" rows immediately below (skill in col 2,
-# priority in col 4). The COMBAT section uses a distinct banner ("Combat Trail
-# Info"), so anchoring on this exact string keeps the two apart.
-SKILLING_SECTION = "Skilling Trial Info"
+# Column 0's sentinel. gviz does NOT error on an unknown tab name — it silently
+# serves a *different* tab — so this is the only thing standing between a
+# mistyped tab name and a confidently-parsed wrong draw.
+USER_SENTINEL = "User"
 
-# CURRENT anchor (tab layout since 2026-07-31). The draw is a two-column table
-# headed by exactly this string; the drawn skills run down the banner's OWN
-# column and the priority numbers sit in the column to its right. Its column is
-# NOT fixed (it sits at col 10 today, to the right of the cut-off tables), so it
-# is located by scanning every column rather than pinned by index — the officers
-# have already moved this block once. The combat block's own priority column is
-# headed plain "Priority", so this two-word string keeps the two apart.
-PRIORITY_SECTION = "Trial Priority"
-
-# The col-1 label of a drawn-trial row in the LEGACY layout, e.g. "Trial 1".
-_TRIAL_ROW = re.compile(r"Trial\s+\d+", re.IGNORECASE)
-
-# A cycle-date cell, e.g. "Date: 7/31". Since the 2026-07-31 rebuild the skilling
-# section has no date of its own, so the tab's single date (published on the
-# "Combat Trials" banner) is used as the cycle date; it is carried for logging
-# only and both sections are drawn for the same weekly cycle.
-_DATE_CELL = re.compile(r"Date\s*:\s*(.+)", re.IGNORECASE)
+# The four skilling-trial columns are ALWAYS spreadsheet B–E. Mirrors
+# ``signup.SKILLING_COL_START`` / ``SKILLING_COL_COUNT``, which read the
+# tick-boxes under these same columns; the two must not drift apart.
+SKILLING_COL_START = 1
 
 # The guild draws exactly four skilling trials per cycle (research/trial-tabs.md
 # §1 and §2.2). Fail loudly if the sheet ever shows a different count so the
@@ -124,10 +107,18 @@ _DATE_CELL = re.compile(r"Date\s*:\s*(.+)", re.IGNORECASE)
 EXPECTED_TRIALS = 4
 
 # Sheet-label -> internal trial-skill name. Identity for every skill whose sheet
-# label already matches an internal name; only Cheesesmithing differs. Built
+# label already matches an internal name; only these two differ. Built
 # case-insensitively from ``config.TRIAL_SKILL_TO_SHEET_COLUMN`` (the authority
 # on which trial-skill names the rest of the pipeline understands).
-_SKILL_ALIASES = {"cheesesmithing": "C.Smithing"}
+_SKILL_ALIASES = {
+    "cheesesmithing": "C.Smithing",
+    # The member tab calls the Alchemy column "Bell Farming". The game heads the
+    # SIGN-UP column "Alchemy", so this alias should never fire — it is here so
+    # that if the game ever switches to the sheet's own label, the draw keeps
+    # reading rather than failing on a name we already understand.
+    "bellfarming": "Alchemy",
+    "bell farming": "Alchemy",
+}
 _KNOWN_SKILLS = {
     name.lower(): name for name in config.TRIAL_SKILL_TO_SHEET_COLUMN
 }
@@ -137,15 +128,21 @@ _KNOWN_SKILLS = {
 class TrialDraw:
     """This week's skilling-trial draw, read from the sheet.
 
-    ``skills`` are the internal trial-skill names in Trial 1..N order (the same
-    order the officers list them, which also drives sign-up lock precedence in
-    :func:`src.signup.plan`). ``date`` is the cycle date as published on the tab
-    (e.g. ``"7/24"``), carried for logging only.
+    ``skills`` are the internal trial-skill names in the order the GAME lists
+    them across columns B–E, which also drives sign-up lock precedence in
+    :func:`src.signup.plan`. Note that this order is no longer a PRIORITY: the
+    retired ``Trial Priority`` table ranked the four trials 1–4 and the current
+    source carries no such ranking, so the order is the sheet's column order and
+    means nothing beyond it.
 
-    ``min_levels`` maps a trial skill to the minimum sign-up level the officers have
-    set for it, or to ``None`` where they have set none. A skill absent from the map is
-    likewise unrestricted. The legacy layout has no such column and yields all-None,
-    so the constraint simply does not exist until somebody fills the cells in.
+    ``date`` is always ``""`` — the draw source carries no cycle date (see the
+    module docstring). Retained so callers and the rendered page need not change.
+
+    ``min_levels`` maps a trial skill to the minimum sign-up level the officers
+    have set for it, or to ``None`` where they have set none. Always empty from
+    this source, the datum having gone with the old tab; a skill absent from the
+    map is unrestricted, so the constraint simply does not exist until somebody
+    publishes it again.
     """
 
     skills: list[str]
@@ -153,42 +150,44 @@ class TrialDraw:
     min_levels: dict[str, Optional[int]] = field(default_factory=dict)
 
 
-def _normalise_skill(raw: str) -> str:
+def _normalise_skill(raw: str, column: int) -> str:
     """Map a sheet skill label to its internal trial-skill name.
 
     Raises:
         SheetStructureError: if the label is not a recognised trial skill (a
-            typo, a new skill, or the wrong tab served by gviz).
+            typo, a new skill, a combat boss that has drifted left into the
+            skilling block, or the wrong tab served by gviz).
     """
     key = raw.strip().lower()
     name = _SKILL_ALIASES.get(key) or _KNOWN_SKILLS.get(key)
     if name is None:
         raise SheetStructureError(
-            f"Unrecognised skilling-trial skill {raw!r} in the "
-            f"{ASSIGNMENTS_TAB!r} tab. Known trial skills: "
+            f"{DRAW_TAB!r} column {column} (spreadsheet "
+            f"{chr(ord('A') + column)}) has header {raw!r}, which is not a "
+            f"recognised skilling trial. Columns B–E must be this week's four "
+            f"skilling trials. Known trial skills: "
             f"{sorted(config.TRIAL_SKILL_TO_SHEET_COLUMN)}. The tab layout may "
             "have changed, or gviz served a different tab."
         )
     return name
 
 
-def fetch_assignments_csv(tab_name: str = ASSIGNMENTS_TAB) -> str:
-    """Fetch the Trial Assignments tab's gviz CSV export, addressed by name.
+def fetch_draw_csv(tab_name: str = DRAW_TAB) -> str:
+    """Fetch the draw source tab's gviz CSV export, addressed by name.
 
-    Requests ``&headers=0`` (``config.GVIZ_NO_HEADER_COLLAPSE``) so gviz returns
-    every row as DATA instead of guessing how many leading rows are header
-    labels. That guess grows with whatever the officers write above the table:
-    on 2026-07-25 a new 16-row notice pushed the ``Skilling Trial Info`` banner
-    and all four draw rows inside gviz's header row, where the parser could not
-    see them, and the deploy died. With the override the parser reads the sheet's
-    true row layout and is immune to text added above it.
+    Note what is NOT passed here, in deliberate contrast to the retired
+    ``Trial Assignments`` fetch: no ``&headers=0`` override. That override
+    existed to stop gviz swallowing the old tab's banner rows into its guessed
+    header row when the officers wrote prose above the table. Here the header row
+    is exactly what we want, and gviz's default behaviour hands it to us as the
+    CSV's first line — the same request :func:`src.signup.fetch_signup_csv`
+    makes, so the draw and the tick-boxes are read from an identically-shaped
+    response.
 
     Raises:
         RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name)) + (
-        config.GVIZ_NO_HEADER_COLLAPSE
-    )
+    url = config.GVIZ_URL.format(sheet=quote(tab_name))
     try:
         resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
     except requests.RequestException as exc:  # network-level failure
@@ -207,180 +206,71 @@ def fetch_assignments_csv(tab_name: str = ASSIGNMENTS_TAB) -> str:
     return resp.text
 
 
-def _parse_legacy_block(
-    rows: list[list[str]],
-) -> tuple[str, list[str], str, dict[str, Optional[int]]] | None:
-    """Read the LEGACY ``Skilling Trial Info`` block, or ``None`` if absent.
+def trial_columns(csv_text: str, tab_label: str = DRAW_TAB) -> list[str]:
+    """Return the four skilling-trial skills a sign-up tab's header declares.
 
-    Locates the banner (col 1), reads the cycle date (col 2), then collects the
-    contiguous ``Trial N`` rows below it (skill in col 2), stopping at the first
-    non-trial row (e.g. the "Priority goes from 1 to 4" note) — which keeps the
-    combat section out.
+    The shared primitive behind both :func:`parse_draw` (which reads the DRAW
+    from Survey Corps' tab) and ``build.build_guild``'s staleness cross-check
+    (which reads each guild's OWN tab and compares). Returning internal
+    trial-skill names rather than sheet columns keeps both callers in one
+    namespace.
 
-    The legacy layout predates the per-trial minimum sign-up level, so the returned
-    minimum map is empty — every trial unrestricted.
-
-    Returns:
-        ``(section_name, skills, date_cell, min_levels)``, or ``None`` if the banner is
-        not on the tab at all.
-    """
-    header_idx = None
-    date_cell = ""
-    for i, row in enumerate(rows):
-        if _cell(row, 1) == SKILLING_SECTION:
-            header_idx = i
-            date_cell = _cell(row, 2)
-            break
-
-    if header_idx is None:
-        return None
-
-    skills: list[str] = []
-    for row in rows[header_idx + 1:]:
-        label = _cell(row, 1)
-        if _TRIAL_ROW.fullmatch(label):
-            skills.append(_normalise_skill(_cell(row, 2)))
-            continue
-        if skills:
-            break  # end of the drawn-trials block
-        if label == "":
-            continue  # tolerate a blank spacer between banner and Trial 1
-        break  # some other content directly under the banner -> no draw found
-
-    return SKILLING_SECTION, skills, date_cell, {}
-
-
-def _parse_priority_block(
-    rows: list[list[str]],
-) -> tuple[str, list[str], str, dict[str, Optional[int]]] | None:
-    """Read the CURRENT ``Trial Priority`` block, or ``None`` if absent.
-
-    Scans every column for the banner (its column is not fixed), then walks down
-    that same column collecting drawn skills. A blank cell ends the block, which
-    is what separates the four skills from the sign-up prose printed below them;
-    a blank cell BEFORE the first skill is tolerated as a spacer. A non-blank,
-    unrecognised cell raises via :func:`_normalise_skill` rather than being
-    skipped — a renamed or mis-typed skill must be loud, never guessed past.
-
-    The block carries no date (the tab publishes one cycle date, on the combat
-    banner), so the returned date cell is empty and :func:`parse_draw` falls back
-    to the tab-wide scan.
-
-    The column TWO to the right of the banner optionally carries each trial's minimum
-    sign-up level (patch 2026-08-11). It is read when it holds an integer and treated as
-    "no minimum" when blank, non-numeric or absent entirely — a deliberately forgiving
-    rule, because this cell is hand-maintained by officers and a stray note in it must
-    not fell the deploy the way a mistyped SKILL rightly does. The skill column is the
-    structural anchor and stays strict.
-
-    Returns:
-        ``(section_name, skills, "", min_levels)``, or ``None`` if the banner is not on
-        the tab at all.
-    """
-    header = None
-    for i, row in enumerate(rows):
-        for col, cell in enumerate(row):
-            if cell.strip() == PRIORITY_SECTION:
-                header = (i, col)
-                break
-        if header is not None:
-            break
-
-    if header is None:
-        return None
-
-    header_idx, col = header
-    skills: list[str] = []
-    min_levels: dict[str, Optional[int]] = {}
-    for row in rows[header_idx + 1:]:
-        label = _cell(row, col)
-        if label == "":
-            if skills:
-                break  # end of the drawn-trials block
-            continue  # tolerate a blank spacer between banner and first skill
-        skill = _normalise_skill(label)
-        skills.append(skill)
-        # Optional minimum sign-up level, two columns right of the skill. Blank,
-        # non-numeric or absent -> None -> unrestricted.
-        min_levels[skill] = _to_int(_cell(row, col + 2))
-
-    return PRIORITY_SECTION, skills, "", min_levels
-
-
-def _find_cycle_date(rows: list[list[str]]) -> str:
-    """Return the tab's first ``Date: …`` value, or ``""`` if it has none."""
-    for row in rows:
-        for cell in row:
-            match = _DATE_CELL.fullmatch(cell.strip())
-            if match:
-                return match.group(1).strip()
-    return ""
-
-
-def parse_draw(csv_text: str) -> TrialDraw:
-    """Parse the Trial Assignments CSV into this week's :class:`TrialDraw`.
-
-    Tries the LEGACY ``Skilling Trial Info`` block first and falls back to the
-    CURRENT ``Trial Priority`` table (see the module docstring for both shapes).
-    Legacy wins when both are present because it carries explicit ``Trial N``
-    slot labels — strictly more information than the priority table.
+    ``tab_label`` names the tab in any error so a failure reads e.g.
+    "'LI Trial Signup' column 1 ..." — it has no effect on parsing.
 
     Raises:
-        SheetStructureError: if neither anchor is present, no drawn trials are
-            found, the count is not :data:`EXPECTED_TRIALS`, or a skill label is
-            unrecognised (any of these means the wrong tab or a layout change).
+        SheetStructureError: if the CSV is empty, column 0 is not the ``User``
+            sentinel (gviz served a different tab), the row is too short to hold
+            columns B–E, or any of those four carries an unrecognised label.
     """
     rows = list(csv.reader(io.StringIO(csv_text)))
     if not rows:
         raise SheetStructureError(
-            f"{ASSIGNMENTS_TAB!r} CSV was empty; cannot locate the "
-            f"{SKILLING_SECTION!r} or {PRIORITY_SECTION!r} section."
+            f"{tab_label!r} CSV was empty; cannot read the draw from its header "
+            "row."
         )
 
-    # Try the anchors in order of information content: the legacy block carries
-    # explicit "Trial N" slot labels, the priority table does not. An anchor that
-    # is PRESENT but yields no skills (an emptied or repurposed block) must not
-    # shadow the other one — it is only remembered so the count error below names
-    # the right section.
-    found = None
-    for _parse in (_parse_legacy_block, _parse_priority_block):
-        candidate = _parse(rows)
-        if candidate is None:
-            continue
-        if candidate[1]:
-            found = candidate
-            break
-        found = found or candidate
-
-    if found is None:
+    header = rows[0]
+    if USER_SENTINEL not in _cell(header, 0):
         raise SheetStructureError(
-            f"Could not find the {SKILLING_SECTION!r} banner (column 1) or the "
-            f"{PRIORITY_SECTION!r} table (any column) in the "
-            f"{ASSIGNMENTS_TAB!r} tab. The tab may not exist (gviz silently "
-            "serves a different tab in that case) or its layout changed again. "
-            "Inspect the tab before this can run again; each guild's sign-up "
-            "tab heads its four tick-box columns with the same four skills and "
-            "can be used to confirm the draw by hand."
+            f"{tab_label!r} header did not match: expected column 0 to contain "
+            f"{USER_SENTINEL!r}, got {_cell(header, 0)!r}. The tab may not exist "
+            "(gviz silently serves a different tab in that case) or the layout "
+            f"changed. Inspect the {tab_label!r} tab before this can run again."
         )
 
-    section, skills, date_cell, min_levels = found
-    if len(skills) != EXPECTED_TRIALS:
+    end = SKILLING_COL_START + EXPECTED_TRIALS  # first column past the block
+    if len(header) < end:
         raise SheetStructureError(
-            f"Expected {EXPECTED_TRIALS} skilling trials under {section!r} in "
-            f"the {ASSIGNMENTS_TAB!r} tab, found {len(skills)}: {skills}. The "
-            "tab layout may have changed."
+            f"{tab_label!r} has too few columns: expected {USER_SENTINEL!r} plus "
+            f"the four skilling trials in columns B–E (>= {end} columns), got "
+            f"{len(header)}: {header!r}. The tab layout changed or gviz served a "
+            f"different tab. Inspect the {tab_label!r} tab before rerunning."
         )
 
-    # "Date: 7/24" -> "7/24"; tolerate extra whitespace and a missing prefix.
-    # The priority table has no date of its own, so fall back to the tab's.
-    date = date_cell.split(":", 1)[1].strip() if ":" in date_cell else date_cell.strip()
+    return [
+        _normalise_skill(_cell(header, idx), idx)
+        for idx in range(SKILLING_COL_START, end)
+    ]
+
+
+def parse_draw(csv_text: str) -> TrialDraw:
+    """Parse the draw source CSV into this week's :class:`TrialDraw`.
+
+    Raises:
+        SheetStructureError: on anything :func:`trial_columns` rejects. There is
+            no second layout to fall back to, by design — see the module
+            docstring on why the old fallback chain was the problem rather than
+            the safety net.
+    """
     return TrialDraw(
-        skills=skills,
-        date=date or _find_cycle_date(rows),
-        min_levels=min_levels,
+        skills=trial_columns(csv_text, DRAW_TAB),
+        # This source carries no cycle date and no minimum-level column.
+        date="",
+        min_levels={},
     )
 
 
-def load_draw(tab_name: str = ASSIGNMENTS_TAB) -> TrialDraw:
+def load_draw(tab_name: str = DRAW_TAB) -> TrialDraw:
     """Fetch and parse this week's skilling-trial draw from the sheet."""
-    return parse_draw(fetch_assignments_csv(tab_name))
+    return parse_draw(fetch_draw_csv(tab_name))

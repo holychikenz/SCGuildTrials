@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
   schedule:
-    # Daily. The Phase 2 trials optimizer takes ~2-3 min per run, and since the
-    # maxed-community-buff counterfactual landed it runs TWICE per guild (the
-    # level-1 plan and the level-20 counterfactual), so budget roughly double that;
-    # hourly would burn well past ~2000 Actions minutes/month. The weekly draw +
-    # slow-moving member data do not need hourly rebuilds. Adjust if you split
-    # cheap/expensive steps — or set config.TRIALS_PUBLISH_MAXBUFF_PAGE = False,
-    # which drops the second run outright.
+    # Daily. NOT for want of Actions minutes: this repository is PUBLIC, and public
+    # repositories get standard GitHub-hosted runners free and unlimited (and 4-vCPU
+    # ones at that). The "~2000 minutes/month" budget this comment used to cite was
+    # never a constraint here, and it should not be quoted as a reason again.
+    #
+    # Daily because the INPUTS move daily at most: the draw is weekly and the member
+    # data is slow. A push to main rebuilds immediately and is the reliable path when
+    # a refresh is actually needed.
     #
     # 01:00 UTC is chosen for the LAG, not the hour: GitHub queues scheduled
     # workflows best-effort and defers them under load, and this repo's runs have
@@ -29,7 +30,18 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  # CHANGED 2026-08-14 from `false`. GitHub's Pages starter workflow ships `false` so
+  # that a production deployment is never abandoned half-done, which is sound advice
+  # for a deploy that mutates state. This one does not: the build is a pure function
+  # of the guild sheet and rewrites the whole _site from scratch, so a superseded run
+  # has nothing to protect — whatever it would have published, the run that superseded
+  # it publishes fresher.
+  #
+  # What `false` cost, measured: on 2026-08-12 four pushes landed within an hour and
+  # queued behind one another on this group. The 10:08 run was CREATED at 10:08:17 and
+  # its first job did not start until 10:14:46 — 6m29s of a 28m26s run spent waiting
+  # for a predecessor whose output was already obsolete.
+  cancel-in-progress: true
 
 jobs:
   # The suite has never gated a deploy: until now this workflow ran only
@@ -40,8 +52,12 @@ jobs:
   # and rewrites ~15 exact-comparison sites (`== base_points`, `gain >= 0`,
   # `delta > best`), several of which fail by going QUIET rather than by raising:
   # signup._safety_swaps compares floats for equality and would simply publish an
-  # empty swap list. Those are exactly the regressions only pytest catches, so the
-  # tests now run first and the build does not start unless they pass.
+  # empty swap list. Those are exactly the regressions only pytest catches, so no
+  # green Pages deploy happens without them.
+  #
+  # NB "before the build" was never the requirement, only how it was first written;
+  # since 2026-08-14 this job runs ALONGSIDE the build and the gate sits on `deploy`.
+  # See the note on the build job for why that is the same guarantee.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -62,7 +78,15 @@ jobs:
         run: uv run --extra dev python -m pytest tests/ -q
 
   build:
-    needs: test
+    # NO `needs: test` — deliberately. The tests are a gate on PUBLISHING, and the only
+    # step that publishes is `deploy`, so gating `deploy` on both jobs enforces exactly
+    # the same guarantee (a red suite ships nothing) while letting the two jobs run
+    # CONCURRENTLY. Serialising them added the whole ~5 min test job to every run's
+    # wall clock to protect a build whose output is thrown away on failure anyway.
+    #
+    # The cost of being wrong here is one wasted runner-minute on a red build, and
+    # runner minutes are free on a public repo. The cost of the old arrangement was
+    # five minutes of every green one.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -87,7 +111,10 @@ jobs:
           path: _site
 
   deploy:
-    needs: build
+    # BOTH, and this is where the test gate actually lives. `deploy-pages` is the only
+    # step in this workflow that makes anything public, so a failing suite stops the
+    # site here — the artifact `build` uploaded is simply never deployed.
+    needs: [test, build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -1,16 +1,24 @@
 """Unit tests for the weekly trial-draw reader. No network access.
 
-The fixtures mirror the REAL "Trial Assignments" tab as served by gviz with
-header-collapsing disabled (``config.GVIZ_NO_HEADER_COLLAPSE``), in BOTH shapes
-the officers have published:
+REWRITTEN 2026-08-14, and the reason matters more than the tests do.
 
-* ``_live_layout`` — the CURRENT tab (rebuilt 2026-07-31): a "Trial Priority"
-  table off to the right, no "Trial N" slot labels, and no date on the skilling
-  section (only the combat banner carries one). Transcribed from the live tab.
-* ``_legacy_layout`` — the tab up to 2026-07-25: a "Skilling Trial Info" banner
-  with one "Trial N" row per drawn skill, below the 16-row free-assignment
-  notice whose growth once broke the deploy (gviz's header guess swallowed the
-  banner and all four draw rows, so the parser saw neither).
+This file used to hold ~24 tests across TWO transcribed shapes of the
+hand-maintained "Trial Assignments" tab — a ``Skilling Trial Info`` banner with
+``Trial N`` rows, and a right-hand ``Trial Priority`` table. Every one of them
+passed on the day the officers rebuilt that tab a third time and deleted both
+anchors. The tests were green; the site published the wrong four trials for a day.
+
+That is the shape of the failure worth remembering: a fixture transcribed from a
+hand-maintained sheet tests only that we still parse what somebody once typed, and
+says nothing about whether they will keep typing it. So the draw now comes from the
+one tab the GAME writes (``config.DRAW_SOURCE_TAB``) and the fixtures below are its
+header row — a row whose shape is the game's contract with its own sign-up
+tick-boxes, not an officer's layout preference.
+
+The two live fixtures are transcribed verbatim from 2026-08-14, and the pair is the
+point: Survey Corps' tab had been refreshed to the 8/14 cycle and Lactose
+lntolerance's had not, which is exactly the condition ``build._fetch_guild`` now has
+to notice.
 """
 
 import csv
@@ -32,313 +40,214 @@ def _csv(rows: list[list[str]]) -> str:
     return buf.getvalue()
 
 
-def _row(**cells) -> list[str]:
-    """Build a 13-column row from ``c<index>=value`` keyword pairs."""
-    row = [""] * 13
-    for key, value in cells.items():
-        row[int(key[1:])] = value
-    return row
+def _header(*cells: str) -> str:
+    """A sign-up tab reduced to the one row the draw is read from.
+
+    Only the header row matters here; the tick-box rows below it are
+    ``signup.parse_signup``'s business and are tested there. A single member row is
+    included so the fixture is a plausible tab rather than a lone line.
+    """
+    return _csv([list(cells), ["Somebody", *["FALSE"] * (len(cells) - 1)]])
 
 
-# The ten trial-eligible skills, as listed down the per-guild cut-off tables.
-# Both layouts print all ten in a left-hand column; none of them may leak into
-# the draw, which is only ever the four the officers actually drew.
-_TEN_SKILLS = (
-    "Milking", "Foraging", "Woodcutting", "Cheesesmithing", "Crafting",
-    "Tailoring", "Cooking", "Brewing", "Alchemy", "Enhancing",
+# The REAL header rows, 2026-08-14. SC is the draw source; LI is a tab the game had
+# not yet refreshed, and still carried the whole of the 8/10 cycle — its four skills
+# AND both its combat bosses, which is what rules out "LI genuinely drew differently".
+_SC_LIVE = ("User", "Enhancing", "Milking", "Cooking", "Brewing", "Hedgehog", "Swarm")
+_LI_LIVE_STALE = (
+    "User", "Cooking", "Woodcutting", "C.Smithing", "Crafting", "Chameleon", "Swarm",
 )
 
-# The draw live on the tab at the time of the 2026-07-31 rebuild.
-_CURRENT_DRAW = ("Milking", "Foraging", "Crafting", "Alchemy")
+# What each of those tabs says the four skilling trials are, in internal trial-skill
+# names and in the game's own column order.
+_SC_DRAW = ["Enhancing", "Milking", "Cooking", "Brewing"]
+_LI_STALE_DRAW = ["Cooking", "Woodcutting", "C.Smithing", "Crafting"]
 
 
 # ---------------------------------------------------------------------------
-# Fixture: the CURRENT layout (tab rebuilt 2026-07-31)
+# The happy path, against the live row
 # ---------------------------------------------------------------------------
-# Combat is the only block left carrying a date, and its priority column is
-# headed a bare "Priority" — which must NOT be mistaken for "Trial Priority".
-_CURRENT_COMBAT_BLOCK = [
-    _row(c1="Combat Trials"),
-    _row(c1="Date: 7/31", c5="Survey Corps", c7="Lactose Intolerance",
-         c10="Priority"),
-    _row(c1="Trial 1", c3="Badger", c5="Team 1", c7="Team 1", c10="Mages"),
-    _row(c1="Trial 2", c3="Hedgehog", c5="Team 2", c7="Team 2", c10="Neutral"),
-]
+def test_reads_the_four_skilling_columns_from_the_live_header():
+    assert draw.parse_draw(_header(*_SC_LIVE)).skills == _SC_DRAW
 
 
-def _live_layout(skills=_CURRENT_DRAW, priorities=("3", "4", "2", "1")) -> str:
-    """The CURRENT tab: a right-hand "Trial Priority" table, no "Trial N" rows.
+def test_column_order_is_the_games_order_not_a_priority():
+    # The retired Trial Priority table ranked the four trials 1-4; this source has
+    # no ranking at all, so the order is columns B-E left to right and means nothing
+    # more. Pinned because signup.plan reads this order for lock precedence, so a
+    # silent re-ordering would silently change which lock wins.
+    draw_result = draw.parse_draw(_header(*_SC_LIVE))
+    assert draw_result.skills[0] == "Enhancing"   # column B
+    assert draw_result.skills[-1] == "Brewing"    # column E
 
-    The priority table (cols 10-11) overlaps the two per-guild cut-off tables
-    (cols 1-2 and 5-6) row-wise, and is followed by a blank cell and then three
-    lines of sign-up prose — the blank is what ends the block.
-    """
-    rows = [
-        _row(c0="   ", c1="Skilling Trials"),
-        _row(c1="Survey Corps", c10="Lactose Intolerance"),
-        # 22 unlabelled tick-box rows, one per party seat (SC then LI). Since
-        # the rebuild these columns carry no skill headers at all.
-        *[
-            _row(c2="FALSE", c4="FALSE", c6="FALSE", c8="FALSE",
-                 c11="FALSE", c12="FALSE")
-            for _ in range(22)
-        ],
-        _row(),
-        _row(c1="Survey Corps", c4="Lactose Intolerant"),
-        _row(c2="Cut-Off(30)", c6="Cut-Off(30)"),
-        *[_row(c1=s, c2="120", c5=s, c6="113") for s in _TEN_SKILLS],
-        _row(),
-        *_CURRENT_COMBAT_BLOCK,
-    ]
 
-    # Paint the "Trial Priority" table into cols 10-11, alongside the cut-offs.
-    banner = next(
-        i for i, r in enumerate(rows)
-        if r[1] == "Survey Corps" and r[4] == "Lactose Intolerant"
-    )
-    rows[banner][10] = draw.PRIORITY_SECTION
-    for i, skill in enumerate(skills):
-        rows[banner + 1 + i][10] = skill
-        rows[banner + 1 + i][11] = priorities[i] if i < len(priorities) else ""
+def test_combat_columns_are_ignored_by_position():
+    # Hedgehog and Swarm sit in F and G. They are not skills and would raise if the
+    # block were read one column too wide, which is what makes this a real assertion
+    # rather than a restatement of the fixture.
+    assert "Hedgehog" not in draw.parse_draw(_header(*_SC_LIVE)).skills
+    assert "Swarm" not in draw.parse_draw(_header(*_SC_LIVE)).skills
 
-    # ...then a blank spacer, then the sign-up prose the block must stop before.
-    prose = banner + 1 + len(skills) + 1
-    for j, line in enumerate((
-        "If you do not meet the cut-off, wait for the trial to fill up",
-        "Players with Skilling Gear can join even below the cut-off",
-        "Join the trial based on the priority order above",
-    )):
-        rows[prose + j][10] = line
 
-    return _csv(rows)
+def test_extra_trailing_columns_are_tolerated():
+    # The game has added trailing helper columns before now; only B-E are read.
+    header = (*_SC_LIVE, "", "Notes", "anything at all")
+    assert draw.parse_draw(_header(*header)).skills == _SC_DRAW
 
 
 # ---------------------------------------------------------------------------
-# Fixture: the LEGACY layout (tab up to 2026-07-25)
-# ---------------------------------------------------------------------------
-# Notice block, the ten free-assignment skill labels, a pointer to the generated
-# site, THEN the skilling draw, then combat.
-_NOTICE_BLOCK = [
-    _row(c1='ALL TRIALS ARE "FREE" ASSIGNED'),
-    _row(c1='You are "free" to decide which Trial you want to join'),
-    _row(c1="Skilling Trials"),
-    _row(c1="Survey Corps", c4="Lactose Intolerant"),
-    _row(c2="Cut-Off(30)", c5="Cut-Off(30)", c11="IMPORTANT"),
-    *[_row(c1=skill, c4=skill) for skill in _TEN_SKILLS],
-    _row(c1="REFER TO THE NEW TRIAL ASSIGNMENTS SHEET"),
-    _row(c1="https://holychikenz.github.io/SC"),
-]
-
-_COMBAT_BLOCK = [
-    _row(c1="Combat Trials"),
-    _row(c1="These are the fixed members"),
-    _row(c1="Combat Trail Info", c2="Date:  7/24", c4="Priority"),
-    _row(c1="Trial 1", c2="Jellyfish", c4="Range/Nature"),
-    _row(c1="Trial 2", c2="Hedgehog", c4="Neutral"),
-]
-
-
-def _legacy_layout(
-    skills=("Milking", "Woodcutting", "Crafting", "Alchemy"), date="Date: 7/24"
-) -> str:
-    rows = [
-        *_NOTICE_BLOCK,
-        _row(c1="Skilling Trial Info", c2=date, c4="Priority"),
-        *[
-            _row(c1=f"Trial {i}", c2=skill)
-            for i, skill in enumerate(skills, start=1)
-        ],
-        *_COMBAT_BLOCK,
-    ]
-    return _csv(rows)
-
-
-# ---------------------------------------------------------------------------
-# The 2026-07-31 regression: the tab rebuilt around a "Trial Priority" table
-# ---------------------------------------------------------------------------
-def test_current_layout_parses_the_priority_table():
-    # THE REGRESSION TEST. The officers rebuilt the tab: the "Skilling Trial
-    # Info" banner and its four "Trial N" rows are gone, replaced by a
-    # right-hand "Trial Priority" table. The parser must read the draw from it
-    # rather than degrade to the last-known (and by then wrong) draw.
-    d = draw.parse_draw(_live_layout())
-    assert d.skills == ["Milking", "Foraging", "Crafting", "Alchemy"]
-
-
-def test_current_layout_takes_the_cycle_date_from_the_combat_banner():
-    # The rebuilt skilling section carries no date of its own; the tab's single
-    # "Date: 7/31" now sits on the combat banner below it.
-    assert draw.parse_draw(_live_layout()).date == "7/31"
-
-
-def test_priority_table_ignores_the_ten_cut_off_skill_labels():
-    # The two cut-off tables list all ten skills in cols 1 and 5, overlapping
-    # the priority table row-wise. Only the banner's own column is read.
-    d = draw.parse_draw(_live_layout())
-    assert len(d.skills) == draw.EXPECTED_TRIALS == 4
-    assert "Woodcutting" not in d.skills   # in the cut-off list, not drawn
-    assert "Enhancing" not in d.skills
-
-
-def test_priority_table_stops_at_the_blank_before_the_sign_up_prose():
-    # Three lines of prose follow the four skills in the same column, separated
-    # by one blank cell. Reading past the blank would raise "Unrecognised".
-    assert draw.parse_draw(_live_layout()).skills[-1] == "Alchemy"
-
-
-def test_bare_combat_priority_header_is_not_the_trial_priority_table():
-    # The combat block heads its own column a plain "Priority". Anchoring on
-    # that would read "Mages"/"Neutral" as skilling trials, so the sentinel is
-    # the two-word "Trial Priority" — with neither anchor present, we fail loud.
-    rows = [_row(c1="Skilling Trials"), *_CURRENT_COMBAT_BLOCK]
-    with pytest.raises(SheetStructureError, match="Trial Priority"):
-        draw.parse_draw(_csv(rows))
-
-
-def test_current_layout_wrong_trial_count_raises():
-    with pytest.raises(SheetStructureError, match="Expected 4"):
-        draw.parse_draw(_live_layout(skills=("Milking", "Crafting")))
-
-
-def test_current_layout_unrecognised_skill_raises():
-    with pytest.raises(SheetStructureError, match="Unrecognised"):
-        draw.parse_draw(
-            _live_layout(skills=("Milking", "Foraging", "Crafting", "Fishing"))
-        )
-
-
-# ---------------------------------------------------------------------------
-# The 2026-07-25 regression: a notice block above the LEGACY draw
-# ---------------------------------------------------------------------------
-def test_draw_parses_below_the_free_assignment_notice():
-    # 16 rows of notice sit above the banner; the parser must still find the
-    # draw beneath them.
-    d = draw.parse_draw(_legacy_layout())
-    assert d.skills == ["Milking", "Woodcutting", "Crafting", "Alchemy"]
-    assert d.date == "7/24"
-
-
-def test_draw_ignores_the_ten_free_assignment_skill_labels():
-    # The notice block lists all ten skills in column 1 — none of them may leak
-    # into the draw, which is anchored on the banner and the "Trial N" rows.
-    d = draw.parse_draw(_legacy_layout())
-    assert len(d.skills) == draw.EXPECTED_TRIALS == 4
-    assert "Foraging" not in d.skills   # listed in the notice, not drawn
-    assert "Enhancing" not in d.skills
-
-
-def test_combat_section_never_bleeds_into_the_skilling_draw():
-    # The combat block below carries its own "Trial 1"/"Trial 2" rows under a
-    # distinct banner; the skilling draw must stop before them.
-    d = draw.parse_draw(_legacy_layout())
-    assert "Jellyfish" not in d.skills and "Hedgehog" not in d.skills
-
-
-# ---------------------------------------------------------------------------
-# Choosing between the two layouts
-# ---------------------------------------------------------------------------
-def test_legacy_block_wins_when_both_anchors_are_present():
-    # If the officers ever restore the "Trial N" rows alongside the priority
-    # table, the legacy block is preferred: it alone carries slot labels.
-    rows = list(csv.reader(io.StringIO(_live_layout())))
-    rows.append(_row(c1="Skilling Trial Info", c2="Date: 7/24", c4="Priority"))
-    rows.extend(
-        _row(c1=f"Trial {i}", c2=s)
-        for i, s in enumerate(("Cooking", "Brewing", "Tailoring", "Milking"), 1)
-    )
-    assert draw.parse_draw(_csv(rows)).skills == [
-        "Cooking", "Brewing", "Tailoring", "Milking",
-    ]
-
-
-def test_an_emptied_legacy_banner_does_not_shadow_the_priority_table():
-    # A leftover banner with no "Trial N" rows under it carries no draw, so it
-    # must fall through to the priority table rather than fail the build.
-    rows = list(csv.reader(io.StringIO(_live_layout())))
-    rows.append(_row(c1="Skilling Trial Info", c2="Date: 7/24", c4="Priority"))
-    assert draw.parse_draw(_csv(rows)).skills == list(_CURRENT_DRAW)
-
-
-# ---------------------------------------------------------------------------
-# Parsing details (LEGACY layout)
+# Label normalisation
 # ---------------------------------------------------------------------------
 def test_cheesesmithing_is_aliased_to_the_internal_name():
-    d = draw.parse_draw(
-        _legacy_layout(skills=("Cheesesmithing", "Milking", "Cooking", "Brewing"))
-    )
-    assert d.skills[0] == "C.Smithing"
-    assert all(s in config.TRIAL_SKILL_TO_SHEET_COLUMN for s in d.skills)
+    header = ("User", "Cheesesmithing", "Milking", "Cooking", "Brewing")
+    assert draw.parse_draw(_header(*header)).skills[0] == "C.Smithing"
 
 
-def test_cheesesmithing_is_aliased_in_the_priority_table_too():
-    d = draw.parse_draw(
-        _live_layout(skills=("Cheesesmithing", "Milking", "Cooking", "Brewing"))
-    )
-    assert d.skills[0] == "C.Smithing"
+def test_the_internal_c_smithing_spelling_also_reads():
+    # LI's live tab used this spelling where SC's used the long one, so both must go.
+    assert draw.trial_columns(_header(*_LI_LIVE_STALE), "LI") == _LI_STALE_DRAW
+
+
+def test_bell_farming_is_accepted_as_alchemy():
+    # Defensive: the game heads the SIGN-UP column "Alchemy", but the member tab
+    # calls that same skill "Bell Farming". If the game ever switches to the sheet's
+    # own label the draw should keep reading rather than fail on a name we know.
+    header = ("User", "Bell Farming", "Milking", "Cooking", "Brewing")
+    assert draw.parse_draw(_header(*header)).skills[0] == "Alchemy"
 
 
 def test_skill_labels_are_case_insensitive():
-    d = draw.parse_draw(
-        _legacy_layout(skills=("milking", "WOODCUTTING", "Crafting", "alchemy"))
-    )
-    assert d.skills == ["Milking", "Woodcutting", "Crafting", "Alchemy"]
+    header = ("User", "eNhAnCiNg", "milking", "COOKING", "Brewing")
+    assert draw.parse_draw(_header(*header)).skills == _SC_DRAW
 
 
-def test_date_tolerates_a_missing_prefix():
-    d = draw.parse_draw(_legacy_layout(date="7/31"))
-    assert d.date == "7/31"
-
-
-def test_blank_spacer_between_banner_and_first_trial_is_tolerated():
-    rows = [
-        *_NOTICE_BLOCK,
-        _row(c1="Skilling Trial Info", c2="Date: 7/24"),
-        _row(),  # spacer
-        *[
-            _row(c1=f"Trial {i}", c2=s)
-            for i, s in enumerate(
-                ("Milking", "Woodcutting", "Crafting", "Alchemy"), start=1
-            )
-        ],
-    ]
-    assert draw.parse_draw(_csv(rows)).skills[0] == "Milking"
+def test_surrounding_whitespace_is_tolerated():
+    header = ("User ", " Enhancing", "Milking ", " Cooking ", "Brewing")
+    assert draw.parse_draw(_header(*header)).skills == _SC_DRAW
 
 
 # ---------------------------------------------------------------------------
-# Loud failures (the parser must never guess a draw)
+# Loud failure. Every one of these used to be a silently-wrong draw.
 # ---------------------------------------------------------------------------
-def test_missing_both_banners_raises_naming_both():
-    rows = [*_NOTICE_BLOCK, *_COMBAT_BLOCK]  # no skilling anchor at all
+def test_missing_user_sentinel_raises():
+    # gviz does NOT error on an unknown tab name — it serves a DIFFERENT tab. This
+    # sentinel is the only thing between a typo in DRAW_SOURCE_TAB and a confidently
+    # parsed draw belonging to some other table entirely.
+    header = ("Member", "Enhancing", "Milking", "Cooking", "Brewing")
     with pytest.raises(SheetStructureError) as exc:
-        draw.parse_draw(_csv(rows))
-    assert "Skilling Trial Info" in str(exc.value)
-    assert "Trial Priority" in str(exc.value)
+        draw.parse_draw(_header(*header))
+    assert "User" in str(exc.value)
 
 
-def test_wrong_trial_count_raises():
-    with pytest.raises(SheetStructureError, match="Expected 4"):
-        draw.parse_draw(_legacy_layout(skills=("Milking", "Crafting")))
+def test_too_few_columns_raises():
+    header = ("User", "Enhancing", "Milking")  # only two trials
+    with pytest.raises(SheetStructureError) as exc:
+        draw.parse_draw(_header(*header))
+    assert "too few columns" in str(exc.value)
 
 
-def test_unrecognised_skill_raises():
-    with pytest.raises(SheetStructureError, match="Unrecognised"):
-        draw.parse_draw(
-            _legacy_layout(skills=("Milking", "Woodcutting", "Crafting", "Fishing"))
-        )
+def test_unrecognised_skilling_header_raises():
+    # A combat boss that has drifted left into the skilling block, a renamed skill,
+    # or a typo. Never guessed past: the draw is the input to everything.
+    header = ("User", "Enhancing", "Chameleon", "Cooking", "Brewing")
+    with pytest.raises(SheetStructureError) as exc:
+        draw.parse_draw(_header(*header))
+    assert "Chameleon" in str(exc.value)
+
+
+def test_the_error_names_the_offending_spreadsheet_column():
+    # So a reader of the CI log can open the sheet at the right cell.
+    header = ("User", "Enhancing", "Milking", "Cooking", "Nonsense")
+    with pytest.raises(SheetStructureError) as exc:
+        draw.parse_draw(_header(*header))
+    assert "column 4" in str(exc.value) and "E" in str(exc.value)
+
+
+def test_a_blank_skilling_header_raises():
+    # An emptied cell is a layout change, not "no trial this week".
+    header = ("User", "Enhancing", "", "Cooking", "Brewing")
+    with pytest.raises(SheetStructureError):
+        draw.parse_draw(_header(*header))
 
 
 def test_empty_csv_raises():
-    with pytest.raises(SheetStructureError):
+    with pytest.raises(SheetStructureError) as exc:
         draw.parse_draw("")
+    assert "empty" in str(exc.value)
+
+
+def test_there_is_no_layout_fallback():
+    # The retired anchors must NOT be honoured. A tab that still carries an old-style
+    # "Trial Priority" table but no sign-up header row is a wrong tab, and saying so
+    # is the whole lesson of 2026-08-14: a chain of fallbacks across hand-made shapes
+    # is what let a stale draw ship quietly.
+    legacy = _csv([
+        ["", "Trial Priority", ""],
+        ["", "Milking", "3"],
+        ["", "Cooking", "1"],
+    ])
+    with pytest.raises(SheetStructureError):
+        draw.parse_draw(legacy)
 
 
 # ---------------------------------------------------------------------------
-# The fetch must disable gviz's header guessing
+# What this source does NOT carry, stated so a regression reads as a change
 # ---------------------------------------------------------------------------
-def test_fetch_disables_gviz_header_collapsing(monkeypatch):
-    # Without &headers=0 gviz decides for itself how many leading rows are
-    # labels, and a notice added above the table hides the draw. This assertion
-    # is the guard against that regression returning.
+def test_there_is_no_cycle_date():
+    # The retired banner published one; this tab does not. Carried as "" rather than
+    # removed so the page and callers need not change (it was logging only).
+    assert draw.parse_draw(_header(*_SC_LIVE)).date == ""
+
+
+def test_there_are_no_minimum_sign_up_levels():
+    # The per-trial minimum sign-up level (2026-08-11) lived in a third column of the
+    # Trial Priority table. The officers deleted that table, so the datum exists
+    # nowhere on the sheet and every trial is unrestricted — which is precisely the
+    # documented rollback state of that feature, not a parsing failure.
+    assert draw.parse_draw(_header(*_SC_LIVE)).min_levels == {}
+
+
+# ---------------------------------------------------------------------------
+# The staleness cross-check primitive (build._fetch_guild's input)
+# ---------------------------------------------------------------------------
+def test_trial_columns_reads_any_guilds_tab():
+    # Same primitive, pointed at a guild's own tab rather than the draw source. This
+    # is how build.py compares a guild's ticks against the week actually drawn.
+    assert draw.trial_columns(_header(*_SC_LIVE), "SC Trial Signup") == _SC_DRAW
+    assert (
+        draw.trial_columns(_header(*_LI_LIVE_STALE), "LI Trial Signup")
+        == _LI_STALE_DRAW
+    )
+
+
+def test_the_live_2026_08_14_tabs_disagree():
+    # The regression fixture for the bug itself. Both rows are valid, both parse, and
+    # every label in both is a real skill — which is exactly why nothing noticed that
+    # one of them was a week out of date. Compared as SETS, because the game orders
+    # these columns as it pleases and a re-ordering is not a stale week.
+    sc = set(draw.trial_columns(_header(*_SC_LIVE), "SC"))
+    li = set(draw.trial_columns(_header(*_LI_LIVE_STALE), "LI"))
+    assert sc != li
+
+
+def test_a_reordered_tab_is_not_treated_as_stale():
+    # The other half of that rule: same four trials, different columns, same week.
+    shuffled = ("User", "Brewing", "Cooking", "Enhancing", "Milking", "Hedgehog")
+    assert set(draw.trial_columns(_header(*shuffled), "SC")) == set(_SC_DRAW)
+
+
+# ---------------------------------------------------------------------------
+# The fetch
+# ---------------------------------------------------------------------------
+def test_fetch_does_not_disable_gviz_header_collapsing(monkeypatch):
+    """The INVERSE of the assertion this file used to carry, and deliberately so.
+
+    ``&headers=0`` (``config.GVIZ_NO_HEADER_COLLAPSE``) existed because the old tab's
+    banner sat beneath whatever prose the officers wrote above it, and gviz's header
+    guess would swallow the draw rows. Here the header row IS the draw, and that
+    override would hide the one line we want. Pinned so a well-meaning "restore the
+    override" cannot quietly blind the parser.
+    """
     seen = {}
 
     class _Resp:
@@ -353,60 +262,22 @@ def test_fetch_disables_gviz_header_collapsing(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(draw.requests, "get", fake_get)
-    draw.fetch_assignments_csv()
-    assert config.GVIZ_NO_HEADER_COLLAPSE == "&headers=0"
-    assert seen["url"].endswith("&headers=0")
-    assert "Trial%20Assignments" in seen["url"]
+    draw.fetch_draw_csv()
+    assert config.GVIZ_NO_HEADER_COLLAPSE not in seen["url"]
+    assert "SC%20Trial%20Signup" in seen["url"]
 
 
-# ---------------------------------------------------------------------------
-# Per-trial minimum sign-up level (patch 2026-08-11) — the optional third column
-# ---------------------------------------------------------------------------
-def test_priority_block_reads_the_optional_minimum_level_column():
-    csv_text = (
-        ",,,,,,,,,,Trial Priority,,\n"
-        ",,,,,,,,,,Milking,3,95\n"
-        ",,,,,,,,,,Foraging,4,\n"
-        ",,,,,,,,,,Crafting,2,100\n"
-        ",,,,,,,,,,Alchemy,1,\n"
-    )
-    d = draw.parse_draw(csv_text)
-    assert d.skills == ["Milking", "Foraging", "Crafting", "Alchemy"]
-    assert d.min_levels == {
-        "Milking": 95,
-        "Foraging": None,
-        "Crafting": 100,
-        "Alchemy": None,
-    }
+def test_fetch_addresses_the_configured_draw_tab():
+    # One knob, one source. If this drifts from config, the cross-check in build.py
+    # would be comparing a guild's tab against some other tab's week.
+    assert draw.DRAW_TAB == config.DRAW_SOURCE_TAB == "SC Trial Signup"
 
 
-def test_absent_minimum_column_means_every_trial_is_unrestricted():
-    # Absence is the feature's rollback: clear the cells (or never add them) and the
-    # constraint does not exist.
-    csv_text = (
-        ",,,,,,,,,,Trial Priority,\n"
-        ",,,,,,,,,,Milking,3\n"
-        ",,,,,,,,,,Foraging,4\n"
-        ",,,,,,,,,,Crafting,2\n"
-        ",,,,,,,,,,Alchemy,1\n"
-    )
-    d = draw.parse_draw(csv_text)
-    assert d.skills == ["Milking", "Foraging", "Crafting", "Alchemy"]
-    assert all(v is None for v in d.min_levels.values())
+def test_the_skilling_block_geometry_matches_the_signup_parser():
+    # draw.py reads the four HEADERS; signup.parse_signup reads the ticks beneath the
+    # same four columns. They are separate constants in separate modules, so pin that
+    # they agree — a drift would have one module reading a column the other ignores.
+    from src import signup
 
-
-def test_non_numeric_minimum_is_ignored_rather_than_fatal():
-    # This cell is hand-maintained prose territory. A stray note in it must degrade to
-    # "no minimum", NOT fell the deploy the way a mistyped SKILL rightly does — the
-    # skill column is the structural anchor and stays strict.
-    csv_text = (
-        ",,,,,,,,,,Trial Priority,,\n"
-        ",,,,,,,,,,Milking,3,ask an officer\n"
-        ",,,,,,,,,,Foraging,4,90\n"
-        ",,,,,,,,,,Crafting,2,\n"
-        ",,,,,,,,,,Alchemy,1,-\n"
-    )
-    d = draw.parse_draw(csv_text)
-    assert d.min_levels["Milking"] is None
-    assert d.min_levels["Foraging"] == 90
-    assert d.min_levels["Alchemy"] is None
+    assert draw.SKILLING_COL_START == signup.SKILLING_COL_START
+    assert draw.EXPECTED_TRIALS == signup.SKILLING_COL_COUNT

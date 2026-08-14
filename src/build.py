@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import sys
+from concurrent import futures
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +22,7 @@ from . import draw as draw_model
 from . import signup as signup_model
 from . import trials as trials_model
 from .processor import process
-from .reader import SheetStructureError, fetch_csv, parse
+from .reader import MemberRow, SheetStructureError, fetch_csv, parse
 from .scraper import scrape_member_tab
 
 OUTPUT_DIR = Path("_site")
@@ -64,8 +66,12 @@ TRIALS_MAXBUFF_JSON = "trials-maxbuffs.json"
 # guild into its own sub-directory (``_site/li/``). Pages inside a guild's
 # directory link to each other with plain relative hrefs (``trials.html`` etc.),
 # which resolve within that directory; the only cross-directory link is the
-# sibling-guild jump in the nav (``sibling_home``). The trial *draw* is shared —
-# both guilds read the one "Trial Assignments" tab (``draw.load_draw``).
+# sibling-guild jump in the nav (``sibling_home``). The trial *draw* is shared — read
+# ONCE from the game-written tab named by ``config.DRAW_SOURCE_TAB``
+# (``draw.load_draw``) and handed to every guild. Each guild's OWN sign-up tab is
+# still read for its ticks, and cross-checked against that draw: the game refreshes
+# the two guilds' tabs at different moments, so a guild whose tab still lists a
+# previous cycle has its plan withheld rather than built from last week's volunteers.
 @dataclass(frozen=True)
 class GuildSite:
     """One guild's build: which tabs to read, where to write, how to label it."""
@@ -1365,7 +1371,7 @@ def _render_trials_html(
 
     ``draw_warning``, when set, is shown as a banner at the top of the page: the
     live draw could not be read and the skills below are the last known ones (see
-    ``build_guild``). Empty means the draw came from the sheet as normal.
+    ``_load_draw``). Empty means the draw came from the sheet as normal.
 
     ``counterpart`` names the sibling page built under the OTHER community-buff
     level (``{"href", "level", "total"}``) and turns on the level switch at the top
@@ -2945,120 +2951,302 @@ def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSit
 """
 
 
-def build_guild(site: "GuildSite") -> str:
-    """Build one guild's pages into ``site.out_dir``; return a one-line summary.
+# ---------------------------------------------------------------------------
+# The build, fanned out across processes
+# ---------------------------------------------------------------------------
+# WHY THIS IS NOT ONE SERIAL PASS ANY MORE (2026-08-14).
+#
+# The build had grown from 5m25s to 16m35s on the runner, and every second of it
+# was spent one after another. Measured per phase on live rosters:
+#
+#              run_week L1   run_week L20   signup.plan   total
+#   SC              84.8s          90.8s        18.6s    194.6s
+#   LI              56.2s          95.1s       ~18.0s   ~170.0s
+#
+# Two things had landed: the 2026-08-11 partial-credit patch (which cost little)
+# and the level-20 counterfactual page (which very nearly DOUBLED the work, because
+# it is a second complete optimiser run per guild — and a dearer one, since at
+# level-20 buffs the parties reach higher tiers and every simulate_race in the hot
+# loop runs longer; note LI's L20 costs 69% more than its L1).
+#
+# But those four optimiser runs are mutually independent, and the runner has four
+# vCPUs (GitHub gives public repositories 4-vCPU/16GiB machines, with unlimited free
+# Actions minutes — the "~2000 minutes/month" worry this file's cron comment used to
+# carry did not apply to a public repo). So the four units now run concurrently and
+# the critical path becomes max(L1+signup, L20) per guild rather than the sum of
+# everything: ~103s against ~365s locally.
+#
+# THE OUTPUT IS UNCHANGED, BIT FOR BIT. Every seed is fixed
+# (config.TRIAL_OPTIMIZER_SEED, and _run_ensemble's derived seed + 1 + i), each unit
+# reads only its own inputs, and ties are settled by a canonical party key — so no
+# result depends on execution order or on which unit finishes first.
+#
+# PROCESSES, NOT THREADS, and this is not a preference. The counterfactual runs under
+# trials.community_buff_level, which REBINDS module globals on config (see its
+# docstring: "NOT thread-safe, and not intended to be"). Two regimes in one
+# interpreter would corrupt each other's rate model. Separate processes each get their
+# own copy of config, which is exactly the isolation that context manager assumes.
+#
+# THE ROSTER IS FETCHED ONCE, IN THE PARENT, and handed down. That is not merely to
+# save requests: it guarantees both regimes of a guild see ONE snapshot of the sheet.
+# Were each child to fetch for itself, an officer editing the member tab mid-build
+# could make trials.html and trials-maxbuffs.html disagree about who is in the guild.
+#
+# RENDERING STAYS IN THE PARENT because each trials page's regime switch carries the
+# OTHER page's level and total, so neither can be written until both units are done.
+# It is string work and costs nothing.
+#
+# config.BUILD_PARALLEL = False is the one-line rollback: the same units, run
+# serially in this process, for when a traceback needs to be read in peace.
+@dataclass
+class _GuildInputs:
+    """One guild's fetched inputs — everything the compute units need.
 
-    Runs the full pipeline for a single guild: the member skill register
-    (index.html + data.json), the trials optimiser (trials.html + trials.json,
-    plus the maxed-community-buff counterfactual trials-maxbuffs.html/.json from a
-    second optimiser run), and the sign-up optimiser (signup.html + signup.json).
-    The trial *draw* is the shared "Trial Assignments" tab (both guilds run the
-    same weekly draw).
+    Assembled in the parent (all network, ~1s) so the children are pure CPU and the
+    whole guild is provably reading one snapshot of the sheet.
+    """
+
+    site_key: str
+    # The guild's roster from its member tab: the input to BOTH regimes and to the
+    # sign-up plan. A list of plain dataclasses, hence picklable.
+    members: list[MemberRow]
+    # process() output for index.html / data.json (written by the parent — cheap).
+    register: dict
+    # {member_name: {sheet_skill_names_ticked}}, or None when the sign-up plan
+    # cannot be built at all (see signup_unavailable).
+    picks: Optional[dict[str, set[str]]]
+    # Empty when picks is usable; otherwise the reason, rendered onto an inactive
+    # signup.html so the nav stays valid and the page says why it cannot help.
+    signup_unavailable: str = ""
+    # The same reason in a few words, for the one-line CI summary. Carried separately
+    # rather than truncated from the long form, which contains skill names with dots
+    # in them ("C.Smithing") and does not survive being cut at the first period.
+    signup_unavailable_short: str = ""
+    # Filled by main() in the render phase from the published unit's result. Not an
+    # input — it lives here so one object carries everything _write_guild needs.
+    plan_dict: Optional[dict] = None
+
+
+def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _GuildInputs:
+    """Fetch one guild's sheet inputs and validate its sign-up tab against the draw.
 
     Raises:
-        SheetStructureError / RuntimeError: on a hard failure of the member tab,
-            register CSV, the trial draw, or a sign-up *fetch* (network). The
-            caller (``main``) maps these to an exit code — fatal for a
-            ``required`` guild, a warning otherwise. The sign-up *structure* step
-            degrades in place to an inactive placeholder page (exactly as the
-            single-guild build did), so a repurposed sign-up tab is never fatal.
+        SheetStructureError: if the guild's MEMBER tab no longer matches its layout
+            (fatal for a required guild — there is no page without a roster).
+        RuntimeError: on any network/HTTP failure.
+    """
+    # Survey Corps reads the gid=0 published register; every other guild has no such
+    # gid export, so its register is built from the gviz member tab (which the trials
+    # step reuses, so that tab is fetched only once per guild).
+    if site.use_register_csv:
+        register = process(parse(fetch_csv()))
+    else:
+        register = None  # filled from the member tab below
+
+    gd = scrape_member_tab(site.member_tab)
+    if register is None:
+        register = process(gd.members)
+
+    # --- The sign-up tab, and whether it is talking about THIS week --------------
+    # A SheetStructureError here means this guild's sign-up tab no longer carries the
+    # tick-box sign-up table (e.g. trials went "free-assigned" and the tab was
+    # repurposed — see the 2026-07 reformat). That is an upstream DATA change, not a
+    # build failure: the guild still gets its member and trials pages and an inactive
+    # signup.html. A network/HTTP RuntimeError still propagates and fails loudly.
+    picks: Optional[dict[str, set[str]]] = None
+    unavailable = ""
+    unavailable_short = ""
+    try:
+        signup_csv = signup_model.fetch_signup_csv(site.signup_tab)
+        tab_skills = draw_model.trial_columns(signup_csv, site.signup_tab)
+
+        # THE STALENESS GUARD, added 2026-08-14 after the case that motivated it.
+        # The game rewrites each guild's sign-up tab when a new cycle opens, and it
+        # does not do so for both guilds at once. On 2026-08-14 the LI tab still held
+        # the ENTIRE 8/10 cycle — its four skills AND both its combat bosses — while
+        # SC's had moved on to 8/14. Nothing noticed, because parse_signup validates
+        # that the four headers are SKILLS and every one of last week's was.
+        #
+        # So a plan was being built from the wrong week's volunteers and published as
+        # this week's advice. That is worse than no plan: an officer cannot tell it
+        # apart from a good one. The plan is therefore WITHHELD when a guild's own
+        # sign-up columns disagree with the draw, and the page says so.
+        #
+        # Compared as SETS, not sequences: the game orders these columns as it likes
+        # and the draw carries no priority (see draw.TrialDraw), so order is not
+        # information and a re-ordering must not be mistaken for a stale week.
+        if set(tab_skills) != set(week_draw.skills):
+            unavailable = (
+                f"The {site.signup_tab!r} tab lists "
+                f"{', '.join(tab_skills)}, which is not this week's draw "
+                f"({', '.join(week_draw.skills)}). The game refreshes each guild's "
+                f"sign-up tab when a new cycle opens and has not yet refreshed this "
+                f"one, so its ticks are a PREVIOUS week's volunteers. A plan built "
+                f"from them would be indistinguishable from a good one, so none is "
+                f"published; it returns by itself once the tab catches up."
+            )
+            unavailable_short = (
+                f"stale tab, lists [{', '.join(tab_skills)}]"
+            )
+        else:
+            picks = signup_model.parse_signup(signup_csv, tab_label=site.signup_tab)
+    except SheetStructureError as exc:
+        unavailable = str(exc)
+        unavailable_short = f"{site.signup_tab} not in tick-box sign-up format"
+
+    if unavailable:
+        print(
+            f"WARNING ({site.key}): sign-up plan withheld — {unavailable}",
+            file=sys.stderr,
+        )
+
+    return _GuildInputs(
+        site_key=site.key,
+        members=gd.members,
+        register=register,
+        picks=picks,
+        signup_unavailable=unavailable,
+        signup_unavailable_short=unavailable_short,
+    )
+
+
+def _compute_unit(job: dict) -> dict:
+    """Run ONE optimiser unit. The child-process entry point.
+
+    Module-level and taking/returning only plain data, so it pickles by reference
+    under both the ``fork`` and ``spawn`` start methods.
+
+    ``job["level"]`` is None for the PUBLISHED regime (whatever
+    config.COMMUNITY_BUFF_LEVEL says) or a ladder level for a counterfactual, run
+    inside trials.community_buff_level — which is why this must be a process of its
+    own rather than a thread (that context manager rebinds config globals).
+
+    ``job["picks"]`` is None for a counterfactual unit and the parsed sign-up ticks
+    for the published one. The sign-up plan is deliberately computed HERE, in the same
+    unit as the published week, because it needs that week's WeekResult object as its
+    optimal ceiling (signup.optimal_from_week) — keeping the two together avoids
+    shipping a large object between processes and keeps the two pages agreeing on the
+    ceiling by construction.
+    """
+    level = job["level"]
+    members = job["members"]
+    skills = job["skills"]
+    min_levels = job["min_levels"]
+
+    if level is None:
+        week = trials_model.run_week(members, skills=skills, min_levels=min_levels)
+    else:
+        with trials_model.community_buff_level(level):
+            week = trials_model.run_week(members, skills=skills, min_levels=min_levels)
+
+    out: dict = {"week": week.to_dict()}
+
+    picks = job["picks"]
+    if picks is not None:
+        optimal_total, optimal_summary = signup_model.optimal_from_week(week)
+        plan = signup_model.plan(
+            members, picks, optimal_total, optimal_summary,
+            min_levels=min_levels, draw=skills,
+        )
+        out["plan"] = plan.to_dict()
+    return out
+
+
+def _summary_line(
+    site: "GuildSite",
+    inputs: _GuildInputs,
+    week: dict,
+    week_maxbuff: Optional[dict],
+    week_draw: "draw_model.TrialDraw",
+) -> str:
+    """The one-line per-guild CI summary.
+
+    Quotes CREDIT points (one decimal — these are floats now) with the step total
+    beside them, so a CI log tells you both what the plan was chosen on and what the
+    guild will see banked in game. Truncating to int here would silently hide every
+    partial-credit difference the whole 2026-08-11 patch exists to expose.
+    """
+    # What the maxed-buff counterfactual scored, and the gap — so a CI log records the
+    # size of the whole week's buff sensitivity, not just this regime's total.
+    maxbuff_note = (
+        f" vs L{week_maxbuff['community_buff_level']} "
+        f"{week_maxbuff['total_credit_points']:,.1f} cp "
+        f"({week_maxbuff['total_credit_points'] - week['total_credit_points']:+,.1f})"
+        if week_maxbuff is not None
+        else " (maxbuff page off)"
+    )
+
+    plan = inputs.plan_dict
+    if plan is None:
+        signup_note = f"WITHHELD — {inputs.signup_unavailable_short}"
+    else:
+        signup_note = (
+            f"{plan['signup_count']} signed, enforced "
+            f"{plan['enforced_total']:,.1f} cp "
+            f"({plan['enforced_step_total']} pts) "
+            f"-> {plan['reachable_total']:,.1f} via {len(plan['swaps'])} swap(s) "
+            f"(optimal {plan['optimal_total']:,.1f} cp / "
+            f"{plan['optimal_step_total']} pts); "
+            f"{len(plan['ineligible_signups'])} below min level, "
+            f"{len(plan['normalized_matches'])} case-fixed, "
+            f"{len(plan['unmatched_signups'])} unmatched"
+        )
+
+    dest = f"_site/{site.subdir}/" if site.subdir else "_site/"
+    return (
+        f"[{site.key}] {dest} {inputs.register['member_count']} members "
+        f"({len(inputs.register['skills'])} skills); draw {week_draw.date or '?'} "
+        f"[{', '.join(week_draw.skills)}]; trials "
+        + ", ".join(
+            f"{t['skill']} T{t['tier_reached']}+{t['partial_fraction'] * 100:.0f}%/"
+            f"{t['credit_points']:,.1f}cp"
+            for t in week["trials"]
+        )
+        + f" (total {week['total_credit_points']:,.1f} cp / {week['total_points']} pts); "
+        f"buffs L{week['community_buff_level']}{maxbuff_note}; "
+        f"signup: {signup_note}"
+    )
+
+
+def _write_guild(
+    site: "GuildSite",
+    inputs: _GuildInputs,
+    week: dict,
+    week_maxbuff: Optional[dict],
+    week_draw: "draw_model.TrialDraw",
+    draw_warning: str,
+) -> str:
+    """Write one guild's pages from its already-computed results; return the summary.
+
+    Pure rendering and file I/O — no optimiser work happens here, which is why it can
+    wait until every unit has landed without costing anything.
     """
     out = site.out_dir
     out.mkdir(parents=True, exist_ok=True)
 
     # --- Member skill register (index.html + data.json) ---------------------
-    # Survey Corps reads the gid=0 published register; every other guild has no
-    # such gid export, so its register is built from the gviz member tab (which
-    # the trials step below reuses, so that tab is fetched only once per guild).
-    gd = None
-    if site.use_register_csv:
-        members = parse(fetch_csv())
-    else:
-        gd = scrape_member_tab(site.member_tab)
-        members = gd.members
-    data = process(members)
     (out / "data.json").write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(inputs.register, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    (out / "index.html").write_text(_render_html(data, site), encoding="utf-8")
-
-    # --- Guild Trials (Phase 1) ---------------------------------------------
-    # Fetch this guild's member data LIVE via the named-tab scraper and simulate
-    # this week's four skilling trials, then emit trials.html + trials.json.
-    if gd is None:
-        gd = scrape_member_tab(site.member_tab)
-
-    # This week's skilling-trial draw is read LIVE from the shared "Trial
-    # Assignments" tab (the officers reroll it each cycle).
-    #
-    # A STRUCTURE failure here used to be fatal, on the reasoning that a stale
-    # draw is worse than no page. INCIDENT 2026-07-25 showed the cost of that
-    # trade: the officers added a notice above the table, gviz swallowed the draw
-    # rows into its header row (fixed at source — see
-    # config.GVIZ_NO_HEADER_COLLAPSE), and because SC is `required` the whole
-    # deploy stopped — every page, both guilds, register and sign-up included.
-    # So it now degrades exactly as the sign-up tab does: fall back to the
-    # last-known draw and say so LOUDLY at the top of the page, which keeps the
-    # staleness visible instead of silent while the rest of the site ships. A
-    # network/HTTP RuntimeError still propagates and fails the build.
-    draw_warning = ""
-    try:
-        week_draw = draw_model.load_draw()
-    except SheetStructureError as exc:
-        week_draw = draw_model.TrialDraw(
-            skills=list(config.TRIAL_SKILLS_CURRENT), date="unknown"
-        )
-        draw_warning = (
-            f"This week's draw could not be read from the "
-            f"{draw_model.ASSIGNMENTS_TAB!r} tab, so the last known draw "
-            f"({', '.join(week_draw.skills)}) is shown instead and MAY BE "
-            f"STALE. Reason: {exc}"
-        )
-        print(
-            f"WARNING ({site.key}): trial draw unreadable, falling back to "
-            f"config.TRIAL_SKILLS_CURRENT:\n{exc}",
-            file=sys.stderr,
-        )
-
-    week = trials_model.run_week(
-        gd.members,
-        skills=week_draw.skills,
-        min_levels=week_draw.min_levels,
+    (out / "index.html").write_text(
+        _render_html(inputs.register, site), encoding="utf-8"
     )
-    week_dict = week.to_dict()
 
-    # The maxed-community-buff counterfactual: the SAME draw and the same members,
-    # optimised again from scratch with all three community buffs at the top of
-    # their ladder. A second full optimiser run — so roughly a second helping of the
-    # ~2-3 min the Phase 2 optimizer costs — and that is deliberate: raising a
-    # common-mode buff changes which members are worth seating, not merely how fast
-    # the seated ones work, so re-rating this week's parties would understate it.
-    # config.TRIALS_PUBLISH_MAXBUFF_PAGE = False is the one-line rollback.
-    #
-    # ``week`` is left strictly untouched either way: it remains the published plan,
-    # the ceiling the sign-up page reads, and the target of every existing link.
-    week_maxbuff = None
-    if config.TRIALS_PUBLISH_MAXBUFF_PAGE:
-        with trials_model.community_buff_level(config.COMMUNITY_BUFF_MAX_LEVEL):
-            week_maxbuff = trials_model.run_week(
-                gd.members,
-                skills=week_draw.skills,
-                min_levels=week_draw.min_levels,
-            )
-
-    (out / TRIALS_JSON).write_text(
-        json.dumps(week_dict, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    # --- Guild Trials: the published regime and its counterfactual -----------
     # Each page's switch points at the other, carrying the other's level and total so
-    # the reader can see what the alternative regime is worth before navigating.
+    # the reader can see what the alternative regime is worth before navigating. That
+    # mutual reference is why both pages are written here rather than in the units.
+    (out / TRIALS_JSON).write_text(
+        json.dumps(week, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     (out / TRIALS_PAGE).write_text(
         _render_trials_html(
-            week_dict, site, draw_warning,
+            week, site, draw_warning,
             counterpart=(
                 {
                     "href": TRIALS_MAXBUFF_PAGE,
-                    "level": week_maxbuff.community_buff_level,
-                    "total": week_maxbuff.total_credit_points,
+                    "level": week_maxbuff["community_buff_level"],
+                    "total": week_maxbuff["total_credit_points"],
                 }
                 if week_maxbuff is not None
                 else None
@@ -3067,143 +3255,169 @@ def build_guild(site: "GuildSite") -> str:
         encoding="utf-8",
     )
     if week_maxbuff is not None:
-        week_maxbuff_dict = week_maxbuff.to_dict()
         (out / TRIALS_MAXBUFF_JSON).write_text(
-            json.dumps(week_maxbuff_dict, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+            json.dumps(week_maxbuff, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         (out / TRIALS_MAXBUFF_PAGE).write_text(
             _render_trials_html(
-                week_maxbuff_dict, site, draw_warning,
+                week_maxbuff, site, draw_warning,
                 counterpart={
                     "href": TRIALS_PAGE,
-                    "level": week_dict["community_buff_level"],
-                    "total": week_dict["total_credit_points"],
+                    "level": week["community_buff_level"],
+                    "total": week["total_credit_points"],
                 },
             ),
             encoding="utf-8",
         )
 
     # --- Sign-up Optimiser (OPTIONAL) ---------------------------------------
-    # Fetch this guild's sign-up tab, enforce those picks, recommend fills for
-    # the open seats, and diff against the (already-computed) optimum. Reuses
-    # ``week`` as the optimal ceiling so the two pages never disagree.
-    #
-    # A SheetStructureError here means this guild's sign-up tab no longer carries
-    # the tick-box sign-up table (e.g. trials went "free-assigned" and the tab
-    # was repurposed — see the 2026-07 reformat). That is an upstream DATA
-    # change, not a build failure: the member and trials pages are already
-    # written, so we emit a graceful "inactive" signup.html (keeping the nav
-    # links valid) and still finish successfully. The real page returns the
-    # moment a parseable sign-up tab exists again. A network/HTTP RuntimeError
-    # still propagates and fails loudly, consistent with the fetches above.
-    plan = None
-    try:
-        picks = signup_model.parse_signup(
-            signup_model.fetch_signup_csv(site.signup_tab),
-            tab_label=site.signup_tab,
-        )
-        optimal_total, optimal_summary = signup_model.optimal_from_week(week)
-        plan = signup_model.plan(
-            gd.members, picks, optimal_total, optimal_summary,
-            min_levels=week_draw.min_levels,
-            draw=week_draw.skills,
-        )
-    except SheetStructureError as exc:
-        print(
-            f"WARNING: {site.signup_tab!r} tab structure mismatch; sign-up "
-            f"optimiser skipped for {site.key}, emitting inactive "
-            f"placeholder:\n{exc}",
-            file=sys.stderr,
-        )
+    plan = inputs.plan_dict
+    if plan is None:
         (out / "signup.html").write_text(
             _render_signup_inactive_html(
-                str(exc), datetime.now(timezone.utc).isoformat(), site
+                inputs.signup_unavailable,
+                datetime.now(timezone.utc).isoformat(),
+                site,
             ),
             encoding="utf-8",
         )
-
-    if plan is not None:
-        plan_dict = plan.to_dict()
+        # And take the machine-readable copy DOWN with the page. CI always builds into
+        # a fresh checkout so this is a no-op there, but a local rebuild (or any future
+        # incremental deploy) would otherwise leave the previous run's signup.json
+        # sitting beside a page that says there is no plan — the one artefact a reader
+        # or script could still pick up and act on. missing_ok: there may never have
+        # been one.
+        (out / "signup.json").unlink(missing_ok=True)
+    else:
         (out / "signup.json").write_text(
-            json.dumps(plan_dict, indent=2, ensure_ascii=False), encoding="utf-8"
+            json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         (out / "signup.html").write_text(
-            _render_signup_html(plan_dict, site), encoding="utf-8"
+            _render_signup_html(plan, site), encoding="utf-8"
         )
 
         # Data-quality signals from the sign-up name join. Case/space-only
-        # disagreements are matched automatically but reported so the sheet can
-        # be tidied; a sign-up that matches NO member is silently unusable, so it
-        # is a loud WARNING (it points either at a typo or a missing member row).
-        if plan.normalized_matches:
+        # disagreements are matched automatically but reported so the sheet can be
+        # tidied; a sign-up that matches NO member is silently unusable, so it is a
+        # loud WARNING (it points either at a typo or a missing member row).
+        if plan["normalized_matches"]:
             print(
-                f"NOTE ({site.key}): {len(plan.normalized_matches)} sign-up name(s) "
-                f"matched a member only after case/space normalisation "
+                f"NOTE ({site.key}): {len(plan['normalized_matches'])} sign-up "
+                f"name(s) matched a member only after case/space normalisation "
                 f"(tidy the '{site.member_tab}' tab): "
-                + "; ".join(plan.normalized_matches),
+                + "; ".join(plan["normalized_matches"]),
                 file=sys.stderr,
             )
-        if plan.unmatched_signups:
+        if plan["unmatched_signups"]:
             print(
-                f"WARNING ({site.key}): {len(plan.unmatched_signups)} sign-up "
+                f"WARNING ({site.key}): {len(plan['unmatched_signups'])} sign-up "
                 f"name(s) match NO member on the '{site.member_tab}' tab and were "
-                f"IGNORED: {', '.join(plan.unmatched_signups)}. Fix the spelling "
+                f"IGNORED: {', '.join(plan['unmatched_signups'])}. Fix the spelling "
                 f"in the sheet or add the member.",
                 file=sys.stderr,
             )
 
-    # The build log quotes CREDIT points (one decimal — these are floats now) with the
-    # step total beside them, so a CI log tells you both what the plan was chosen on and
-    # what the guild will see banked in game. Truncating to int here would silently hide
-    # every partial-credit difference the whole patch exists to expose.
-    # What the maxed-buff counterfactual scored, and the gap — so a CI log records the
-    # size of the whole week's buff sensitivity, not just this regime's total.
-    maxbuff_note = (
-        f" vs L{week_maxbuff.community_buff_level} "
-        f"{week_maxbuff.total_credit_points:,.1f} cp "
-        f"({week_maxbuff.total_credit_points - week.total_credit_points:+,.1f})"
-        if week_maxbuff is not None
-        else " (maxbuff page off)"
-    )
-    signup_note = (
-        f"{plan.signup_count} signed, enforced {plan.enforced_total:,.1f} cp "
-        f"({plan.enforced_step_total} pts) "
-        f"-> {plan.reachable_total:,.1f} via {len(plan.swaps)} swap(s) "
-        f"(optimal {plan.optimal_total:,.1f} cp / {plan.optimal_step_total} pts); "
-        f"{len(plan.ineligible_signups)} below min level, "
-        f"{len(plan.normalized_matches)} case-fixed, "
-        f"{len(plan.unmatched_signups)} unmatched"
-        if plan is not None
-        else f"inactive ({site.signup_tab} tab not in tick-box sign-up format)"
-    )
-    dest = f"_site/{site.subdir}/" if site.subdir else "_site/"
-    return (
-        f"[{site.key}] {dest} {data['member_count']} members "
-        f"({len(data['skills'])} skills); draw {week_draw.date or '?'} "
-        f"[{', '.join(week_draw.skills)}]; trials "
-        + ", ".join(
-            f"{t.skill} T{t.tier_reached}+{t.partial_fraction * 100:.0f}%/"
-            f"{t.credit_points:,.1f}cp"
-            for t in week.trials
+    return _summary_line(site, inputs, week, week_maxbuff, week_draw)
+
+
+def _load_draw() -> tuple["draw_model.TrialDraw", str]:
+    """Read this week's draw, or fall back to the last known one behind a warning.
+
+    A STRUCTURE failure here used to be fatal, on the reasoning that a stale draw is
+    worse than no page. INCIDENT 2026-07-25 showed the cost of that trade: a layout
+    change stopped the whole deploy, every page of every guild. So it degrades — the
+    site ships with a loud on-page banner instead.
+
+    INCIDENT 2026-08-14 showed the cost of THIS trade, and it is worth stating beside
+    the other: the officers rebuilt the source tab, the parser found nothing, and the
+    site optimised config.TRIAL_SKILLS_CURRENT — the wrong four trials — for a day
+    behind that banner. The banner is what got it noticed, so the mechanism worked;
+    but note that the fallback's job is only to keep the OTHER pages shipping, and it
+    is not a substitute for the draw. Both incidents point the same way: read the
+    draw from the tab the GAME writes (draw.py now does) and keep the fallback loud.
+
+    A network/HTTP RuntimeError still propagates and fails the build.
+    """
+    try:
+        return draw_model.load_draw(), ""
+    except SheetStructureError as exc:
+        warning = (
+            f"This week's draw could not be read from the "
+            f"{draw_model.DRAW_TAB!r} tab, so the last known draw "
+            f"({', '.join(config.TRIAL_SKILLS_CURRENT)}) is shown instead and MAY "
+            f"BE STALE. Reason: {exc}"
         )
-        + f" (total {week.total_credit_points:,.1f} cp / {week.total_points} pts); "
-        f"buffs L{week.community_buff_level}{maxbuff_note}; "
-        f"signup: {signup_note}"
-    )
+        print(
+            f"WARNING: trial draw unreadable, falling back to "
+            f"config.TRIAL_SKILLS_CURRENT:\n{exc}",
+            file=sys.stderr,
+        )
+        return (
+            draw_model.TrialDraw(
+                skills=list(config.TRIAL_SKILLS_CURRENT), date="unknown"
+            ),
+            warning,
+        )
+
+
+def _unit_jobs(site: "GuildSite", inputs: _GuildInputs, week_draw) -> list[dict]:
+    """The independent optimiser units for one guild, published regime first.
+
+    Two units per guild: the published week (which also carries the sign-up plan,
+    because it owns the WeekResult that plan's ceiling is read from) and the maxed-buff
+    counterfactual. config.TRIALS_PUBLISH_MAXBUFF_PAGE = False drops the second
+    outright, which halves the build and leaves trials.html exactly as it was.
+    """
+    common = {
+        "site_key": site.key,
+        "members": inputs.members,
+        "skills": week_draw.skills,
+        "min_levels": week_draw.min_levels,
+    }
+    jobs = [{**common, "level": None, "picks": inputs.picks}]
+    if config.TRIALS_PUBLISH_MAXBUFF_PAGE:
+        jobs.append(
+            {**common, "level": config.COMMUNITY_BUFF_MAX_LEVEL, "picks": None}
+        )
+    return jobs
+
+
+def _run_units(jobs: list[dict]) -> list[dict]:
+    """Run every unit and return the results in the order the jobs were given.
+
+    Concurrent across ALL guilds, not merely within one: with four units of 56–95s
+    each, synchronising on a per-guild barrier would idle a core waiting for that
+    guild's slower half. The pool is sized to the smaller of the units and the
+    machine, so a 2-vCPU runner degrades to two-at-a-time rather than thrashing.
+    """
+    if not config.BUILD_PARALLEL or len(jobs) == 1:
+        return [_compute_unit(job) for job in jobs]
+
+    workers = min(len(jobs), config.BUILD_MAX_WORKERS or (os.cpu_count() or 1))
+    with futures.ProcessPoolExecutor(max_workers=workers) as pool:
+        # Submitted in order and read back in order: map() would do, but submit()
+        # lets an exception surface against the job that caused it.
+        pending = [pool.submit(_compute_unit, job) for job in jobs]
+        return [f.result() for f in pending]
 
 
 def main() -> int:
-    """Build every guild's site into ``_site`` (Survey Corps at the root, the
-    rest in sub-directories). A ``required`` guild's failure is fatal (non-zero
-    exit blocks the atomic Pages deploy); an optional guild's failure is a
-    warning so the others still ship.
+    """Build every guild's site into ``_site`` (Survey Corps at the root, the rest in
+    sub-directories). A ``required`` guild's failure is fatal (non-zero exit blocks
+    the atomic Pages deploy); an optional guild's failure is a warning so the others
+    still ship.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    notes: list[str] = []
+
+    # One draw, shared by every guild (see config.DRAW_SOURCE_TAB on why it is read
+    # from Survey Corps' game-written sign-up tab and not per guild).
+    week_draw, draw_warning = _load_draw()
+
+    # --- Phase 1: fetch (parent, network-bound, ~1s per guild) --------------
+    fetched: list[tuple[GuildSite, _GuildInputs]] = []
     for site in GUILD_SITES:
         try:
-            notes.append(build_guild(site))
+            fetched.append((site, _fetch_guild(site, week_draw)))
         except SheetStructureError as exc:
             if site.required:
                 print(
@@ -3224,6 +3438,27 @@ def main() -> int:
                 f"WARNING: {site.key} skipped ({exc}); other guilds continue.",
                 file=sys.stderr,
             )
+
+    # --- Phase 2: optimise (children, CPU-bound, the whole cost of the build) ---
+    jobs: list[dict] = []
+    spans: list[tuple[GuildSite, _GuildInputs, int, int]] = []
+    for site, inputs in fetched:
+        site_jobs = _unit_jobs(site, inputs, week_draw)
+        spans.append((site, inputs, len(jobs), len(jobs) + len(site_jobs)))
+        jobs.extend(site_jobs)
+
+    results = _run_units(jobs)
+
+    # --- Phase 3: render (parent — both regimes must be in hand) ------------
+    notes: list[str] = []
+    for site, inputs, start, end in spans:
+        span = results[start:end]
+        week = span[0]["week"]
+        inputs.plan_dict = span[0].get("plan")
+        week_maxbuff = span[1]["week"] if len(span) > 1 else None
+        notes.append(
+            _write_guild(site, inputs, week, week_maxbuff, week_draw, draw_warning)
+        )
 
     print("Built _site/:")
     for note in notes:

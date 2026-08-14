@@ -116,9 +116,15 @@ GVIZ_URL = (
 # them — so draw.parse_draw could no longer find the banner and the whole deploy
 # failed (SC is `required`, so every page of every guild stopped shipping).
 # Appending "&headers=0" turns the guess OFF: gviz returns every row as data.
-# NB: used ONLY by draw.py. The member-tab and sign-up parsers are written
-# against the COLLAPSED form (see the note above) and must NOT be given this
-# parameter without rewriting them.
+#
+# CURRENTLY UNUSED, and retained only as the recorded remedy for that failure mode.
+# It existed for draw.py's read of the "Trial Assignments" tab, whose banner sat
+# below whatever prose the officers wrote above it; since 2026-08-14 the draw is read
+# from a sign-up tab's HEADER ROW, which is exactly what gviz's default collapsing
+# hands over, so the override would now hide the very row we want. The member-tab and
+# sign-up parsers are likewise written against the COLLAPSED form and must NOT be
+# given this parameter without rewriting them. Reach for it only if a future parser
+# again needs to read rows that sit beneath free-form text.
 GVIZ_NO_HEADER_COLLAPSE = "&headers=0"
 
 # Member tabs known to share the SC layout (verified empirically).
@@ -126,6 +132,24 @@ TABS = {
     "sc": "SC Member Data",
     "li": "LI Member Data",
 }
+
+# The tab whose HEADER ROW publishes this week's skilling-trial draw (src/draw.py).
+#
+# This is a SIGN-UP tab, and deliberately so: the game writes the sign-up tabs, so
+# their four tick-box column headers ARE the draw, whereas the "Trial Assignments"
+# tab the draw used to be read from is hand-maintained by the officers — and on
+# 2026-08-14 they rebuilt it for the third time, deleting both of the anchors
+# draw.py knew. See the src/draw.py docstring for the whole account.
+#
+# Fixed at Survey Corps' tab rather than read per guild: the draw is shared between
+# guilds (identical in every cycle the "Trial Data" log records) and SC's tab is the
+# one the game keeps current. On 2026-08-14 the LI tab still held the ENTIRE 8/10
+# cycle — its four skills and both its combat bosses — so reading LI's own tab for
+# LI's draw would have planned this week from last week's roll. build.build_guild
+# cross-checks each guild's own sign-up columns against this draw and withholds that
+# guild's plan when they disagree, which reports the staleness instead of absorbing
+# it. If the guilds ever genuinely diverge, that cross-check is where it will show.
+DRAW_SOURCE_TAB = "SC Trial Signup"
 
 # Rightmost real column of the member table; rows are sliced to 0..GVIZ_LAST_COL
 # inclusive to drop the trailing side-summary junk columns. The layout (name,
@@ -179,15 +203,26 @@ TRIAL_SKILL_TO_SHEET_COLUMN = {
 }
 
 # --- This week's skilling trial draw (OFFLINE FALLBACK DEFAULT) -------------
-# The live build reads the CURRENT draw from the "Trial Assignments" tab at
-# build time (src/draw.py -> build.main), so this constant is NO LONGER the
-# source of truth — the officers reroll the draw each cycle and a hand-edited
-# list here goes stale immediately. It remains only as the default for tests
-# and direct library calls to trials.run_week / signup.plan that pass no draw.
-# Kept current-ish for convenience (Trial Assignments tab, Date 7/31). Names use
-# the trial's own skill labels; "Alchemy" resolves to the "Bell Farming" sheet
-# column via TRIAL_SKILL_TO_SHEET_COLUMN above.
-TRIAL_SKILLS_CURRENT = ["Milking", "Foraging", "Crafting", "Alchemy"]
+# The live build reads the CURRENT draw from DRAW_SOURCE_TAB at build time
+# (src/draw.py -> build.main), so this constant is NO LONGER the source of truth —
+# the game rerolls the draw each cycle and a hand-edited list here goes stale
+# immediately. It remains only as the default for tests and direct library calls
+# to trials.run_week / signup.plan that pass no draw.
+#
+# TREAT THIS CONSTANT AS A HAZARD, not a convenience. On 2026-08-14 the officers'
+# rebuild of the "Trial Assignments" tab broke the old parser, build_guild fell back
+# to this list behind its "MAY BE STALE" banner, and the site optimised
+# [Milking, Foraging, Crafting, Alchemy] for a day while the game had actually rolled
+# [Enhancing, Milking, Cooking, Brewing]. The banner is what made that visible; the
+# constant is what made it plausible enough to ship. Keeping it current shrinks the
+# damage of the next such break but cannot prevent it — the fix is that draw.py now
+# reads the tab the GAME writes and no longer chains fallbacks across hand-made
+# layouts.
+#
+# Names use the trial's own skill labels; "Alchemy" resolves to the "Bell Farming"
+# sheet column via TRIAL_SKILL_TO_SHEET_COLUMN above.
+# Current as of the 8/14 cycle (SC Trial Signup header, columns B–E).
+TRIAL_SKILLS_CURRENT = ["Enhancing", "Milking", "Cooking", "Brewing"]
 
 # --- Random assignment (Phase 1: NO optimizer) ------------------------------
 # Fixed seed for reproducibility. NEVER use unseeded randomness.
@@ -772,9 +807,33 @@ COMMUNITY_BUFF_LEVEL = 1
 # Publish that counterfactual, or don't. The one-line rollback: False drops
 # trials-maxbuffs.html/.json and the switch, leaving the trials page exactly as it
 # was before. It is a *second complete optimiser run* per guild — the expensive part
-# of the build, near enough doubled — so this is also the lever to pull if the
-# nightly Actions budget ever becomes the binding constraint.
+# of the build, near enough doubled.
+#
+# Measured 2026-08-14: it is in fact slightly DEARER than the published run, because
+# at level-20 buffs the parties reach higher tiers and every simulate_race in the hot
+# loop runs longer (SC 90.8s against 84.8s; LI 95.1s against 56.2s — 69% more). Since
+# build.py now runs the two regimes concurrently in separate processes, that no longer
+# doubles the WALL CLOCK, so this is a page-content switch again rather than the
+# build's cost lever it briefly became.
 TRIALS_PUBLISH_MAXBUFF_PAGE = True
+
+# --- Build concurrency (src/build.py) ---------------------------------------
+# The build's four optimiser units — two guilds x {published regime, maxed-buff
+# counterfactual} — are mutually independent and are run in parallel PROCESSES. See
+# the long note above build._GuildInputs for the whole argument; the two constraints
+# worth repeating here are that the output is bit-identical (every seed is fixed and
+# no unit reads another's state) and that threads would NOT do, because
+# trials.community_buff_level rebinds module globals on this very module.
+#
+# BUILD_PARALLEL = False is the one-line rollback: the same units, run serially in one
+# process. Reach for it when a traceback needs reading without a pool in the way, or
+# to confirm by hand that serial and parallel agree.
+BUILD_PARALLEL = True
+
+# Cap on worker processes. None -> os.cpu_count(). The pool is sized to
+# min(units, this), so it never spawns more children than there is work; a public-repo
+# GitHub runner has 4 vCPUs, which is exactly the four units.
+BUILD_MAX_WORKERS = None
 
 # The three live magnitudes, = COMMUNITY_BUFF_LADDER at COMMUNITY_BUFF_LEVEL.
 # The gathering buff is applied as the labyrinth-style `doubleProgressChance`: the
