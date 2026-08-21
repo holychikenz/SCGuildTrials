@@ -108,6 +108,16 @@ class GuildSite:
         return signup_model.SIGNUP_TABS[self.key]
 
     @property
+    def party_cap(self) -> int:
+        """This guild's seats-per-party cap (config.TRIAL_PARTY_CAPS).
+
+        Per guild since 2026-08-21: SC runs 28, LI 26. Passed explicitly into
+        every optimiser call for this guild, so no page is ever planned against
+        the guild-less default in config.TRIAL_PARTY_CAP.
+        """
+        return config.party_cap(self.key)
+
+    @property
     def out_dir(self) -> Path:
         return OUTPUT_DIR / self.subdir if self.subdir else OUTPUT_DIR
 
@@ -363,7 +373,7 @@ def _expected_phrase(trial: dict) -> str:
     )
 
 
-def _marginal_seat_phrase(trial: dict) -> str:
+def _marginal_seat_phrase(trial: dict, cap: int) -> str:
     """The weakest seated member's share of party rate, against the break-even.
 
     WHY THIS IS ON THE PAGE. Partial credit prices a marginal seat: a member earns
@@ -371,10 +381,13 @@ def _marginal_seat_phrase(trial: dict) -> str:
     throughput, because an extra head raises EVERY tier's target by 1% (the
     ``(1 + Players/100)`` headcount term in TotalWork). Under the old step objective
     that number was invisible — every candidate from level 140 down to level 10 scored a
-    delta of exactly zero — so being wrong about ``config.TRIAL_PARTY_CAP`` cost nothing
-    measurable. It now costs points in WHICHEVER DIRECTION it is wrong, and the constant
+    delta of exactly zero — so being wrong about the party cap cost nothing
+    measurable. It now costs points in WHICHEVER DIRECTION it is wrong, and the cap
     is unconfirmed: 20 is the largest skilling party ever observed
-    (``research/trial-tabs.md``), 24 is what ships. If the real cap is 20 then every
+    (``research/trial-tabs.md``), while config.TRIAL_PARTY_CAPS ships 28 (SC) and
+    26 (LI). ``cap`` is THIS guild's, taken from the week it rendered
+    (``week["cap"]``) rather than re-read from config, so the line quotes the number
+    the plan on the page was actually built with. If the real cap is 20 then every
     tier, margin and probability on this page is optimistic by four phantom
     contributors; if there is no cap at 24 the guild is leaving points on the table and
     this tool is quietly telling it to. The line publishes that exposure rather than
@@ -401,7 +414,7 @@ def _marginal_seat_phrase(trial: dict) -> str:
             if pays
             else "so the weakest seat costs more than it adds."
         )
-        + f' The cap ({config.TRIAL_PARTY_CAP}) is itself unconfirmed &mdash; 20 is the '
+        + f' The cap ({cap}) is itself unconfirmed &mdash; 20 is the '
           f'largest party ever observed &mdash; and partial credit is what made being '
           f'wrong about it cost measurable points.'
     )
@@ -579,7 +592,7 @@ def _stat_strip(week: dict) -> str:
     )
 
 
-def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
+def _render_trial_card(trial: dict, t_index: int, cap: int) -> tuple[str, list[dict]]:
     """Render one trial's section and return (html, assignment_entries).
 
     ``assignment_entries`` maps each rostered member to this trial and to the
@@ -618,7 +631,7 @@ def _render_trial_card(trial: dict, t_index: int) -> tuple[str, list[dict]]:
     # trials.json old enough to lack rate_final) — a property of the party, not of
     # the buff regime, so a card without this line has none at any level and needs
     # no slot for the selector to fill.
-    marginal = _marginal_seat_phrase(trial)
+    marginal = _marginal_seat_phrase(trial, cap)
     marginal_html = (
         f'<p class="meta" id="c{t_index}-marg">{marginal}</p>' if marginal else ""
     )
@@ -1660,7 +1673,7 @@ def _buff_ladder_payload(week: dict, ladder: dict) -> dict:
                 {
                     "head": _card_headline(rung_trial),
                     "safe": _card_safety(rung_trial),
-                    "marg": _marginal_seat_phrase(rung_trial),
+                    "marg": _marginal_seat_phrase(rung_trial, week["cap"]),
                     "rh": _rate_header(rung_trial),
                     "rates": rates,
                     "tl": _timeline_cells(rung_trial),
@@ -1774,7 +1787,7 @@ def _render_trials_html(
     cards_parts: list[str] = []
     assign_index: list[dict] = []
     for t_index, t in enumerate(week["trials"]):
-        card_html, entries = _render_trial_card(t, t_index)
+        card_html, entries = _render_trial_card(t, t_index, week["cap"])
         cards_parts.append(card_html)
         assign_index.extend(entries)
     cards = "".join(cards_parts)
@@ -3569,6 +3582,7 @@ def _compute_unit(job: dict) -> dict:
     members = job["members"]
     skills = job["skills"]
     min_levels = job["min_levels"]
+    cap = job["cap"]
 
     ladder: dict = {}
     if level is None:
@@ -3580,16 +3594,18 @@ def _compute_unit(job: dict) -> dict:
         # processes.
         if config.TRIALS_BUFF_LEVEL_SLIDER:
             week, rungs = trials_model.run_week_ladder(
-                members, skills=skills, min_levels=min_levels
+                members, skills=skills, cap=cap, min_levels=min_levels
             )
             ladder = {str(k): v.to_dict() for k, v in rungs.items()}
         else:
             week = trials_model.run_week(
-                members, skills=skills, min_levels=min_levels
+                members, skills=skills, cap=cap, min_levels=min_levels
             )
     else:
         with trials_model.community_buff_level(level):
-            week = trials_model.run_week(members, skills=skills, min_levels=min_levels)
+            week = trials_model.run_week(
+                members, skills=skills, cap=cap, min_levels=min_levels
+            )
 
     out: dict = {"week": week.to_dict(), "ladder": ladder}
 
@@ -3598,7 +3614,7 @@ def _compute_unit(job: dict) -> dict:
         optimal_total, optimal_summary = signup_model.optimal_from_week(week)
         plan = signup_model.plan(
             members, picks, optimal_total, optimal_summary,
-            min_levels=min_levels, draw=skills,
+            cap=cap, min_levels=min_levels, draw=skills,
         )
         out["plan"] = plan.to_dict()
     return out
@@ -3845,6 +3861,11 @@ def _unit_jobs(site: "GuildSite", inputs: _GuildInputs, week_draw) -> list[dict]
         "members": inputs.members,
         "skills": week_draw.skills,
         "min_levels": week_draw.min_levels,
+        # THIS guild's seat cap (config.TRIAL_PARTY_CAPS), resolved here in the
+        # parent and shipped with the job rather than looked up in the child: the
+        # unit is plain data by contract, and a child re-deriving it from a key
+        # would be a second place for the mapping to be read.
+        "cap": site.party_cap,
     }
     jobs = [{**common, "level": None, "picks": inputs.picks}]
     if config.TRIALS_PUBLISH_MAXBUFF_PAGE:

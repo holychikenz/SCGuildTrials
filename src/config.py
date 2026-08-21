@@ -227,10 +227,46 @@ TRIAL_SKILLS_CURRENT = ["Enhancing", "Milking", "Cooking", "Brewing"]
 # --- Random assignment (Phase 1: NO optimizer) ------------------------------
 # Fixed seed for reproducibility. NEVER use unseeded randomness.
 TRIAL_RNG_SEED = 42
-# Skilling trial party cap (research/trial-tabs.md §1: max 20 observed).
-# Tunable — parties may run larger than the 20 originally observed. For now this
-# is a magic number; a later change will read it from the guild spreadsheet.
-TRIAL_PARTY_CAP = 26
+# Skilling trial party cap, PER GUILD (research/trial-tabs.md §1: max 20 observed).
+# Tunable — parties may run larger than the 20 originally observed. Still magic
+# numbers; a later change will read them from the guild spreadsheet.
+#
+# SPLIT PER GUILD 2026-08-21. It was one constant for both guilds, on the same
+# reasoning GUILD_BUILDING_LEVELS still shares one map — until the two diverged.
+# Survey Corps runs 28 seats a party, Lactose Intolerance 26. Keyed by the TABS /
+# SIGNUP_TABS guild key, so build.GuildSite.party_cap is a one-line lookup.
+#
+# Under partial credit the cap is priced, not free: an extra head raises every
+# tier's work target by 1%, so a cap that is too HIGH seats phantom contributors
+# and one that is too LOW leaves points banked (see build._marginal_seat_phrase).
+# Being wrong per guild is therefore a real error and no longer a shared one.
+TRIAL_PARTY_CAPS = {
+    "sc": 28,
+    "li": 26,
+}
+
+# The cap for callers that name no guild: tests, direct library calls, and the
+# bake-off. NOT a third guild — it is the fallback default the ``cap=None``
+# arguments of trials.run_week / optimizer.optimize / signup.plan resolve to.
+# The live site never reaches it; build.py passes each guild's own cap explicitly.
+TRIAL_PARTY_CAP = TRIAL_PARTY_CAPS["li"]
+
+
+def party_cap(guild: str) -> int:
+    """The party cap for one guild key ("sc" | "li").
+
+    Raises KeyError on an unknown key rather than falling back to
+    TRIAL_PARTY_CAP: a typo'd guild key silently planning against the wrong
+    seat count is exactly the class of quiet wrongness this repo keeps losing
+    days to.
+    """
+    try:
+        return TRIAL_PARTY_CAPS[guild]
+    except KeyError:
+        raise KeyError(
+            f"no party cap configured for guild {guild!r}; "
+            f"known guilds: {sorted(TRIAL_PARTY_CAPS)}"
+        ) from None
 
 # ===========================================================================
 # Guild Trials (Phase 2) — optimizer strategy + knobs (src/optimizer.py)

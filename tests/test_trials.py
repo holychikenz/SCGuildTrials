@@ -1699,3 +1699,55 @@ def test_pin_controls_reach_every_page_the_reader_can_land_on():
     )
     assert 'id="pinned-section"' in page
     assert 'data-pin-key="guild-trials.pins.sc"' in page
+
+
+# ---------------------------------------------------------------------------
+# Per-guild party cap (config.TRIAL_PARTY_CAPS, split 2026-08-21)
+# ---------------------------------------------------------------------------
+def test_every_guild_site_resolves_its_own_party_cap():
+    """Each shipped guild has a cap of its own, and SC's is the larger.
+
+    The cap was ONE constant for both guilds until the guilds diverged. This
+    pins the two facts a silent regression would break: that every GuildSite
+    resolves (rather than raising, or falling through to the guild-less
+    default), and that the two guilds are genuinely different — so a future
+    edit that collapses the map back into one number fails here.
+    """
+    from src import build
+
+    caps = {site.key: site.party_cap for site in build.GUILD_SITES}
+    assert caps == {"sc": 28, "li": 26}
+    assert config.party_cap("sc") == 28
+    assert config.party_cap("li") == 26
+
+
+def test_an_unknown_guild_key_raises_rather_than_defaulting():
+    """A typo'd guild key must NOT quietly plan against the fallback cap: a plan
+    built for the wrong seat count is indistinguishable from a good one."""
+    with pytest.raises(KeyError):
+        config.party_cap("survey-corps")
+
+
+def test_the_compute_unit_plans_at_the_guilds_own_cap():
+    """The end of the plumbing: the cap on the job reaches the WeekResult.
+
+    ``_unit_jobs`` resolves each guild's cap in the parent and ``_compute_unit``
+    hands it to ``run_week``; if either link is dropped the week silently
+    reverts to config.TRIAL_PARTY_CAP and only SC's page would be wrong.
+    """
+    from src import build
+
+    members = [_member(f"M{i}", {"Foraging": 100}) for i in range(40)]
+    for site in build.GUILD_SITES:
+        job = {
+            "site_key": site.key,
+            "members": members,
+            "skills": ["Foraging"],
+            "min_levels": {},
+            "cap": site.party_cap,
+            "level": 1,
+            "picks": None,
+        }
+        out = build._compute_unit(job)
+        assert out["week"]["cap"] == site.party_cap
+        assert len(out["week"]["trials"][0]["roster"]) <= site.party_cap
