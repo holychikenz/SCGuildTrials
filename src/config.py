@@ -260,7 +260,7 @@ ROSTER_SHRINE_COLUMNS = {
 # ships with better numbers than the page admits to. It flips to True in R5, which
 # is the phase that changes published numbers and which reconciles each of the
 # four slices against an independently measured band before it does.
-ROSTER_SOURCE_ENABLED = False
+ROSTER_SOURCE_ENABLED = True
 
 ROSTER_USE_LEVELS = True             # roster skill levels over the manual tab's
 ROSTER_USE_HOUSES = True             # roster house levels over the "H" column /

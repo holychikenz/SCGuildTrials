@@ -137,3 +137,104 @@ roster entry (`source`, `tool_source`, `tool_item`, `tool_enhance`), one
 strip, the per-member source marks, the tool badge, the three re-worded caveats).
 Every number in `trials.json`, `signup.json` and `data.json` on both guilds is
 identical once those keys are stripped, and all 107 SC source marks render hollow.
+
+## 2. R5 — the flip, measured
+
+Seven builds at seed 42, one switch at a time, all `rc=0`. Inputs frozen and
+verified: the four source tabs were byte-identical before and after the whole
+sequence, so nothing below is contaminated by an officer's edit mid-run. (They were
+not always: between R0 and R5 the SC tab gained six edited cells, one of them
+Tiberius's Tailoring level 110 → 111. It changed no output at all.)
+
+### 2.1 Reconciliation — the verification
+
+Mean Δrate over matched member × **drawn** skill (C.Smithing, Milking, Enhancing,
+Tailoring), bands re-derived for this draw *before* the builds. "band" is a
+hand-rolled mirror of the rate model that does not import `src.roster`; "impl" is
+`roster.merge` + `trials._prepare_member`. Two independent code paths.
+
+| slice | SC band | SC impl | LI band | LI impl | verdict |
+|---|---|---|---|---|---|
+| 1 levels | +2.539% | +2.539% | +6.713% | +6.713% | PASS |
+| 2 houses | +0.035% | +0.035% | −0.120% | −0.120% | PASS |
+| 3 shrines | +1.444% | +1.444% | +0.954% | +0.954% | PASS |
+| 4 tools | **−0.211%** | **−0.211%** | **−0.872%** | **−0.872%** | PASS |
+| all | +3.867% | +3.867% | +6.680% | +6.680% | PASS |
+
+Agreement to **0.000pp** on every slice against a ±0.1pp tolerance. Interaction
+residual +0.060pp (SC), +0.005pp (LI). **Slice 4 is negative on both guilds**, which
+is the property that distinguishes four separate corrections from a uniform coat of
+optimism.
+
+Note the drawn-four bands differ from §5's all-ten figures (−0.52%/−1.26%) because
+the draw includes Enhancing, where the tool feeds the success channel rather than
+speed. The sign, which is what is load-bearing, is unchanged.
+
+### 2.2 The manifest
+
+| run | SC E[pts] | SC tiers | SC min P | LI E[pts] | LI tiers | LI min P | LI members |
+|---|---|---|---|---|---|---|---|
+| 0 off | 4910.4 | 12/12/10/11 | 0.9485 | 4592.3 | 11/11/9/11 | **0.5031** | 101 |
+| 1 levels | 4919.7 | 12/12/10/11 | 0.9707 | 4629.1 | 11/11/9/11 | 0.9339 | 101 |
+| 2 houses | 4909.8 | 12/12/10/11 | 0.9345 | 4591.4 | 11/11/9/**10** | 0.9980 | 101 |
+| 3 shrines | 4921.5 | 12/12/10/11 | 0.9771 | 4604.9 | 11/11/9/11 | 0.6484 | 101 |
+| 4 tools | 4907.9 | 12/12/10/11 | 0.9338 | 4576.9 | 11/11/9/**10** | 0.9935 | 101 |
+| all | 4926.9 | 12/12/10/11 | 0.9870 | 4629.8 | 11/11/9/11 | 0.9157 | 101 |
+| **+admission** | **4926.9** | 12/12/10/11 | **0.9870** | **4640.8** | 11/11/9/11 | **0.9333** | **106** |
+
+Step points are **4900 / 4600 in every single run**.
+
+### 2.3 The plan's tier prediction was WRONG, and this is the correction
+
+R5 stated: *"Tiers are now expected to be **gained**, particularly on LI where the
+combined slice is +6.00%; any tier that is lost is a surprise."* **No tier was gained,
+on either guild, in any run.** A ~6.7% rate improvement is nowhere near a tier
+boundary — the boundaries are 400 target units per tier level and the parties were
+mid-ramp, not near a crossing. The prediction confused "the rate rises a lot" with
+"the tier changes", and the ramp/step structure of partial credit is exactly what
+makes those different questions.
+
+**Where the gain actually went is safety, and it is worth more than a tier.** LI's
+thinnest trial goes from a coin flip (`P(holds) = 0.5031`, partial fraction 0.0002 —
+two ten-thousandths past the boundary) to **0.9333**. SC's goes 0.9485 → 0.9870.
+That is the pathology R0 §1 predicted would clear, clearing.
+
+### 2.4 The two tier LOSSES are harness artefacts, not shipped behaviour
+
+Runs 2 and 4 — the two adverse slices — each drop LI's Tailoring trial to tier 10,
+costing 100 step points. This is fully explained: that trial banked tier 11 with
+0.02% to spare, so *any* downward nudge loses it. Both the joint run and the shipped
+run keep tier 11 with a 0.93 hold probability. A slice run **alone** is not a
+configuration anyone ships.
+
+### 2.5 Controls
+
+- **SC admission control:** SC run 5 is **byte-identical** to SC run "all" (provenance
+  aside). SC admits nobody, so the admission path must not touch it. It does not.
+- **Slice 0 golden:** run 0 reproduces R0's every number — tiers, points, credit,
+  expected, party sizes — with **zero** pre-existing fields changed. The only
+  differences are R4's four additive member keys and the `provenance` block, which
+  correctly reads `enabled: false, source: "manual tab", roster_backed: 0`.
+- **Suite:** 358 passed with every switch **on**.
+
+### 2.6 Admission, and LI's change of regime
+
+LI: 100 roster-backed, 1 manual-only (`OTZ`, kept), 5 admitted, 7 hiding gear,
+captured 2 days old, not stale.
+
+**LI is now seat-constrained for the first time.** 106 members against 4 × 26 = 104
+seats; all four parties sit at cap and two members are benched. SC remains
+member-constrained (107 in 112). The two guilds are now in different regimes.
+
+**Risk 10 did not fire.** The fear was that LI would bench precisely the admitted
+members, whose missing `top`/`bot` understates them by up to 0.2364 efficiency. The
+bench is `zzzZap` (an existing member) and `IronPugs` (admitted) — one of each, not
+both admitted. And `IronPugs` is the weakest of the five by a wide margin
+(C.Smithing 93, Enhancing 93, against LI medians of 109 and 102), so the decision
+stands on its own merits rather than on a data gap.
+
+The other four are seated: `yiyya`, `yiyaa` and `U3` in Enhancing, `auuughhh` in
+Tailoring. Both halves of the pair §5.6 feared was one renamed person are on the
+field, as two people, which is the outcome the characterId argument predicted.
+
+Admission alone is worth **+11.0 expected points** to LI.
