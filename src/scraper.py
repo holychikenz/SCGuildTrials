@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -38,6 +38,7 @@ from .reader import (
     _cell,
     _to_bool,
     _to_int,
+    member_to_dict,
 )
 
 
@@ -56,12 +57,16 @@ class GuildData:
         Members are serialized with ``dataclasses.asdict`` (recursively
         flattening the nested ``SkillEntry`` values), matching the member
         shape written to ``_site/data.json`` by the existing pipeline.
+
+        Unset roster-sourced keys are omitted — see
+        :func:`reader.member_to_dict`, which both this and ``processor.process``
+        go through so the two cannot disagree about the JSON shape.
         """
         return {
             "tab": self.tab,
             "fetched_at": self.fetched_at,
             "member_count": self.member_count,
-            "members": [asdict(m) for m in self.members],
+            "members": [member_to_dict(m) for m in self.members],
         }
 
 

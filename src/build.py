@@ -19,6 +19,7 @@ from typing import Optional
 
 from . import config
 from . import draw as draw_model
+from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
 from .processor import process
@@ -3482,9 +3483,79 @@ class _GuildInputs:
     # rather than truncated from the long form, which contains skill names with dots
     # in them ("C.Smithing") and does not survive being cut at the first period.
     signup_unavailable_short: str = ""
+    # Per-guild roster provenance (roster.Provenance), or None when the roster was
+    # not consulted at all — config.ROSTER_SOURCE_ENABLED off, or the fetch failed.
+    # Counts only; picklable like everything else here.
+    roster_provenance: Optional["roster_model.Provenance"] = None
+    # Non-empty when the roster tab could not be read: the reason, for the warning
+    # and the on-page banner. The build still ships, from the manual tab.
+    roster_unavailable: str = ""
     # Filled by main() in the render phase from the published unit's result. Not an
     # input — it lives here so one object carries everything _write_guild needs.
     plan_dict: Optional[dict] = None
+
+
+def _report_roster_join(
+    site: "GuildSite", prov: "roster_model.Provenance"
+) -> None:
+    """Print the roster join's NOTE/WARNING pair, beside the sign-up ones.
+
+    Every one of these is actionable by an officer, which is why none of them is
+    swallowed — the same discipline the sign-up join already applies.
+    """
+    if prov.refused:
+        print(f"WARNING ({site.key}): roster REFUSED — {prov.refused}", file=sys.stderr)
+        return
+
+    print(
+        f"NOTE ({site.key}): roster join {prov.roster_backed}/"
+        f"{prov.roster_backed + prov.manual_backed} members, captured "
+        f"{prov.captured_at or 'unknown'}; {len(prov.gear_hidden)} hide their gear "
+        f"(tools from the '{site.member_tab}' tab).",
+        file=sys.stderr,
+    )
+    if prov.normalized_matches:
+        print(
+            f"NOTE ({site.key}): {len(prov.normalized_matches)} roster name(s) "
+            f"matched a member only after case/space normalisation "
+            f"(tidy the '{site.member_tab}' tab): "
+            + "; ".join(prov.normalized_matches),
+            file=sys.stderr,
+        )
+    if prov.unmatched_members:
+        print(
+            f"NOTE ({site.key}): {len(prov.unmatched_members)} member(s) match NO "
+            f"roster row and keep the '{site.member_tab}' tab's data: "
+            + ", ".join(prov.unmatched_members),
+            file=sys.stderr,
+        )
+    if prov.admitted:
+        print(
+            f"NOTE ({site.key}): {prov.admitted} member(s) exist ONLY on the "
+            f"'{site.roster_tab}' tab and were SEATED from it — before this change "
+            f"they were dropped entirely, because the '{site.member_tab}' tab has "
+            f"never heard of them: {', '.join(prov.admitted_names)}. They carry no "
+            f"Top/Bot checkboxes (the roster does not record body or legs), so "
+            f"their rates are if anything understated. Adding them to the member "
+            f"tab is still the right fix.",
+            file=sys.stderr,
+        )
+    if prov.reported_not_seated:
+        print(
+            f"WARNING ({site.key}): {len(prov.reported_not_seated)} roster name(s) "
+            f"are on the '{site.roster_tab}' tab but NOT on the "
+            f"'{site.member_tab}' tab and were NOT seated "
+            f"(config.ROSTER_ADMITS_NEW_MEMBERS is False): "
+            + ", ".join(prov.reported_not_seated),
+            file=sys.stderr,
+        )
+    if prov.ambiguous:
+        print(
+            f"WARNING ({site.key}): {len(prov.ambiguous)} name(s) are ambiguous "
+            f"after normalisation and joined to NOBODY: "
+            + ", ".join(prov.ambiguous),
+            file=sys.stderr,
+        )
 
 
 def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _GuildInputs:
@@ -3506,6 +3577,52 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     gd = scrape_member_tab(site.member_tab)
     if register is None:
         register = process(gd.members)
+
+    # --- The roster tab, and the merge ------------------------------------------
+    # THE REGISTER IS BUILT FIRST, AND FROM THE UNMERGED ROWS, deliberately.
+    # index.html mirrors the officers' own hand-maintained tab, stale cells and all;
+    # that is the page an officer uses to NOTICE a stale cell. trials.html and
+    # signup.html are the model and take the merged rows. The two pages answer
+    # different questions and conflating them would destroy the one that reports
+    # data quality.
+    #
+    # GATED AT THE FETCH rather than at the consumers: with
+    # config.ROSTER_SOURCE_ENABLED off the build does not even talk to the roster
+    # tab, so the rollback also covers the case where the separate Apps Script
+    # deployment is the thing that is broken.
+    members = gd.members
+    roster_provenance = None
+    roster_unavailable = ""
+    if config.ROSTER_SOURCE_ENABLED:
+        try:
+            roster_rows = roster_model.scrape_roster_tab(site.roster_tab)
+        except SheetStructureError as exc:
+            # DEGRADE, do not stop the deploy. The roster tab is written by a
+            # SEPARATE Apps Script deployment whose header shifts when a module
+            # toggle moves, and nobody who moves that toggle is thinking about this
+            # pipeline. SC is required=True, so an uncaught raise here would take
+            # down every page of BOTH guilds.
+            #
+            # The INCIDENT 2026-08-14 counter-example (a quiet fallback shipping
+            # wrong advice) does not apply: there the fallback was a stale CONSTANT,
+            # here it is today's shipped behaviour — the status quo ante, already
+            # believed good enough to publish this morning. A network RuntimeError
+            # still propagates and fails the build, exactly as elsewhere.
+            roster_unavailable = (
+                f"The {site.roster_tab!r} tab could not be read, so every member's "
+                f"data comes from the '{site.member_tab}' tab instead. Reason: {exc}"
+            )
+            print(
+                f"WARNING ({site.key}): roster unavailable, falling back to the "
+                f"manual member tab:\n{exc}",
+                file=sys.stderr,
+            )
+        else:
+            report = roster_model.join(gd.members, roster_rows)
+            members, roster_provenance = roster_model.merge(
+                gd.members, report, site.key
+            )
+            _report_roster_join(site, roster_provenance)
 
     # --- The sign-up tab, and whether it is talking about THIS week --------------
     # A SheetStructureError here means this guild's sign-up tab no longer carries the
@@ -3562,11 +3679,13 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
 
     return _GuildInputs(
         site_key=site.key,
-        members=gd.members,
+        members=members,
         register=register,
         picks=picks,
         signup_unavailable=unavailable,
         signup_unavailable_short=unavailable_short,
+        roster_provenance=roster_provenance,
+        roster_unavailable=roster_unavailable,
     )
 
 

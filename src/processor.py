@@ -10,16 +10,23 @@ Extend ``process`` (or add helpers here) without touching reader/build.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime, timezone
 
 from . import config
-from .reader import MemberRow
+from .reader import MemberRow, member_to_dict
 
 
 def _serialize_member(member: MemberRow) -> dict:
-    """Convert a MemberRow (with nested SkillEntry dataclasses) to plain dict."""
-    return asdict(member)
+    """Convert a MemberRow (with nested SkillEntry dataclasses) to plain dict.
+
+    Goes through :func:`reader.member_to_dict` so the optional roster-sourced
+    fields do not emit ``null`` keys into ``_site/data.json`` while unset — the
+    property that keeps ``ROSTER_SOURCE_ENABLED = False`` a byte-for-byte
+    rollback. NB this register is built from the UNMERGED member rows on
+    purpose: index.html mirrors the officers' own tab, stale cells included, and
+    that is the page an officer uses to notice a stale cell.
+    """
+    return member_to_dict(member)
 
 
 def _skill_summary(rows: list[MemberRow]) -> list[dict]:

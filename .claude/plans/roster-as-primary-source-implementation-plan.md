@@ -242,7 +242,7 @@ before/after tier tables, the sigma ablation, and the open questions in §11.
 | `src/reader.py` | `SkillEntry` gains `tool_item`, `tool_enhance` (both `Optional`, default `None`); `MemberRow` gains `character_id`, `captured_at`, `shrine_levels` (`dict[str, int]`, default empty), `provenance` (`dict[str, str]`, default empty). All defaulted, so every existing constructor call is untouched. |
 | `src/scraper.py` | `GuildData.to_dict` omits the new keys when they are all unset, so `data.json` is byte-identical with the switch off. Nothing else. |
 | `src/trials.py` | `_resolve_tool(member, skill)` (new sibling, ~20 lines); `tool_bonus(skill, item, enhance)` (new, ~25 lines); `member_shrine_bonuses(member, overrides)` (new, ~25 lines); ~20 lines inside `member_bonuses` replacing the two `if tool` branches and the shrine resolve; the hoist removed at `simulate_race:1198`, `:771`, `:855`; `probe_shrine_upgrade` re-specified and `probe_shrine_adoption` added (§5.5). `_resolve_level_and_checks` keeps its 5-tuple **unchanged** — `calibrate.py:369` unpacks it. `MemberBonuses` is untouched: its `shrine_speed` / `shrine_efficiency` fields already exist and are already applied at the point of use. |
-| `src/build.py` | `GuildSite.roster_tab` property beside `member_tab`; the roster fetch + merge in `_fetch_guild`; provenance counters onto `_GuildInputs`; the provenance strip + per-member marks + tool-tier badge in the renderers; **edits** to the `Assumptions & caveats` block (`:2115`) and the sigma sentence (`:3276`); the join NOTE/WARNING beside the existing sign-up ones. |
+| `src/build.py` | `GuildSite.roster_tab` property beside `member_tab`; the roster fetch + merge + admission in `_fetch_guild` (merged list for the model, unmerged for the register, so `index.html` keeps mirroring the manual tab); provenance counters onto `_GuildInputs`; the provenance strip + per-member marks + tool-tier badge in the renderers; **edits** to the `Assumptions & caveats` block (`:2115`) and the sigma sentence (`:3276`); the join NOTE/WARNING beside the existing sign-up ones. |
 | `src/calibrate.py` | `Sources.respect_provenance: bool = False`; `_prepare_perturbed` skips `augment` / `tool_flip` for a roster-backed tool and `house_blank` for a roster-backed house. One re-run, one new `RISK_SIGMA_SYSTEMATIC`. |
 | `README.md` | a "Where member data comes from" subsection: the three-tier precedence, the switch ladder, the measured before/after. |
 
@@ -473,28 +473,49 @@ feeds the two probes and no longer feeds the rate model; its comment must say so
 lose the now-answered open question (§2.2, consequence 2). `guild_shrine_bonuses` survives
 for the switched-off path and for `calibrate.py:499`.
 
-### 5.6 Roster-only members are not eligible, by default and on purpose
+### 5.6 Roster-only members ARE admitted — corrected 2026-08-31, during R2
 
-LI's roster carries five names the manual tab has never heard of (`IronPugs`, `U3`,
-`auuughhh`, `yiyaa`, `yiyya`). `ROSTER_ADMITS_NEW_MEMBERS = False`.
+**REVISED.** This section originally argued for `ROSTER_ADMITS_NEW_MEMBERS = False`. Its
+central hazard was checked against the live tab and is **false**, and with it gone the
+remaining arguments do not carry the decision. The shipped value is
+`ROSTER_ADMITS_NEW_MEMBERS = True`.
 
-- **The manual tab is the roster of record for eligibility.** The optimizer's output is
-  advice officers act on by moving real people into real parties. Seating a name the
-  officers' own tab does not contain asks them to act on someone they cannot look up.
-- **The repo has already made this call once.** `signup.py` ignores a sign-up matching no
-  member and warns loudly (`build.py:3794-3801`) rather than inventing a member row. The
-  same rule, in the same direction.
-- **`yiyaa` / `yiyya` looks like a rename**, i.e. the roster contains, in effect, one person
-  twice. `characterId` would settle it; the manual tab has no id column, so there is no
-  bridge. Admitting both would seat one person in two parties. Refusing both is the only
-  option that cannot be wrong.
-- **The upside is small and unmeasured.** LI runs 4 × 26 = 104 seats against 101 members;
-  five more mostly changes who is benched, not which tiers are banked. §7.4 makes measuring
-  it a step, so the decision is revisited against a number rather than a feeling.
+LI's roster carries five names the manual tab has never heard of: `IronPugs` (id 280884),
+`U3` (281111), `auuughhh` (117231), `yiyaa` (287196), `yiyya` (287200).
 
-The build prints them as a NOTE, in the shape the existing `normalized_matches` NOTE uses,
-because the correct fix is for an officer to add the row. `ROSTER_ADMITS_NEW_MEMBERS = True`
-is the one-line lever, and it is tested in both positions.
+**The `yiyaa` / `yiyya` rename hazard is void.** The original argument was that the pair
+looked like one renamed character, so admitting both would seat one person twice. Measured:
+two distinct `characterId`s, and stats that differ — shrines force/tempo 2/3 against 2/2,
+Holy Enhancer +5 against +6, C.Smithing 105 against 107. And a duplicate is structurally
+impossible: `apps-script/profiles/Code.gs` sets `KEY_COLUMN = 'characterId'` and **upserts**
+on it, so a rename updates the row in place. Two rows can only ever mean two characters.
+The name-collision guard belongs on the **manual** side of the join, where names are the
+only key — not on the roster side, where they are not.
+
+**The upside is not small, and it is now measured.** Both guilds already seat every member
+they have: SC's parties are 28 + 24 + 28 + 27 = 107 = its entire roster; LI's are
+25 + 24 + 26 + 26 = 101 = its entire roster (R0 manifest,
+`research/roster-as-primary-source.md` §1). Neither guild is cap-constrained; both have run
+out of *people*. These five are the only additional capacity in existence. Four sit at or
+near the LI median in the drawn skills (`auuughhh`: Milking 113 against a median of 112,
+Tailoring 113 against 108), and **all five signed up for this week's trials** — R0's own
+build log records that it ignored them.
+
+**What an admitted member is, and what they are not.** They are appended to the *merged*
+list only, built from roster data alone, in roster-row order after the manual members so the
+seed-fixed optimizer trajectory stays reproducible. They do **not** enter the unmerged
+`gd.members` that `index.html` renders: that page mirrors the officers' manual tab and must
+keep doing so, which is also how an officer notices the row is missing. `top` and `bot` are
+necessarily `False` — there is no manual row to read them from and the roster does not carry
+body/legs — which understates an admitted member by up to two `ARMOUR_EFFICIENCY_PLUS7`
+terms. That is the correct direction: a newcomer is admitted on the evidence we have, not on
+the evidence we wish we had. It is commented at the site of the default and counted in
+provenance rather than left to be inferred.
+
+The build still prints them, now as a NOTE saying plainly that they were previously dropped,
+because the correct long-term fix is still for an officer to add the row.
+`ROSTER_ADMITS_NEW_MEMBERS = False` restores the prior "reported, not seated" behaviour
+exactly and remains the one-line rollback; both positions are tested.
 
 ---
 
@@ -522,7 +543,8 @@ ROSTER_USE_SHRINES = True            # each member's OWN purchased shrine levels
                                      # global GUILD_SHRINE_LEVELS read and the
                                      # once-per-race hoist in simulate_race (§5.4).
 
-ROSTER_ADMITS_NEW_MEMBERS = False    # roster-only names are reported, not seated (§5.6)
+ROSTER_ADMITS_NEW_MEMBERS = True     # roster-only names are SEATED, not merely reported.
+                                     # False restores "reported, not seated" (§5.6, revised).
 ROSTER_MIN_JOIN_RATE = 0.90          # below this the roster is REFUSED for that guild (§9.3)
 ROSTER_MAX_AGE_DAYS = 14             # banner threshold, NOT a cutoff (§9.4)
 ROSTER_UNKNOWN_TOOL_FATAL = False    # an unmodelled item warns + falls back; True stops the build
@@ -646,6 +668,33 @@ top, bot := manual, always
 
 and a provenance tag per `(member, skill, field)`, aggregated into per-guild counters.
 
+**R2.3b — admission (§5.6).** Under `ROSTER_ADMITS_NEW_MEMBERS`, every roster row that
+matched no member becomes a new `MemberRow` built from roster data alone and **appended to
+the merged list, in roster-row order, after every manual member**. Order is not cosmetic:
+the optimizer's search is seeded, and its trajectory depends on the member list's order, so
+"appended in source order" is what makes the build reproducible.
+
+Four properties of an admitted member, each of which needs stating because each is a place
+the implementation could plausibly do something else:
+
+- **They exist in the merged list only.** `gd.members` — the unmerged list that `process()`
+  turns into `index.html` — never sees them. That page mirrors the officers' manual tab and
+  must keep doing so; it is also how an officer notices the row is missing. The consequence
+  is a deliberate discrepancy — `index.html` says 101 while `trials.html` says 106 — which
+  the provenance strip (R4.1) must name outright, because an unexplained one reads as a bug.
+- **`top` and `bot` are necessarily `False`.** There is no manual row to read them from and
+  the roster does not carry body/legs (permanently — §11.3). This understates an admitted
+  member by up to two `ARMOUR_EFFICIENCY_PLUS7` terms, i.e. `0.2364` of efficiency. That is
+  the correct direction — a newcomer is admitted on the evidence held, not the evidence
+  wished for — but it is **not** a harmless conservatism here (§9, Risk 10), and it must be
+  visible in provenance rather than inferred from an absence.
+- **Manual-only members are kept, not dropped.** The mirror-image case: LI's manual tab holds
+  one member (`OTZ`) the roster has never seen. The merge iterates over the manual list and
+  *enriches* it, so this is automatic rather than engineered — but it is exactly the kind of
+  property that a later "rewrite the merge as a roster-driven loop" would silently break, so
+  §8.3 pins it.
+- **No member is counted twice.** A member on both tabs is enriched in place, never appended.
+
 **R2.4** `build._fetch_guild`: after `gd = scrape_member_tab(...)`, and **only when
 `config.ROSTER_SOURCE_ENABLED`**, fetch + parse + join + merge; put the merged list on
 `_GuildInputs.members` and the *unmerged* `gd.members` into `process()` for the register.
@@ -658,7 +707,9 @@ Apps Script deployment is the thing that is broken.
 
 **Verification:** with `ROSTER_SOURCE_ENABLED = False`, a full build produces `_site/`
 byte-identical to R0 (`diff -r`); with it `True` in a scratch run, the log prints join
-counts matching the ResearchPack's measured 107/107 and 100/101.
+counts matching the ResearchPack's measured 107/107 and 100/101, and — with
+`ROSTER_ADMITS_NEW_MEMBERS = True` — LI's merged member count reads **106** (101 manual,
+of which 100 matched, plus 5 admitted) while SC's reads **107** unchanged.
 
 ### R3 — The tool table, per-member shrines, and `member_bonuses`. Still gated OFF.
 
@@ -726,7 +777,9 @@ strip and the badges. Build with it on in a scratch run — the counts match R2'
 
 ### R5 — The flip, in four measured slices. **This is the phase that changes numbers.**
 
-Run five builds, at the fixed seed, recording the full manifest each time. The bands are
+Run **six** builds, at the fixed seed, recording the full manifest each time —
+`ROSTER_ADMITS_NEW_MEMBERS = False` throughout runs 0–4, then run 5 for admission alone (see
+below for why it is deliberately outside the band framework). The bands are
 §2.3's measured means, which came from `trials._prepare_member` / `trials.success` over
 every matched member × skill:
 
@@ -766,9 +819,45 @@ specific properties are therefore load-bearing:
   large residual means one slice is not doing what its name says — most likely a switch that
   silently gates more than it claims.
 
-Record all six manifests, the four deltas, the interaction residual, and the tier table
-before and after in `research/roster-as-primary-source.md` §2; put the headline in the CI
-summary line so the change is legible in the deploy log rather than only in a file.
+**Admission is NOT a fifth slice, and it must not be folded into the four.** This is a
+decision, so here is the reasoning. Slices 1–4 are *rate* errors, each measured as a mean
+Δrate over **matched members × drawn skills**. Admission changes no matched member's rate; it
+changes the party composition and, fatally for the arithmetic, it changes the denominator —
+the five admitted members are by definition not in the population the bands were measured
+over. Expressing "five more members" as a mean Δrate over a set that excludes them is not a
+harder measurement, it is a different one. Worse, changing the denominator midway through the
+table is precisely the mechanism that manufactures a spurious interaction residual, which is
+the signal §2.3 asks us to trust.
+
+So `ROSTER_ADMITS_NEW_MEMBERS = False` is held throughout runs 1–4, keeping the four bands
+comparable to the §2.3 measurement that produced them, and admission gets **run 5 with its
+own, different verification** — a composition check, not a Δrate band:
+
+| check | expectation |
+|---|---|
+| SC merged member count | **107, unchanged** — SC's roster and manual tab both hold 107 and all 107 match, so SC admits nobody |
+| **SC run 5 vs run 4** | **byte-identical.** A free and strong control: the admission path must not leak into a guild it has no business touching |
+| LI merged member count | **101 → 106** |
+| LI sign-up WARNING | the `5 sign-up name(s) match NO member … IronPugs, U3, auuughhh, yiyaa, yiyya` line **disappears** |
+| LI enforced sign-ups | rises by up to 5 — all five volunteered, so `signup.py` now matches them where it previously ignored them |
+| LI seats used | 101 → **104** (see below) |
+
+**And run 5 flips LI into a regime it has never been in.** LI's cap is 26 a party, so
+4 × 26 = **104 seats** against a roster that becomes **106**. Today LI seats every member it
+has; after admission it cannot, and for the first time **LI's bench is a real decision rather
+than an artefact of having run out of people**. SC stays member-constrained (107 against
+4 × 28 = 112). That asymmetry is the most interesting thing run 5 produces and it belongs in
+the write-up, not just the manifest.
+
+Note the second-order consequence, which is why Risk 10 exists: the two members LI now has to
+bench are chosen by the optimizer on modelled rate, and admitted members are systematically
+understated by their missing `top`/`bot`. The population most likely to be benched is exactly
+the population whose numbers are least complete.
+
+Record all seven manifests, the four deltas, the interaction residual, run 5's composition
+table, and the tier table before and after in `research/roster-as-primary-source.md` §2; put
+the headline in the CI summary line so the change is legible in the deploy log rather than
+only in a file.
 
 **Verification:** the reconciliation above, plus `pytest tests/ -v` green, plus the tier
 table before/after. Tiers are now expected to be **gained**, particularly on LI where the
@@ -911,9 +1000,18 @@ Fixtures in the style of `tests/test_scraper.py`: a `_roster_header()` helper em
 - **`test_gear_hider_keeps_roster_levels_and_manual_tools`** — *the* per-field test: a member
   with populated levels/houses/shrines and 20 blank tool columns gets roster levels, roster
   houses, and the manual checkbox's tool
-- `test_roster_only_member_is_not_eligible_by_default`
-- `test_roster_only_member_is_eligible_when_the_switch_is_on`
-- `test_member_missing_from_the_roster_is_fully_manual`
+- `test_roster_only_members_are_admitted_by_default` — all five live-shaped names, five
+  distinct `characterId`s
+- `test_the_yiyaa_yiyya_pair_is_two_members_not_one` — both admitted, not deduplicated
+- `test_an_admitted_member_has_no_top_or_bot` — `False` for both, necessarily (§5.6)
+- `test_an_admitted_member_is_absent_from_the_unmerged_register_list`
+- `test_admitting_is_deterministic_in_roster_row_order`
+- `test_roster_only_member_is_reported_but_not_seated_when_the_switch_is_off`
+- `test_a_member_on_both_tabs_is_never_admitted_twice`
+- `test_member_missing_from_the_roster_is_fully_manual` — the `OTZ` mirror-image case: the
+  manual tab knows one LI member the roster has never seen, and the merge must keep them
+  (§11.9). Automatic today because the merge *enriches* a manual list; pinned because a later
+  rewrite as a roster-driven loop would silently drop them.
 - `test_merge_does_not_mutate_the_input_members` — the register must keep mirroring the sheet
 - `test_join_below_min_rate_refuses_the_roster_for_that_guild`
 - `test_provenance_counts_sum_to_member_count_times_skill_count`
@@ -1050,6 +1148,45 @@ numbers.
 second one is only meaningful because `MemberBonuses` deliberately keeps the fields separate
 — a design choice made for an unrelated reason that now pays for itself.
 
+### Risk 10 — admitted members are understated, and LI must now bench somebody
+**Probability:** certain. **Impact:** medium, and sharper than it first appears.
+An admitted member has no manual row, so `top` and `bot` are `False` and their efficiency is
+understated by up to `0.2364`. Simultaneously, admission takes LI from 101 members in 104
+seats to **106 in 104** — so LI acquires a binding cap for the first time and the optimizer
+must bench two. The population most likely to be benched is precisely the population whose
+data is least complete: that is a bias with a mechanism, not a coincidence.
+**Mitigation:** the direction is stated and defended (admit on the evidence held, not the
+evidence wished for); it is counted in provenance and captioned on the page rather than left
+to be inferred; and the standing NOTE tells officers that adding the row to the manual tab is
+what supplies the missing `top`/`bot`. **The measurement to record at R5 run 5 is which
+members LI benches** — if both are admitted ones, that is a result to report rather than
+accept quietly. Note also that the understatement makes any reported tier gain a **floor**.
+
+### Risk 11 — admission silently contaminates the four slice bands
+**Probability:** high if not explicitly prevented; leaving the switch on is the natural thing
+to do. **Impact:** high — the slices would be measured over one population and compared
+against bands derived from another, and the mismatch would surface as a fake interaction
+residual, discrediting the one check that would otherwise have caught it.
+**Mitigation:** `ROSTER_ADMITS_NEW_MEMBERS = False` is pinned off for runs 0–4; admission gets
+its own run with a composition check instead of a Δrate band (§7 R5). SC's run 5 being
+byte-identical to its run 4 is the control that proves the isolation held.
+
+### Risk 12 — admission changes the SIGN-UP plan, not just the trials page
+**Probability:** certain — all five volunteered, and R0's log records `signup.py` ignoring
+them. **Impact:** medium, and easy to miss because the four slices are all trials-page
+measurements.
+`signup.py` matches sign-up names against the member list, so five names that previously
+matched nothing now match, arrive as **enforced** volunteers, and are locked into the trials
+they ticked (they are never moved or benched — `README.md`, sign-up rule 1). That is a
+second, independent behaviour change riding on the same switch: LI's enforced plan gains up
+to five locked seats it did not have.
+**Mitigation:** R5 run 5's composition table covers `signup.json` as well as `trials.json`;
+the disappearance of the `5 sign-up name(s) match NO member` WARNING is the crisp signal that
+it took effect; and the enforced-seat count is recorded before and after. Note the
+interaction with Risk 10: an enforced member cannot be benched, so an *understated* admitted
+member who volunteered is locked in regardless — which is, for once, the failure mode
+pointing the harmless way.
+
 ### Risk 7 — `TOOL_ENHANCE_WHEN_UNKNOWN = 0` understates a non-trivial population
 **Probability:** unknown, and that is the problem. **Impact:** proportional to the count.
 **Mitigation:** counted and printed every build, with a numeric trigger: above 5% of matched
@@ -1095,7 +1232,8 @@ A ladder, cheapest first. Every rung is one line in `config.py`.
 | 3 | `ROSTER_USE_TOOLS = False` | the manual checkbox, keeping roster levels and houses. |
 | 4 | `ROSTER_USE_HOUSES = False` / `ROSTER_USE_LEVELS = False` | either half of the "free" improvement. |
 | 5 | `ROSTER_USE_SHRINES = False` | the guild-wide shrine constant **and** `simulate_race`'s once-per-race hoist — bit-for-bit, pinned by `test_shrines_off_is_bit_identical_to_the_hoisted_path`. Note this rung gives up the largest favourable term after levels. |
-| 6 | `RISK_SIGMA_SYSTEMATIC = 0.0131` | the pre-recalibration risk discount. The old value and its derivation stay in the comment for exactly this. |
+| 6 | `ROSTER_ADMITS_NEW_MEMBERS = False` | "reported, not seated": LI returns to 101 members, the five lose their seats, the sign-up WARNING returns, and LI stops being cap-constrained. Independent of rungs 2–5 — it is a *membership* revert, not a rate one — so it can be pulled alone. |
+| 7 | `RISK_SIGMA_SYSTEMATIC = 0.0131` | the pre-recalibration risk discount. The old value and its derivation stay in the comment for exactly this. |
 
 **The operational rollback needs no code at all.** If the Apps Script deployment is removed,
 the tab renamed, or its header shifted, Risk 2's degradation path drops the build back to the
@@ -1173,18 +1311,42 @@ Provisional (§5.3). **Trigger:** if named-tool-with-blank-enhancement exceeds 5
 member-skills on either guild, resolve before R5's flip. The count is printed every build so
 the trigger cannot be missed.
 
-### 11.7 Roster-only members — decided, but not yet measured
-`ROSTER_ADMITS_NEW_MEMBERS = False` is argued in §5.6 on grounds that do not depend on the
-size of the effect. The size should still be measured (one run with the switch on, LI only,
-tier table diffed), so the decision is revisited against a number.
+### 11.7 Roster-only members — CLOSED, and reversed
+`ROSTER_ADMITS_NEW_MEMBERS = True` since R2 (§5.6, revised): the rename hazard that carried
+the original `False` was checked against the live tab and is false, and both guilds turn out
+to seat every member they have, so the five are the only spare capacity in existence. The
+size of the effect is still worth reading off the R5 tier table, but it no longer decides
+anything.
 
-### 11.8 The party cap is still open, and the roster makes it sharper
-The prior plan's §3.7 — "is the cap real, and is it 20, 24, 26 or 28?" — is unresolved, and
-this change does not touch it. It is worth noting that better per-member data makes the
-question *more* pressing rather than less: the marginal-seat calculation the prior plan
-publishes now runs on observed rather than assumed rates.
+### 11.8 Members, not the cap, are the binding constraint — until admission, on LI
+The prior plan's §3.7 asked whether `TRIAL_PARTY_CAP` is real and what its value is, calling
+it "a magic number". The R0 manifest answers a question nobody thought to ask beside it, and
+the answer redirects §3.7: **neither guild is currently cap-constrained.** SC seats
+28 + 24 + 28 + 27 = 107 — its entire roster — against 4 × 28 = 112 available seats; LI seats
+25 + 24 + 26 + 26 = 101, its entire roster, against 104. Both have run out of *people*. Every
+published party size is therefore set by headcount, not by the cap and not by the
+1%-per-member penalty, which means the cap has not in fact bound anything over the period
+these plans have spent arguing about it.
 
-### 11.9 Tool loot and XP stats
+Admission changes that, on one guild, immediately: LI goes to **106 members in 104 seats** and
+becomes cap-constrained, while SC (107 in 112) does not. From R5 onward the two guilds sit in
+**different regimes**, and LI is where the value of the cap starts to matter for the first
+time. Recorded here rather than acted on — this plan does not touch `TRIAL_PARTY_CAPS`, and
+should not — but the next person to open §3.7 should know the question has just gone live for
+exactly one guild, and which one.
+
+A corollary that is easy to get backwards: recruiting is currently worth more than raising the
+cap on both guilds, and after R5 that reverses on LI.
+
+### 11.9 The mirror-image member, and the one column that would retire both cases
+LI's manual tab holds one member (`OTZ`) the roster has never seen — the exact inverse of the
+five roster-only names. The merge keeps them, because the manual tab is evidence too and its
+silence about somebody is no more probative than the roster's. Both cases are symptoms of one
+missing thing: **there is no shared key.** `characterId` on the manual tab (§11.4) would
+retire the roster-only case, the manual-only case, the case-insensitive join and the
+ambiguity rule, in a single column.
+
+### 11.10 Tool loot and XP stats
 `TOOL_STATS` deliberately drops `<skill>RareFind` and `<skill>Experience`. They are real and
 they are worth money; they do not change how fast work gets done, and this model is a rate
 model. Same rule as Rarity, Spirit and Scholar in `guild_shrine_bonuses`. Recorded so that
@@ -1200,7 +1362,8 @@ The change is complete when:
   the golden test pins the same property offline.
 - ✅ Every one of the ~90 pre-existing tests passes **unmodified**.
 - ✅ The join reports 107/107 on SC and 100/101 on LI, with the unmatched remainder named in
-  the build log.
+  the build log — and LI's five roster-only members are SEATED (§5.6, revised), reported as
+  previously dropped, and absent from `index.html`'s register.
 - ✅ A gear-hiding member demonstrably gets roster levels and houses and a manual tool — the
   per-field property, held by a test rather than by inspection.
 - ✅ Tool columns are read by name, and a shuffled tool block parses identically.
@@ -1224,9 +1387,18 @@ The change is complete when:
 - ✅ Both pages state, for every member, which of the three sources their numbers came from,
   and how old the capture is; and the `Assumptions & caveats` block no longer claims anything
   the roster has made false.
+- ✅ **LI's member count rises 101 → 106**, and the build log's
+  `WARNING (li): 5 sign-up name(s) match NO member … IronPugs, U3, auuughhh, yiyaa, yiyya`
+  **disappears**. SC's count stays 107 and SC's run 5 is byte-identical to its run 4.
+- ✅ `yiyaa` and `yiyya` are both seated, as two members with two `characterId`s.
+- ✅ Admitted members carry `top is False` / `bot is False`, are counted as such in
+  provenance, and the `index.html` (101) vs `trials.html` (106) discrepancy is captioned
+  rather than left to look like a bug.
+- ✅ LI's manual-only member (`OTZ`) survives the merge.
 - ✅ The build's per-unit timings are unchanged outside noise.
 - ✅ `research/roster-as-primary-source.md` carries the before/after tables, the four slices,
-  the ablation, and §11's open questions.
+  run 5's composition table, the ablation, and §11's open questions — including the finding
+  that neither guild was cap-constrained before this change and that LI becomes so after it.
 
 ---
 

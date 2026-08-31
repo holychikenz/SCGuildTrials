@@ -67,6 +67,14 @@ Those five ignored names are **exactly** the five roster-only members the
 ResearchPack found (§3). They are not typos: they are real characters who signed
 up for this week's trials, exist on the LI Roster tab with full levels, houses,
 shrines and tools — and are dropped, because the hand-maintained tab has never
-heard of them. `ROSTER_ADMITS_NEW_MEMBERS = False` (plan §5.6) keeps them dropped
-for now; the plan's own justification (the `yiyaa`/`yiyya` pair) is sound, but
-this raises the question's priority: the roster can now *tell* us they are real.
+heard of them.
+
+**RESOLVED in R2, against the plan's first answer.** `ROSTER_ADMITS_NEW_MEMBERS`
+ships `True`. The plan's §5.6 justification for dropping them rested on the
+`yiyaa`/`yiyya` pair being one renamed character; measured on the live tab they
+are two, with distinct `characterId`s (287196 / 287200) and different stats, and
+`apps-script/profiles/Code.gs` upserts on `characterId`, so two rows can only
+mean two characters. Both guilds also turn out to seat every member they have —
+SC 28+24+28+27 = 107, LI 25+24+26+26 = 101, i.e. the whole roster each — so these
+five are the only additional capacity in existence, not a change to who is
+benched.

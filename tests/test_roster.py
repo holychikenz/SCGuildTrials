@@ -327,3 +327,437 @@ def test_gviz_no_header_collapse_is_not_appended(monkeypatch):
 def test_roster_tabs_are_configured_for_both_guilds():
     assert config.ROSTER_TABS == {"sc": "SC Roster", "li": "LI Roster"}
     assert set(config.ROSTER_TABS) == set(config.TABS)
+
+
+# ===========================================================================
+# R2 — the join, the merge, and the rollback's proof
+# ===========================================================================
+import copy  # noqa: E402
+import json  # noqa: E402
+
+from src import build as build_model, processor, trials  # noqa: E402
+from src.reader import MemberRow, SkillEntry  # noqa: E402
+from tests.golden_fixture import (  # noqa: E402
+    GOLDEN_CAP,
+    GOLDEN_DRAW,
+    GOLDEN_SEED,
+    GOLDEN_STRATEGY,
+    golden_members,
+)
+
+_GOLDEN_PATH = "tests/golden/week_pre_roster.json"
+
+
+def _member(name, level=100, tool=False, top=False, bot=False, house=4):
+    """A manual-tab member with the same value in every skill."""
+    return MemberRow(
+        name=name, main_classes="", flex="", flex_levels=[],
+        skills={
+            s: SkillEntry(level=level, tool=tool, top=top, bot=bot, house=house)
+            for s in config.SKILLS
+        },
+    )
+
+
+# --- the golden: the rollback's proof ---------------------------------------
+def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
+    """ROSTER_SOURCE_ENABLED = False must reproduce the pre-roster week EXACTLY.
+
+    Compared with ``==`` against a golden generated from the pre-change commit
+    (265326b) — not ``approx``. _prepare_member's docstring records a live case
+    where a one-ULP change reshuffled every SC party for no gain, so
+    ULP-exactness IS the property under test.
+    """
+    monkeypatch.setattr(config, "ROSTER_SOURCE_ENABLED", False)
+    week = trials.run_week(
+        golden_members(),
+        skills=list(GOLDEN_DRAW),
+        seed=GOLDEN_SEED,
+        cap=GOLDEN_CAP,
+        strategy=GOLDEN_STRATEGY,
+    )
+    got = week.to_dict()
+    got.pop("generated_at", None)
+    got.pop("week_date", None)
+    with open(_GOLDEN_PATH, encoding="utf-8") as fh:
+        expected = json.load(fh)
+    assert got == expected
+
+
+def test_data_json_is_byte_identical_with_roster_off():
+    """The optional roster fields must not emit null keys into data.json."""
+    payload = processor.process([_member("solo")])
+    member = payload["members"][0]
+    assert set(member) == {"name", "main_classes", "flex", "flex_levels", "skills"}
+    entry = member["skills"]["Milking"]
+    assert set(entry) == {"level", "tool", "top", "bot", "house"}
+    assert "tool_item" not in json.dumps(payload)
+
+
+def test_serialised_roster_fields_appear_once_they_are_set():
+    m = _member("solo")
+    m.character_id = "1"
+    m.shrine_levels = {"force": 3}
+    m.skills["Milking"].tool_item = "Celestial Brush"
+    d = processor.process([m])["members"][0]
+    assert d["character_id"] == "1"
+    assert d["shrine_levels"] == {"force": 3}
+    assert d["skills"]["Milking"]["tool_item"] == "Celestial Brush"
+    # Still per FIELD: the enhancement was never set, so it is still absent.
+    assert "tool_enhance" not in d["skills"]["Milking"]
+    assert "captured_at" not in d
+
+
+def _stub_fetch_guild(monkeypatch, calls):
+    """Stub every network call _fetch_guild makes except the roster's."""
+    from src import scraper
+
+    gd = scraper.GuildData(
+        tab="LI Member Data", fetched_at="t", member_count=1,
+        members=[_member("Yedic")],
+    )
+    monkeypatch.setattr(build_model, "scrape_member_tab", lambda tab: gd)
+    monkeypatch.setattr(
+        build_model.signup_model, "fetch_signup_csv", lambda tab: "csv"
+    )
+    monkeypatch.setattr(
+        build_model.draw_model, "trial_columns", lambda csv, tab: ["Milking"]
+    )
+    monkeypatch.setattr(
+        build_model.signup_model, "parse_signup", lambda csv, tab_label=None: {}
+    )
+
+    def fake_scrape_roster(tab):
+        calls.append(tab)
+        return roster.parse(_roster_csv([{"name": "Yedic"}]))
+
+    monkeypatch.setattr(build_model.roster_model, "scrape_roster_tab", fake_scrape_roster)
+    return gd
+
+
+def test_roster_disabled_makes_no_second_http_request(monkeypatch):
+    """The gating is at the FETCH, so a broken roster deployment cannot bite."""
+    calls = []
+    _stub_fetch_guild(monkeypatch, calls)
+    monkeypatch.setattr(config, "ROSTER_SOURCE_ENABLED", False)
+    site = [s for s in build_model.GUILD_SITES if s.key == "li"][0]
+    inputs = build_model._fetch_guild(
+        site, build_model.draw_model.TrialDraw(skills=["Milking"], date="x")
+    )
+    assert calls == []
+    assert inputs.roster_provenance is None
+
+
+def test_roster_enabled_fetches_the_roster_tab_once(monkeypatch):
+    calls = []
+    _stub_fetch_guild(monkeypatch, calls)
+    monkeypatch.setattr(config, "ROSTER_SOURCE_ENABLED", True)
+    site = [s for s in build_model.GUILD_SITES if s.key == "li"][0]
+    inputs = build_model._fetch_guild(
+        site, build_model.draw_model.TrialDraw(skills=["Milking"], date="x")
+    )
+    assert calls == ["LI Roster"]
+    assert inputs.roster_provenance.roster_backed == 1
+
+
+def test_a_broken_roster_header_degrades_rather_than_stopping_the_build(monkeypatch):
+    """SC is required=True: an uncaught raise here kills every page of both guilds."""
+    calls = []
+    _stub_fetch_guild(monkeypatch, calls)
+
+    def boom(tab):
+        raise SheetStructureError("column 'milking' is missing")
+
+    monkeypatch.setattr(build_model.roster_model, "scrape_roster_tab", boom)
+    monkeypatch.setattr(config, "ROSTER_SOURCE_ENABLED", True)
+    site = [s for s in build_model.GUILD_SITES if s.key == "li"][0]
+    inputs = build_model._fetch_guild(
+        site, build_model.draw_model.TrialDraw(skills=["Milking"], date="x")
+    )
+    assert "could not be read" in inputs.roster_unavailable
+    assert inputs.roster_provenance is None
+    assert [m.name for m in inputs.members] == ["Yedic"]
+
+
+# --- the join ---------------------------------------------------------------
+def test_join_is_case_insensitive():
+    members = [_member("dome"), _member("VIadd"), _member("FeaI")]
+    rows = roster.parse(
+        _roster_csv([{"name": "Dome"}, {"name": "Viadd"}, {"name": "Feai"}])
+    )
+    report = roster.join(members, rows)
+    assert len(report.matched) == 3
+    assert len(report.normalized_matches) == 3
+    assert report.unmatched_members == []
+    assert report.unmatched_roster == []
+
+
+def test_exact_match_wins_over_the_normalised_one():
+    members = [_member("Dome")]
+    rows = roster.parse(_roster_csv([{"name": "dome"}, {"name": "Dome"}]))
+    report = roster.join(members, rows)
+    assert report.matched[0].character_id == "14630"
+    assert report.normalized_matches == []
+
+
+def test_join_reports_unmatched_on_both_sides():
+    members = [_member("Yedic"), _member("OTZ")]
+    rows = roster.parse(_roster_csv([{"name": "Yedic"}, {"name": "IronPugs"}]))
+    report = roster.join(members, rows)
+    assert report.unmatched_members == ["OTZ"]
+    assert report.unmatched_roster == ["IronPugs"]
+    assert [r.name for r in report.roster_only] == ["IronPugs"]
+
+
+def test_ambiguous_normalised_name_joins_to_nobody():
+    """signup.py:1253-1259's rule, verbatim: an ambiguous key matches nobody."""
+    members = [_member("bob"), _member("BOB")]
+    rows = roster.parse(_roster_csv([{"name": "Bob"}]))
+    report = roster.join(members, rows)
+    assert report.matched == {}
+    assert sorted(report.ambiguous) == ["BOB", "bob"]
+    assert report.unmatched_roster == ["Bob"]
+
+
+def test_two_roster_rows_sharing_a_normalised_name_match_nobody():
+    members = [_member("bob")]
+    rows = roster.parse(_roster_csv([{"name": "Bob"}, {"name": "BOB"}]))
+    report = roster.join(members, rows)
+    assert report.matched == {}
+    assert report.ambiguous == ["bob"]
+
+
+# --- the merge --------------------------------------------------------------
+def _merged(member_kwargs=None, roster_overrides=None, name="Yedic"):
+    members = [_member(name, **(member_kwargs or {}))]
+    rows = roster.parse(_roster_csv([dict(roster_overrides or {}, name=name)]))
+    report = roster.join(members, rows)
+    merged, prov = roster.merge(members, report, "sc")
+    return members, merged, prov
+
+
+def test_merge_does_not_mutate_the_input_members():
+    """index.html must keep mirroring the officers' own tab, stale cells and all."""
+    members, merged, _prov = _merged({"level": 100, "house": 4})
+    before = copy.deepcopy(members)
+    assert members == before
+    assert members[0].skills["Milking"].level == 100
+    assert merged[0].skills["Milking"].level == 125  # the roster's value
+    assert members[0].provenance == {}
+
+
+def test_roster_levels_and_houses_win():
+    _m, merged, prov = _merged({"level": 100, "house": 4})
+    assert merged[0].skills["Milking"].level == 125
+    assert merged[0].skills["Milking"].house == 6
+    assert merged[0].provenance["Milking.level"] == roster.ROSTER
+    assert merged[0].provenance["member"] == roster.ROSTER
+    assert prov.roster_backed == 1
+
+
+def test_switching_levels_off_keeps_the_manual_level(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_USE_LEVELS", False)
+    _m, merged, _prov = _merged({"level": 100})
+    assert merged[0].skills["Milking"].level == 100
+    assert merged[0].provenance["Milking.level"] == roster.MANUAL
+    assert merged[0].skills["Milking"].house == 6  # houses still roster-backed
+
+
+def test_gear_hider_keeps_roster_levels_and_manual_tools():
+    """THE per-field test. Nine SC and seven LI members are exactly this case."""
+    blank_tools = {}
+    for skill in config.SKILLS:
+        _lv, _house, tool = config.ROSTER_COLUMNS[skill]
+        blank_tools[tool] = ""
+        blank_tools[tool + config.ROSTER_TOOL_ENH_SUFFIX] = ""
+    _m, merged, prov = _merged({"level": 100, "tool": True}, blank_tools)
+    entry = merged[0].skills["Milking"]
+    assert entry.level == 125            # roster
+    assert entry.house == 6              # roster
+    assert entry.tool is True            # the manual checkbox
+    assert entry.tool_item is None       # the roster said nothing
+    assert merged[0].provenance["Milking.tool"] == roster.MANUAL
+    assert merged[0].provenance["Milking.level"] == roster.ROSTER
+    assert prov.gear_hidden == ["Yedic"]
+
+
+def test_roster_tool_item_and_enhancement_are_carried():
+    _m, merged, _prov = _merged()
+    entry = merged[0].skills["Milking"]
+    assert entry.tool_item == "Celestial Brush"
+    assert entry.tool_enhance == 10
+
+
+def test_member_missing_from_the_roster_is_fully_manual(monkeypatch):
+    # The floor has its own two tests; a two-member fixture would trip it.
+    monkeypatch.setattr(config, "ROSTER_MIN_JOIN_RATE", 0.0)
+    members = [_member("Yedic", level=100), _member("OTZ", level=99)]
+    rows = roster.parse(_roster_csv([{"name": "Yedic"}]))
+    merged, prov = roster.merge(members, roster.join(members, rows), "li")
+    otz = merged[1]
+    assert otz.skills["Milking"].level == 99
+    assert otz.provenance["member"] == roster.MANUAL
+    assert otz.character_id is None
+    assert otz.shrine_levels == {}
+    assert prov.manual_backed == 1 and prov.roster_backed == 1
+
+
+def test_top_and_bot_are_always_the_manual_tabs():
+    """The roster does not carry body or legs and never will (§11.3)."""
+    _m, merged, _prov = _merged({"top": True, "bot": True})
+    assert merged[0].skills["Milking"].top is True
+    assert merged[0].skills["Milking"].bot is True
+
+
+def test_shrine_levels_are_carried_as_levels_not_bonuses():
+    _m, merged, _prov = _merged()
+    assert merged[0].shrine_levels == {
+        "force": 4, "tempo": 3, "spirit": 2, "rarity": 0, "scholar": 1,
+    }
+
+
+def test_blank_shrine_column_is_absent_rather_than_zero():
+    _m, merged, _prov = _merged(roster_overrides={"shrine_tempo_skilling": ""})
+    assert "tempo" not in merged[0].shrine_levels
+    assert merged[0].shrine_levels["force"] == 4
+
+
+def test_switching_shrines_off_carries_no_levels(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_USE_SHRINES", False)
+    _m, merged, _prov = _merged()
+    assert merged[0].shrine_levels == {}
+
+
+def test_provenance_counts_sum_to_member_count_times_skill_count(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_MIN_JOIN_RATE", 0.0)
+    members = [_member("Yedic"), _member("OTZ")]
+    rows = roster.parse(_roster_csv([{"name": "Yedic"}]))
+    _merged_rows, prov = roster.merge(members, roster.join(members, rows), "sc")
+    for field_name in ("level", "house", "tool"):
+        assert sum(prov.fields[field_name].values()) == 2 * len(config.SKILLS)
+
+
+def test_join_below_min_rate_refuses_the_roster_for_that_guild():
+    """A wholesale mis-join would silently reprice a whole guild."""
+    members = [_member(f"m{i}") for i in range(10)]
+    rows = roster.parse(_roster_csv([{"name": "m0"}]))
+    merged, prov = roster.merge(members, roster.join(members, rows), "sc")
+    assert prov.refused
+    assert "10%" in prov.refused
+    assert all(m.provenance == {} for m in merged)
+    assert merged[0].skills["Milking"].level == 100  # untouched, i.e. today
+    assert prov.admitted == 0
+
+
+def test_a_join_at_the_floor_is_accepted():
+    members = [_member(f"m{i}") for i in range(10)]
+    rows = roster.parse(_roster_csv([{"name": f"m{i}"} for i in range(9)]))
+    _merged_rows, prov = roster.merge(members, roster.join(members, rows), "sc")
+    assert prov.refused == ""
+    assert prov.roster_backed == 9
+
+
+# --- roster-only members are ADMITTED (§5.6, revised) -----------------------
+_ROSTER_ONLY = [
+    {"name": "IronPugs", "characterId": "280884", "cheesesmithing": "93"},
+    {"name": "U3", "characterId": "281111", "cheesesmithing": "102"},
+    {"name": "auuughhh", "characterId": "117231", "cheesesmithing": "106"},
+    {"name": "yiyaa", "characterId": "287196", "cheesesmithing": "105",
+     "shrine_force_skilling": "2", "shrine_tempo_skilling": "3",
+     "tool_enhancing": "Holy Enhancer", "tool_enhancingEnh": "5"},
+    {"name": "yiyya", "characterId": "287200", "cheesesmithing": "107",
+     "shrine_force_skilling": "2", "shrine_tempo_skilling": "2",
+     "tool_enhancing": "Holy Enhancer", "tool_enhancingEnh": "6"},
+]
+
+
+def _li_shaped():
+    """One manual member plus the five live LI roster-only names."""
+    members = [_member("Felisie")]
+    rows = roster.parse(_roster_csv([{"name": "Felisie"}] + _ROSTER_ONLY))
+    return members, rows
+
+
+def test_roster_only_members_are_admitted_by_default():
+    members, rows = _li_shaped()
+    merged, prov = roster.merge(members, roster.join(members, rows), "li")
+    assert prov.admitted == 5
+    assert prov.admitted_names == ["IronPugs", "U3", "auuughhh", "yiyaa", "yiyya"]
+    assert [m.name for m in merged[1:]] == prov.admitted_names
+    assert len({m.character_id for m in merged[1:]}) == 5
+    assert prov.reported_not_seated == []
+
+
+def test_the_yiyaa_yiyya_pair_is_two_members_not_one():
+    """The rename hazard §5.6 originally refused them for. It is false.
+
+    Distinct characterIds, different shrines and different tool enhancement —
+    and apps-script/profiles/Code.gs upserts on characterId, so two rows can
+    only ever mean two characters.
+    """
+    members, rows = _li_shaped()
+    merged, _prov = roster.merge(members, roster.join(members, rows), "li")
+    pair = [m for m in merged if m.name in ("yiyaa", "yiyya")]
+    assert len(pair) == 2
+    assert {m.character_id for m in pair} == {"287196", "287200"}
+    assert pair[0].shrine_levels != pair[1].shrine_levels
+    assert (
+        pair[0].skills["Enhancing"].tool_enhance
+        != pair[1].skills["Enhancing"].tool_enhance
+    )
+
+
+def test_an_admitted_member_has_no_top_or_bot():
+    """Necessarily False: no manual row, and the roster omits body and legs."""
+    members, rows = _li_shaped()
+    merged, _prov = roster.merge(members, roster.join(members, rows), "li")
+    admitted = merged[1]
+    for skill in config.SKILLS:
+        assert admitted.skills[skill].top is False
+        assert admitted.skills[skill].bot is False
+    assert admitted.provenance["member"] == roster.ROSTER_ONLY
+    assert admitted.main_classes == "" and admitted.flex == ""
+
+
+def test_an_admitted_member_is_absent_from_the_unmerged_register_list():
+    members, rows = _li_shaped()
+    merged, _prov = roster.merge(members, roster.join(members, rows), "li")
+    register = processor.process(members)
+    assert register["member_count"] == 1
+    assert [m["name"] for m in register["members"]] == ["Felisie"]
+    assert len(merged) == 6
+
+
+def test_admitting_is_deterministic_in_roster_row_order():
+    members, rows = _li_shaped()
+    a, _ = roster.merge(members, roster.join(members, rows), "li")
+    b, _ = roster.merge(members, roster.join(members, rows), "li")
+    assert [m.name for m in a] == [m.name for m in b]
+    assert [m.name for m in a][1:] == [r["name"] for r in _ROSTER_ONLY]
+
+
+def test_admitted_members_carry_roster_levels_and_shrines():
+    members, rows = _li_shaped()
+    merged, _prov = roster.merge(members, roster.join(members, rows), "li")
+    yiyaa = [m for m in merged if m.name == "yiyaa"][0]
+    assert yiyaa.skills["C.Smithing"].level == 105
+    assert yiyaa.shrine_levels["force"] == 2
+    assert yiyaa.provenance["C.Smithing.level"] == roster.ROSTER
+
+
+def test_roster_only_member_is_reported_but_not_seated_when_the_switch_is_off(
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "ROSTER_ADMITS_NEW_MEMBERS", False)
+    members, rows = _li_shaped()
+    merged, prov = roster.merge(members, roster.join(members, rows), "li")
+    assert len(merged) == 1
+    assert prov.admitted == 0
+    assert prov.reported_not_seated == [r["name"] for r in _ROSTER_ONLY]
+
+
+def test_a_member_on_both_tabs_is_never_admitted_twice():
+    members, rows = _li_shaped()
+    merged, prov = roster.merge(members, roster.join(members, rows), "li")
+    assert [m.name for m in merged].count("Felisie") == 1
+    assert prov.member_count == len(merged) == 6

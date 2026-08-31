@@ -246,6 +246,80 @@ ROSTER_SHRINE_COLUMNS = {
     "shrine_scholar_skilling": "scholar",
 }
 
+# --- Roster tabs as the PRIMARY per-member source: the switch ladder ---------
+# MASTER SWITCH. False restores the pre-roster build BIT-FOR-BIT: no second gviz
+# fetch, no join, no merge, no new data.json keys, no page changes. The gating is
+# at the FETCH rather than at the consumers, deliberately — with this off the
+# build does not even talk to the roster tab, so the rollback also covers the case
+# where the separate Apps Script deployment is the thing that is broken.
+# Pinned by tests/test_roster.py::test_roster_disabled_reproduces_the_golden_week
+# and ::test_data_json_is_byte_identical_with_roster_off.
+#
+# SHIPPED FALSE. R1-R4 land the whole mechanism dark: the merge, the tool table,
+# the per-member shrines and the provenance strip all go in first, so that nothing
+# ships with better numbers than the page admits to. It flips to True in R5, which
+# is the phase that changes published numbers and which reconciles each of the
+# four slices against an independently measured band before it does.
+ROSTER_SOURCE_ENABLED = False
+
+ROSTER_USE_LEVELS = True             # roster skill levels over the manual tab's
+ROSTER_USE_HOUSES = True             # roster house levels over the "H" column /
+                                     # DEFAULT_HOUSE_LEVEL
+ROSTER_USE_TOOLS = True              # roster tool TIER over the "Tool" checkbox
+ROSTER_USE_TOOL_ENHANCEMENT = True   # observed enhancement over the assumed +7.
+                                     # False keeps the tier but re-imposes +7 — the
+                                     # partial rollback for the -0.52% / -1.26%
+                                     # adverse tool slice, which is the only one of
+                                     # the four that points against us.
+ROSTER_USE_SHRINES = True            # each member's OWN purchased shrine levels in
+                                     # place of the guild-wide constant. False
+                                     # restores the global GUILD_SHRINE_LEVELS read
+                                     # AND simulate_race's once-per-race hoist,
+                                     # bit-for-bit.
+
+# Roster-only names are SEATED, not merely reported. Revised 2026-08-31 (plan §5.6):
+# the first draft refused them because `yiyaa`/`yiyya` looked like one renamed
+# character seated twice. Measured, they are two — distinct characterIds 287196 and
+# 287200, different shrines, different tool enhancement, different levels — and a
+# duplicate is structurally impossible anyway, because apps-script/profiles/Code.gs
+# keys on characterId and UPSERTS, so a rename updates the row in place and two rows
+# can only ever mean two characters. The name-collision guard belongs on the MANUAL
+# side of the join, where names are the only key; not on the roster side, where they
+# are not.
+# It matters because both guilds already seat everyone they have (SC 28+24+28+27 =
+# 107 = its whole roster; LI 25+24+26+26 = 101 = its whole roster), so these five LI
+# members are the only additional capacity in existence — and all five signed up for
+# this week's trials, which the R0 build log records itself ignoring.
+# False restores "reported, not seated" exactly, and is the one-line rollback.
+ROSTER_ADMITS_NEW_MEMBERS = True
+
+# Below this fraction of the MANUAL tab's members joining a roster row, the roster is
+# REFUSED for that guild and the build falls back to the manual tab with a loud
+# warning. Guards the catastrophic case — gviz serving a different tab past the
+# header guard would otherwise silently reprice a whole guild. Measured headroom:
+# SC joins at 100%, LI at 99%.
+ROSTER_MIN_JOIN_RATE = 0.90
+
+# Age at which the on-page provenance strip is outlined and captioned as stale, in
+# the same way the community-buff strip is outlined off the published level. A
+# BANNER THRESHOLD, NOT A CUTOFF: an old capture is still better data than the
+# assumption it replaces, and refusing it would silently restore the assumption.
+ROSTER_MAX_AGE_DAYS = 14
+
+# An item the roster names that config.TOOL_STATS does not model: warn, count, and
+# fall back to the manual checkbox. True stops the build instead. Shipped False
+# because one new game item must not stop a deploy — but it is never silent, and
+# never scored as Holy without saying so.
+ROSTER_UNKNOWN_TOOL_FATAL = False
+
+# Enhancement level assumed when the roster names a tool but leaves its Enh cell
+# blank. PROVISIONAL, and 0 understates against an observed mode of +5 — chosen
+# because the repo's standing habit with an unknown is to err in the direction that
+# cannot flatter the answer (see calibrate.DEFAULT's level_common comment). Counted
+# and printed every build; if it exceeds 5% of matched member-skills on either guild
+# it must be resolved before the R5 flip rather than after.
+TOOL_ENHANCE_WHEN_UNKNOWN = 0
+
 # ===========================================================================
 # Guild Trials (Phase 1) — model constants + this week's draw
 # ===========================================================================

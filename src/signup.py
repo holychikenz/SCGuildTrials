@@ -62,7 +62,7 @@ from urllib.parse import quote
 import requests
 
 from . import config
-from .reader import MemberRow, SheetStructureError, _cell, _to_bool
+from .reader import MemberRow, SheetStructureError, _cell, _to_bool, norm_name
 from .optimizer import AssignmentScorer, _min_banking, objective_of
 from .trials import (
     RosterEntry,
@@ -130,17 +130,12 @@ def _norm_header(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def _norm_name(text: str) -> str:
-    """Normalise a member / sign-up name for JOINING the two sheets.
-
-    Collapses internal whitespace and casefolds — nothing more. The sign-up
-    "User" cell is the raw in-game name, while the member tab is hand-maintained,
-    so the two routinely differ only by capitalisation (e.g. sign-up ``Dome`` vs
-    member ``dome``); an exact-only join silently dropped such sign-ups. Unlike
-    :func:`_norm_header` this KEEPS digits and punctuation, so only case/spacing
-    differences fold together and two genuinely distinct handles never collide.
-    """
-    return " ".join(text.split()).casefold()
+# The member-name join key. PROMOTED to reader.norm_name so roster.py can join on
+# the identical rule: the roster tab and the sign-up tab both join to the same
+# hand-maintained member tab, and two normalisers that drift apart is precisely the
+# bug a shared one prevents. Unlike :func:`_norm_header` it KEEPS digits and
+# punctuation, so only case/spacing differences fold together.
+_norm_name = norm_name
 
 
 # Normalised header token -> the ``config.SKILLS`` sheet-column name it denotes.

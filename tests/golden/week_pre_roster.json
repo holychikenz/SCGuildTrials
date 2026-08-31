@@ -1,0 +1,913 @@
+{
+  "bench": [],
+  "building_upgrades": [
+    {
+      "at_cap": false,
+      "building": "Guild Dairy Barn",
+      "draws_to_return": 72.0,
+      "from_level": 0,
+      "levels_needed": 6,
+      "next_level_cost": 500,
+      "points_after": 1100,
+      "points_gained": 100,
+      "points_now": 1000,
+      "reachable": true,
+      "skill": "Milking",
+      "skill_levels_after": 12,
+      "skill_levels_now": 0,
+      "tier_after": 10,
+      "tier_now": 9,
+      "to_level": 6,
+      "total_cost": 7200,
+      "weeks_to_return": 180.0
+    },
+    {
+      "at_cap": false,
+      "building": "Guild Observatory",
+      "draws_to_return": 102.25,
+      "from_level": 0,
+      "levels_needed": 7,
+      "next_level_cost": 500,
+      "points_after": 800,
+      "points_gained": 100,
+      "points_now": 700,
+      "reachable": true,
+      "skill": "Enhancing",
+      "skill_levels_after": 14,
+      "skill_levels_now": 0,
+      "tier_after": 7,
+      "tier_now": 6,
+      "to_level": 7,
+      "total_cost": 10225,
+      "weeks_to_return": 255.625
+    },
+    {
+      "at_cap": false,
+      "building": "Guild Kitchen",
+      "draws_to_return": 143.0,
+      "from_level": 0,
+      "levels_needed": 8,
+      "next_level_cost": 500,
+      "points_after": 1100,
+      "points_gained": 100,
+      "points_now": 1000,
+      "reachable": true,
+      "skill": "Cooking",
+      "skill_levels_after": 16,
+      "skill_levels_now": 0,
+      "tier_after": 10,
+      "tier_now": 9,
+      "to_level": 8,
+      "total_cost": 14300,
+      "weeks_to_return": 357.5
+    },
+    {
+      "at_cap": false,
+      "building": "Guild Brewery",
+      "draws_to_return": 72.0,
+      "from_level": 0,
+      "levels_needed": 6,
+      "next_level_cost": 500,
+      "points_after": 1000,
+      "points_gained": 100,
+      "points_now": 900,
+      "reachable": true,
+      "skill": "Brewing",
+      "skill_levels_after": 12,
+      "skill_levels_now": 0,
+      "tier_after": 9,
+      "tier_now": 8,
+      "to_level": 6,
+      "total_cost": 7200,
+      "weeks_to_return": 180.0
+    }
+  ],
+  "cap": 20,
+  "community_buff_enhancing": 0.2,
+  "community_buff_gathering": 0.2,
+  "community_buff_level": 1,
+  "community_buff_production": 0.14,
+  "guild_building_levels": {
+    "Brewing": 0,
+    "Cooking": 0,
+    "Enhancing": 0,
+    "Milking": 0
+  },
+  "guild_shrine_levels": {
+    "force": 1,
+    "rarity": 0,
+    "scholar": 0,
+    "spirit": 0,
+    "tempo": 1
+  },
+  "member_count": 30,
+  "min_level_advice": [
+    {
+      "already_benched": 21,
+      "current": null,
+      "party_size": 7,
+      "skill": "Milking",
+      "suggested": 119,
+      "would_exclude": 21
+    },
+    {
+      "already_benched": 8,
+      "current": null,
+      "party_size": 8,
+      "skill": "Enhancing",
+      "suggested": 85,
+      "would_exclude": 8
+    },
+    {
+      "already_benched": 19,
+      "current": null,
+      "party_size": 8,
+      "skill": "Cooking",
+      "suggested": 111,
+      "would_exclude": 19
+    },
+    {
+      "already_benched": 15,
+      "current": null,
+      "party_size": 7,
+      "skill": "Brewing",
+      "suggested": 99,
+      "would_exclude": 15
+    }
+  ],
+  "min_levels": {},
+  "seed": 42,
+  "shrine_efficiency": 0.005,
+  "shrine_speed": 0.005,
+  "shrine_upgrades": [
+    {
+      "at_cap": false,
+      "buff": "efficiency",
+      "credit_points_after": 3661.7565108813974,
+      "credit_points_now": 3659.3368462015005,
+      "efficiency_now": 0.005,
+      "from_level": 1,
+      "name": "Shrine of Force",
+      "next_level_cost": 1350,
+      "points_gained": 2.4196646798968686,
+      "shrine": "force",
+      "speed_now": 0.0,
+      "weeks_to_return": 557.9285473793583
+    },
+    {
+      "at_cap": false,
+      "buff": "action_speed",
+      "credit_points_after": 3661.098091397274,
+      "credit_points_now": 3659.3368462015005,
+      "efficiency_now": 0.0,
+      "from_level": 1,
+      "name": "Shrine of Tempo",
+      "next_level_cost": 1350,
+      "points_gained": 1.7612451957734265,
+      "shrine": "tempo",
+      "speed_now": 0.005,
+      "weeks_to_return": 766.5031554037348
+    },
+    {
+      "at_cap": false,
+      "buff": "rare_find",
+      "credit_points_after": null,
+      "credit_points_now": 3659.3368462015005,
+      "efficiency_now": 0.0,
+      "from_level": 0,
+      "name": "Shrine of Rarity",
+      "next_level_cost": 1000,
+      "points_gained": 0.0,
+      "shrine": "rarity",
+      "speed_now": 0.0,
+      "weeks_to_return": null
+    },
+    {
+      "at_cap": false,
+      "buff": "essence_find",
+      "credit_points_after": null,
+      "credit_points_now": 3659.3368462015005,
+      "efficiency_now": 0.0,
+      "from_level": 0,
+      "name": "Shrine of Spirit",
+      "next_level_cost": 1000,
+      "points_gained": 0.0,
+      "shrine": "spirit",
+      "speed_now": 0.0,
+      "weeks_to_return": null
+    },
+    {
+      "at_cap": false,
+      "buff": "wisdom",
+      "credit_points_after": null,
+      "credit_points_now": 3659.3368462015005,
+      "efficiency_now": 0.0,
+      "from_level": 0,
+      "name": "Shrine of Scholar",
+      "next_level_cost": 1000,
+      "points_gained": 0.0,
+      "shrine": "scholar",
+      "speed_now": 0.0,
+      "weeks_to_return": null
+    }
+  ],
+  "skills": [
+    "Milking",
+    "Enhancing",
+    "Cooking",
+    "Brewing"
+  ],
+  "strategy": "best",
+  "target_scale": 1.0,
+  "total_credit_points": 3659.3368462015005,
+  "total_expected_points": 3659.2579684520397,
+  "total_points": 3600,
+  "trials": [
+    {
+      "clear_probability": 0.9999962474482464,
+      "credit_points": 1015.1685987677183,
+      "expected_points": 1015.2047604041611,
+      "partial_fraction": 0.30337197535436583,
+      "party_size": 7,
+      "points": 1000,
+      "roster": [
+        {
+          "bot": false,
+          "level": 124,
+          "name": "member02",
+          "rate_final": 15.502278,
+          "rate_tier1": 39.460344000000006,
+          "tool": false,
+          "top": true
+        },
+        {
+          "bot": true,
+          "level": 120,
+          "name": "member09",
+          "rate_final": 12.811800000000003,
+          "rate_tier1": 35.23245,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": true,
+          "level": 127,
+          "name": "member10",
+          "rate_final": 17.934212999999996,
+          "rate_tier1": 43.3092165,
+          "tool": true,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 119,
+          "name": "member13",
+          "rate_final": 11.575461300000002,
+          "rate_tier1": 32.50033365,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": true,
+          "level": 129,
+          "name": "member14",
+          "rate_final": 17.682419300000003,
+          "rate_tier1": 41.319122650000004,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 120,
+          "name": "member22",
+          "rate_final": 13.324272000000004,
+          "rate_tier1": 36.64174800000001,
+          "tool": false,
+          "top": true
+        },
+        {
+          "bot": false,
+          "level": 120,
+          "name": "member23",
+          "rate_final": 13.043064000000001,
+          "rate_tier1": 35.868426,
+          "tool": true,
+          "top": false
+        }
+      ],
+      "skill": "Milking",
+      "tier_reached": 9,
+      "timeline": [
+        {
+          "cleared": true,
+          "cumulative_time": 161.9178085168531,
+          "effective_target": 42800.0,
+          "party_rate": 264.3316408,
+          "progress_fraction": null,
+          "tier": 1,
+          "tier_level": 100,
+          "time_to_clear": 161.9178085168531
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 348.3907054874925,
+          "effective_target": 47080.0,
+          "party_rate": 252.4763693,
+          "progress_fraction": null,
+          "tier": 2,
+          "tier_level": 110,
+          "time_to_clear": 186.4728969706394
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 561.9700481129354,
+          "effective_target": 51360.0,
+          "party_rate": 240.47269445,
+          "progress_fraction": null,
+          "tier": 3,
+          "tier_level": 120,
+          "time_to_clear": 213.57934262544293
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 814.3901065964853,
+          "effective_target": 55640.0,
+          "party_rate": 220.42622260000002,
+          "progress_fraction": null,
+          "tier": 4,
+          "tier_level": 130,
+          "time_to_clear": 252.42005848354992
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1118.9921602906331,
+          "effective_target": 59920.0,
+          "party_rate": 196.71567960000004,
+          "progress_fraction": null,
+          "tier": 5,
+          "tier_level": 140,
+          "time_to_clear": 304.60205369414786
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1490.079408112846,
+          "effective_target": 64200.00000000001,
+          "party_rate": 173.00513660000001,
+          "progress_fraction": null,
+          "tier": 6,
+          "tier_level": 150,
+          "time_to_clear": 371.08724782221293
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1948.7698291703973,
+          "effective_target": 68480.0,
+          "party_rate": 149.29459359999998,
+          "progress_fraction": null,
+          "tier": 7,
+          "tier_level": 160,
+          "time_to_clear": 458.6904210575513
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 2528.142764287367,
+          "effective_target": 72760.0,
+          "party_rate": 125.5840506,
+          "progress_fraction": null,
+          "tier": 8,
+          "tier_level": 170,
+          "time_to_clear": 579.3729351169694
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 3284.3747014706114,
+          "effective_target": 77040.0,
+          "party_rate": 101.87350760000001,
+          "progress_fraction": null,
+          "tier": 9,
+          "tier_level": 180,
+          "time_to_clear": 756.2319371832446
+        },
+        {
+          "cleared": false,
+          "cumulative_time": 4324.765126989349,
+          "effective_target": 81320.0,
+          "party_rate": 78.1629646,
+          "progress_fraction": 0.30337197535436583,
+          "tier": 10,
+          "tier_level": 190,
+          "time_to_clear": 1040.3904255187374
+        }
+      ]
+    },
+    {
+      "clear_probability": 0.9999999999999551,
+      "credit_points": 720.803685711054,
+      "expected_points": 720.8293869588057,
+      "partial_fraction": 0.4160737142210803,
+      "party_size": 8,
+      "points": 700,
+      "roster": [
+        {
+          "bot": false,
+          "level": 111,
+          "name": "member00",
+          "rate_final": 10.46833259748,
+          "rate_tier1": 17.53033574748,
+          "tool": true,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 126,
+          "name": "member05",
+          "rate_final": 14.05286208144,
+          "rate_tier1": 20.531643481439996,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": true,
+          "level": 114,
+          "name": "member16",
+          "rate_final": 12.57817746432,
+          "rate_tier1": 20.50228626432,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 85,
+          "name": "member19",
+          "rate_final": 4.958562947800001,
+          "rate_tier1": 11.162287947800001,
+          "tool": true,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 90,
+          "name": "member21",
+          "rate_final": 6.569228611440001,
+          "rate_tier1": 13.991213611440003,
+          "tool": false,
+          "top": true
+        },
+        {
+          "bot": false,
+          "level": 124,
+          "name": "member26",
+          "rate_final": 14.096945788320001,
+          "rate_tier1": 20.880812188320004,
+          "tool": true,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 96,
+          "name": "member27",
+          "rate_final": 7.74170802408,
+          "rate_tier1": 15.444103024079997,
+          "tool": false,
+          "top": true
+        },
+        {
+          "bot": false,
+          "level": 102,
+          "name": "member28",
+          "rate_final": 8.307084273360001,
+          "rate_tier1": 15.452724873360001,
+          "tool": true,
+          "top": false
+        }
+      ],
+      "skill": "Enhancing",
+      "tier_reached": 6,
+      "timeline": [
+        {
+          "cleared": true,
+          "cumulative_time": 318.8299951445951,
+          "effective_target": 43200.0,
+          "party_rate": 135.49540713824,
+          "progress_fraction": null,
+          "tier": 1,
+          "tier_level": 100,
+          "time_to_clear": 318.8299951445951
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 694.6773570265432,
+          "effective_target": 47520.0,
+          "party_rate": 126.43430503824001,
+          "progress_fraction": null,
+          "tier": 2,
+          "tier_level": 110,
+          "time_to_clear": 375.847361881948
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1141.7265468048822,
+          "effective_target": 51840.0,
+          "party_rate": 115.96039358824001,
+          "progress_fraction": null,
+          "tier": 3,
+          "tier_level": 120,
+          "time_to_clear": 447.04918977833904
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1680.9343375949352,
+          "effective_target": 56160.00000000001,
+          "party_rate": 104.15279778824,
+          "progress_fraction": null,
+          "tier": 4,
+          "tier_level": 130,
+          "time_to_clear": 539.207790790053
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 2342.186421255424,
+          "effective_target": 60480.00000000001,
+          "party_rate": 91.46284978824,
+          "progress_fraction": null,
+          "tier": 5,
+          "tier_level": 140,
+          "time_to_clear": 661.2520836604889
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 3164.804333366845,
+          "effective_target": 64800.00000000001,
+          "party_rate": 78.77290178824,
+          "progress_fraction": null,
+          "tier": 6,
+          "tier_level": 150,
+          "time_to_clear": 822.6179121114209
+        },
+        {
+          "cleared": false,
+          "cumulative_time": 4210.762421461577,
+          "effective_target": 69120.0,
+          "party_rate": 66.08295378824,
+          "progress_fraction": 0.4160737142210803,
+          "tier": 7,
+          "tier_level": 160,
+          "time_to_clear": 1045.9580880947315
+        }
+      ]
+    },
+    {
+      "clear_probability": 0.9955980563574408,
+      "credit_points": 1007.7866820679627,
+      "expected_points": 1007.6158313025142,
+      "partial_fraction": 0.1557336413592556,
+      "party_size": 8,
+      "points": 1000,
+      "roster": [
+        {
+          "bot": false,
+          "level": 115,
+          "name": "member04",
+          "rate_final": 9.0878368,
+          "rate_tier1": 27.9126416,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 117,
+          "name": "member06",
+          "rate_final": 10.61841984,
+          "rate_tier1": 31.137798720000003,
+          "tool": false,
+          "top": true
+        },
+        {
+          "bot": true,
+          "level": 127,
+          "name": "member07",
+          "rate_final": 17.216844479999995,
+          "rate_tier1": 41.57684783999999,
+          "tool": true,
+          "top": true
+        },
+        {
+          "bot": false,
+          "level": 125,
+          "name": "member08",
+          "rate_final": 12.9911652,
+          "rate_tier1": 32.477913,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 111,
+          "name": "member17",
+          "rate_final": 8.102182319999999,
+          "rate_tier1": 27.573555960000004,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 125,
+          "name": "member24",
+          "rate_final": 13.1449068,
+          "rate_tier1": 32.862267,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 124,
+          "name": "member25",
+          "rate_final": 12.70247264,
+          "rate_tier1": 32.33356672000001,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 130,
+          "name": "member29",
+          "rate_final": 14.007568000000003,
+          "rate_tier1": 32.2174064,
+          "tool": false,
+          "top": false
+        }
+      ],
+      "skill": "Cooking",
+      "tier_reached": 9,
+      "timeline": [
+        {
+          "cleared": true,
+          "cumulative_time": 167.38217558845218,
+          "effective_target": 43200.0,
+          "party_rate": 258.09199724,
+          "progress_fraction": null,
+          "tier": 1,
+          "tier_level": 100,
+          "time_to_clear": 167.38217558845218
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 360.18282187816015,
+          "effective_target": 47520.0,
+          "party_rate": 246.47220284000002,
+          "progress_fraction": null,
+          "tier": 2,
+          "tier_level": 110,
+          "time_to_clear": 192.80064628970797
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 583.0578885073578,
+          "effective_target": 51840.0,
+          "party_rate": 232.59667752000001,
+          "progress_fraction": null,
+          "tier": 3,
+          "tier_level": 120,
+          "time_to_clear": 222.87506662919765
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 845.4027902995174,
+          "effective_target": 56160.00000000001,
+          "party_rate": 214.06934008000002,
+          "progress_fraction": null,
+          "tier": 4,
+          "tier_level": 130,
+          "time_to_clear": 262.34490179215953
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1162.3345034853671,
+          "effective_target": 60480.00000000001,
+          "party_rate": 190.82975128000004,
+          "progress_fraction": null,
+          "tier": 5,
+          "tier_level": 140,
+          "time_to_clear": 316.9317131858497
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1548.9920437675014,
+          "effective_target": 64800.00000000001,
+          "party_rate": 167.59016248,
+          "progress_fraction": null,
+          "tier": 6,
+          "tier_level": 150,
+          "time_to_clear": 386.65754028213416
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 2027.8263028763495,
+          "effective_target": 69120.0,
+          "party_rate": 144.35057368,
+          "progress_fraction": null,
+          "tier": 7,
+          "tier_level": 160,
+          "time_to_clear": 478.8342591088482
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 2634.2122559983254,
+          "effective_target": 73440.0,
+          "party_rate": 121.11098488000002,
+          "progress_fraction": null,
+          "tier": 8,
+          "tier_level": 170,
+          "time_to_clear": 606.3859531219757
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 3428.724269870479,
+          "effective_target": 77760.0,
+          "party_rate": 97.87139608,
+          "progress_fraction": null,
+          "tier": 9,
+          "tier_level": 180,
+          "time_to_clear": 794.5120138721536
+        },
+        {
+          "cleared": false,
+          "cumulative_time": 4528.523443861486,
+          "effective_target": 82080.0,
+          "party_rate": 74.63180728,
+          "progress_fraction": 0.1557336413592556,
+          "tier": 10,
+          "tier_level": 190,
+          "time_to_clear": 1099.7991739910067
+        }
+      ]
+    },
+    {
+      "clear_probability": 0.9999998236781168,
+      "credit_points": 915.5778796547653,
+      "expected_points": 915.607989786559,
+      "partial_fraction": 0.31155759309530384,
+      "party_size": 7,
+      "points": 900,
+      "roster": [
+        {
+          "bot": false,
+          "level": 99,
+          "name": "member01",
+          "rate_final": 6.836376480000001,
+          "rate_tier1": 23.33797488,
+          "tool": false,
+          "top": true
+        },
+        {
+          "bot": false,
+          "level": 127,
+          "name": "member03",
+          "rate_final": 17.71636608,
+          "rate_tier1": 35.27732544,
+          "tool": true,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 101,
+          "name": "member11",
+          "rate_final": 7.627879839999998,
+          "rate_tier1": 24.729094319999994,
+          "tool": true,
+          "top": false
+        },
+        {
+          "bot": true,
+          "level": 110,
+          "name": "member12",
+          "rate_final": 11.684361600000003,
+          "rate_tier1": 30.671449200000005,
+          "tool": false,
+          "top": true
+        },
+        {
+          "bot": true,
+          "level": 128,
+          "name": "member15",
+          "rate_final": 17.834025600000004,
+          "rate_tier1": 35.05308480000001,
+          "tool": false,
+          "top": false
+        },
+        {
+          "bot": false,
+          "level": 119,
+          "name": "member18",
+          "rate_final": 15.501820319999997,
+          "rate_tier1": 34.64182295999999,
+          "tool": true,
+          "top": true
+        },
+        {
+          "bot": true,
+          "level": 123,
+          "name": "member20",
+          "rate_final": 16.024999440000002,
+          "rate_tier1": 33.712970520000006,
+          "tool": false,
+          "top": false
+        }
+      ],
+      "skill": "Brewing",
+      "tier_reached": 8,
+      "timeline": [
+        {
+          "cleared": true,
+          "cumulative_time": 196.85064528689247,
+          "effective_target": 42800.0,
+          "party_rate": 217.42372212,
+          "progress_fraction": null,
+          "tier": 1,
+          "tier_level": 100,
+          "time_to_clear": 196.85064528689247
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 426.4160839714441,
+          "effective_target": 47080.0,
+          "party_rate": 205.08313564,
+          "progress_fraction": null,
+          "tier": 2,
+          "tier_level": 110,
+          "time_to_clear": 229.56543868455162
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 695.3154927957796,
+          "effective_target": 51360.0,
+          "party_rate": 191.0007918,
+          "progress_fraction": null,
+          "tier": 3,
+          "tier_level": 120,
+          "time_to_clear": 268.8994088243356
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1015.7064049769775,
+          "effective_target": 55640.0,
+          "party_rate": 173.66285335999999,
+          "progress_fraction": null,
+          "tier": 4,
+          "tier_level": 130,
+          "time_to_clear": 320.3909121811979
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1405.9284579290816,
+          "effective_target": 59920.0,
+          "party_rate": 153.55359736,
+          "progress_fraction": null,
+          "tier": 5,
+          "tier_level": 140,
+          "time_to_clear": 390.22205295210415
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 1887.02791366999,
+          "effective_target": 64200.00000000001,
+          "party_rate": 133.44434136,
+          "progress_fraction": null,
+          "tier": 6,
+          "tier_level": 150,
+          "time_to_clear": 481.09945574090847
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 2491.2538670230815,
+          "effective_target": 68480.0,
+          "party_rate": 113.33508536,
+          "progress_fraction": null,
+          "tier": 7,
+          "tier_level": 160,
+          "time_to_clear": 604.2259533530915
+        },
+        {
+          "cleared": true,
+          "cumulative_time": 3271.724263473304,
+          "effective_target": 72760.0,
+          "party_rate": 93.22582936,
+          "progress_fraction": null,
+          "tier": 8,
+          "tier_level": 170,
+          "time_to_clear": 780.4703964502226
+        },
+        {
+          "cleared": false,
+          "cumulative_time": 4325.3841446699025,
+          "effective_target": 77040.0,
+          "party_rate": 73.11657335999999,
+          "progress_fraction": 0.31155759309530384,
+          "tier": 9,
+          "tier_level": 180,
+          "time_to_clear": 1053.659881196599
+        }
+      ]
+    }
+  ]
+}

@@ -10,6 +10,9 @@ below is measured, not assumed.
 > the tool slice and concluded that parties get **slower**. Measured across all four slices
 > through the repo's own rate path, they get **faster** — SC +3.30%, LI +6.00% (**§5.0**).
 > The tool pessimism is real but it is the smallest of the terms that matter.
+> (c) The five roster-only LI members are **real, distinct members who all signed up**, and
+> the `yiyaa`/`yiyya` "rename" reading offered in the first draft is falsified both by
+> measurement and by the upsert-on-`characterId` writer (**§3.1**). They are admitted.
 
 ## 1. What exists now, on the sheet
 
@@ -128,12 +131,53 @@ Casing drifts on both sides (`dome`/`Dome`, `VIadd`/`Viadd`, `FeaI`/`Feai`).
 loudly, not swallowed — the same discipline `build.py:3790-3797` already applies to
 sign-up names that match no member.
 
-LI's roster carries 5 members the manual tab has never heard of (`IronPugs`, `U3`,
-`auuughhh`, `yiyaa`, `yiyya` — the last pair looks like a rename). Whether they
-become eligible members is a scope decision, not a technicality.
+### 3.1 The five roster-only members are real — CORRECTED 2026-08-31
+
+LI's roster carries 5 members the manual tab has never heard of: `IronPugs` (id 280884),
+`U3` (281111), `auuughhh` (117231), `yiyaa` (287196), `yiyya` (287200).
+
+**An earlier reading of this paragraph offered "the last pair looks like a rename" as
+plausible. It is not, and the correction matters because that reading was load-bearing for a
+decision to exclude all five.** Two grounds, the second decisive:
+
+- **Measured.** `yiyaa` and `yiyya` hold two distinct `characterId`s and their stats differ —
+  shrines force/tempo 2/3 against 2/2, Holy Enhancer **+5** against **+6**, C.Smithing 105
+  against 107 (Milking 109 for both).
+- **Structural.** `apps-script/profiles/Code.gs` sets `KEY_COLUMN = 'characterId'` and
+  **upserts** on it, so a rename updates its row *in place* and cannot produce a second one.
+  **Two rows can only ever mean two characters.** A rename is invisible to the roster's row
+  count by construction.
+
+The general property is worth stating once, because it decides where a guard belongs: the
+roster is keyed on an identifier that renames preserve, so the name-collision and ambiguity
+guards belong on the **manual** side of the join — where names are the only key — and nowhere
+on the roster side.
+
+**Three independent pieces of evidence say the five are guild members:** they are on the
+roster with complete records (levels, houses, shrines, tools), captured 2026-08-28 like
+everyone else; the game itself lists them in the guild (`guildRole = member`, `guildId` 240);
+and **all five signed up for this week's trials** — the R0 build log records
+`WARNING (li): 5 sign-up name(s) match NO member on the 'LI Member Data' tab and were
+IGNORED: IronPugs, U3, auuughhh, yiyaa, yiyya`. Against that, the only evidence for exclusion
+is silence from a hand-maintained tab which the same log shows to be six names behind on
+casing alone.
+
+**The stake is larger than five names.** The R0 manifest shows both guilds already seating
+every member they possess — SC 28+24+28+27 = 107 of 107, LI 25+24+26+26 = 101 of 101 —
+against 112 and 104 available seats. Neither guild is cap-constrained; both have run out of
+*people*, so these five are the only additional capacity in existence. Four sit at or near the
+LI median in the drawn skills (`auuughhh`: Milking 113 vs a median of 112, Tailoring 113 vs
+108); `IronPugs` sits well below it and may not pay for its seat — which is the optimizer's
+decision to make, and it can now make it. Note that admitting them takes LI to 106 members in
+104 seats, i.e. **cap-constrained for the first time**.
+
+The mirror-image case exists too and must not be lost in the same breath: LI's manual tab
+holds one member (`OTZ`) the roster has never seen.
 
 `characterId` is the roster's own stable key and survives renames; the manual tab has
-no id column, so name is the only bridge available today.
+no id column, so name is the only bridge available today. One id column on the manual tab
+would retire the roster-only case, the manual-only case, the case-insensitive join and the
+ambiguity rule together.
 
 ## 4. Coverage and staleness — measured
 
@@ -282,4 +326,13 @@ Two consequences, and the second is the important one:
    deployment that can change its header when a module toggle moves. The pipeline's
    standing rule (`README.md`, `config.py:1-7`) is that a layout change fails loudly.
 6. **Top/Bot stay manual, and always will** unless the upstream module starts
-   exporting body/legs — which it deliberately does not.
+   exporting body/legs — which it deliberately does not. NB the consequence for §3.1's
+   admitted members: they have no manual row, so their `top`/`bot` are necessarily `False`
+   and their efficiency is understated by up to two `ARMOUR_EFFICIENCY_PLUS7` terms
+   (`0.2364`). Admit on the evidence held, not the evidence wished for — but say so on the
+   page, and note that any tier gain they produce is therefore a floor.
+7. **Admission is not a rate change and must not be measured as one.** The four slices in
+   §5.0 are mean Δrate over *matched* members; the five admitted members are by construction
+   outside that population. Measuring them inside it would change the denominator mid-table
+   and manufacture a spurious interaction residual — discrediting the very check §5.0's
+   residual exists to provide. Measure admission separately, as a composition change.

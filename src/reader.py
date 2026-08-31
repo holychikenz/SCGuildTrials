@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 import requests
@@ -32,6 +32,17 @@ class SkillEntry:
     top: bool
     bot: bool
     house: Optional[int] = None  # per-skill house level (sheet "H" column); None if blank
+    # --- Roster-sourced; None means "the roster did not say" -----------------
+    # Written only by roster.merge, into the COPY it returns. ``tool`` above is
+    # the manual tab's boolean ("has a Celestial tool"); these two carry what the
+    # scripted roster tab actually observed, which the checkbox cannot express:
+    # the item's name (so a Rainbow Chisel is not scored as a Holy one) and its
+    # enhancement level (which the model otherwise assumes is +7 for everybody).
+    # Both default to None so every existing constructor call is untouched, and
+    # scraper.GuildData.to_dict omits them while they are unset so data.json stays
+    # byte-identical with config.ROSTER_SOURCE_ENABLED off.
+    tool_item: Optional[str] = None      # e.g. "Celestial Brush"
+    tool_enhance: Optional[int] = None   # observed enhancement level, 0..20
 
 
 @dataclass
@@ -43,6 +54,59 @@ class MemberRow:
     flex: str
     flex_levels: list[Optional[int]] = field(default_factory=list)
     skills: dict[str, SkillEntry] = field(default_factory=dict)
+    # --- Roster-sourced; empty means "no roster row joined to this member" ---
+    character_id: Optional[str] = None
+    captured_at: Optional[str] = None
+    # The member's OWN purchased skilling-shrine levels, by
+    # config.GUILD_SHRINE_SKILLING_BUFFS key. LEVELS, not resolved bonuses, so
+    # SHRINE_BUFFS_APPLY_IN_TRIALS and the channel table are still read at CALL
+    # time — the property the whole rate model depends on. A shrine the roster
+    # left blank is absent from the dict and falls back to the guild map.
+    shrine_levels: dict[str, int] = field(default_factory=dict)
+    # "<skill>.<field>" -> "roster" | "manual", plus "member" -> "roster" |
+    # "manual" | "roster-only". Per FIELD, not per member: a gear-hider has real
+    # levels, real houses and no tools, and the right answer is roster for what it
+    # knows and manual for the rest.
+    provenance: dict[str, str] = field(default_factory=dict)
+
+
+# Roster-sourced keys, and the value that means "unset" for each. These are
+# OMITTED from every JSON serialisation while unset — see member_to_dict.
+_UNSET_MEMBER_KEYS = {
+    "character_id": None,
+    "captured_at": None,
+    "shrine_levels": {},
+    "provenance": {},
+}
+_UNSET_SKILL_KEYS = {"tool_item": None, "tool_enhance": None}
+
+
+def member_to_dict(member: MemberRow) -> dict:
+    """``dataclasses.asdict(member)`` with every UNSET roster key dropped.
+
+    Left alone, ``asdict`` would write ``"tool_item": null`` onto every skill of
+    every member even with ``config.ROSTER_SOURCE_ENABLED`` off, which would make
+    this repository's bit-for-bit rollback claim false — and this repo pins its
+    rollback claims with tests rather than asserting them in prose. Pinned by
+    ``tests/test_roster.py::test_data_json_is_byte_identical_with_roster_off``.
+
+    The filter is per FIELD rather than all-or-nothing, so a roster-backed member
+    whose row named no tool does not carry a null for it either.
+
+    Shared by ``processor.process`` (which writes ``_site/data.json``) and
+    ``scraper.GuildData.to_dict``, for the same reason ``norm_name`` is shared:
+    two copies of a rule about JSON shape will drift, and the drift shows up as a
+    diff nobody expected.
+    """
+    d = asdict(member)
+    for key, unset in _UNSET_MEMBER_KEYS.items():
+        if d.get(key) == unset:
+            del d[key]
+    for entry in d.get("skills", {}).values():
+        for key, unset in _UNSET_SKILL_KEYS.items():
+            if entry.get(key) == unset:
+                del entry[key]
+    return d
 
 
 def fetch_csv() -> str:
@@ -84,6 +148,24 @@ def _to_int(value: str) -> Optional[int]:
     except ValueError:
         # Tolerate stray non-numeric level cells rather than crashing.
         return None
+
+
+def norm_name(text: str) -> str:
+    """Normalise a member name for JOINING two sheets that both name people.
+
+    Collapses internal whitespace and casefolds — nothing more. It KEEPS digits
+    and punctuation, so only case and spacing differences fold together and two
+    genuinely distinct handles never collide.
+
+    SHARED, and deliberately so. ``signup.py`` needs it to join the game-written
+    sign-up tab to the hand-maintained member tab; ``roster.py`` needs it to join
+    the script-written roster tab to the same member tab. Casing drifts on every
+    one of those sheets (``dome``/``Dome``, ``VIadd``/``Viadd``, ``FeaI``/``Feai``)
+    and an exact-only join silently loses six members per guild. Two normalisers
+    that drift apart is exactly the bug this function exists to prevent, so there
+    is one of it, here, rather than a copy in each caller.
+    """
+    return " ".join(text.split()).casefold()
 
 
 def _to_bool(value: str) -> bool:
