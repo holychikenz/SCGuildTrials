@@ -1751,3 +1751,336 @@ def test_the_compute_unit_plans_at_the_guilds_own_cap():
         out = build._compute_unit(job)
         assert out["week"]["cap"] == site.party_cap
         assert len(out["week"]["trials"][0]["roster"]) <= site.party_cap
+
+
+# ===========================================================================
+# Roster phase R3 — the tool table, and per-member shrines
+# ===========================================================================
+import json as _json  # noqa: E402
+import os as _os  # noqa: E402
+
+from src.reader import SheetStructureError as _SheetStructureError  # noqa: E402
+
+
+def _roster_member(name="r1", skill="Milking", level=110, item=None, enhance=None,
+                   tool=False, top=False, bot=False, house=4, shrines=None):
+    """A member carrying roster-sourced tool and shrine facts."""
+    entry = SkillEntry(level=level, tool=tool, top=top, bot=bot, house=house)
+    entry.tool_item = item
+    entry.tool_enhance = enhance
+    m = MemberRow(
+        name=name, main_classes="", flex="", flex_levels=[],
+        skills={
+            s: (entry if s == skill else SkillEntry(
+                level=level, tool=tool, top=top, bot=bot, house=house))
+            for s in config.SKILLS
+        },
+    )
+    if shrines:
+        m.shrine_levels = dict(shrines)
+    return m
+
+
+# --- the tool table ---------------------------------------------------------
+def test_tool_table_reproduces_the_four_shipped_constants_at_plus7():
+    """Exact ==, not approx: a one-ULP change reshuffles every party."""
+    assert trials.tool_bonus("Milking", "Holy Brush", 7) == (
+        config.TOOL_SPEED_HOLY_PLUS7, 0.0)
+    assert trials.tool_bonus("Milking", "Celestial Brush", 7) == (
+        config.TOOL_SPEED_CELESTIAL_PLUS7, 0.0)
+    assert trials.tool_bonus("Enhancing", "Holy Enhancer", 7) == (
+        0.0, config.TOOL_SUCCESS_HOLY_PLUS7)
+    assert trials.tool_bonus("Enhancing", "Celestial Enhancer", 7) == (
+        0.0, config.TOOL_SUCCESS_CELESTIAL_PLUS7)
+
+
+def test_tool_table_matches_item_stats_json():
+    """The pinning test: regenerate from the research JSON and compare."""
+    path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        "research", "item-stats.json",
+    )
+    with open(path, encoding="utf-8") as fh:
+        data = _json.load(fh)
+
+    slot_to_skill = {
+        "milking_tool": "Milking", "foraging_tool": "Foraging",
+        "woodcutting_tool": "Woodcutting", "cheesesmithing_tool": "C.Smithing",
+        "crafting_tool": "Crafting", "tailoring_tool": "Tailoring",
+        "cooking_tool": "Cooking", "brewing_tool": "Brewing",
+        "alchemy_tool": "Bell Farming", "enhancing_tool": "Enhancing",
+    }
+    stat_key = {
+        "Milking": ("milkingSpeed", "speed"),
+        "Foraging": ("foragingSpeed", "speed"),
+        "Woodcutting": ("woodcuttingSpeed", "speed"),
+        "C.Smithing": ("cheesesmithingSpeed", "speed"),
+        "Crafting": ("craftingSpeed", "speed"),
+        "Tailoring": ("tailoringSpeed", "speed"),
+        "Cooking": ("cookingSpeed", "speed"),
+        "Brewing": ("brewingSpeed", "speed"),
+        "Bell Farming": ("alchemySpeed", "speed"),
+        "Enhancing": ("enhancingSuccess", "success"),
+    }
+    expected = {}
+    for item in data["items"].values():
+        skill = slot_to_skill.get(item.get("slot", ""))
+        if skill is None:
+            continue
+        stat, channel = stat_key[skill]
+        expected[item["name"]] = (
+            skill, channel,
+            round(item["noncombatStats"][stat], 12),
+            round(item["noncombatEnhancementBonuses"][stat], 12),
+        )
+    assert config.TOOL_STATS == expected
+    assert len(expected) == 80  # 8 tiers x 10 skills
+
+    # And the multiplier curve, VERBATIM — calibrate reads the same array from
+    # the same file, so a normalisation here would split the two apart.
+    assert config.ENHANCEMENT_MULT_TABLE == data["enhancement"][
+        "enhancementLevelTotalBonusMultiplierTable"]
+    assert config.ENHANCEMENT_MULT_TABLE[7] == config.ENHANCEMENT_MULT_PLUS7
+    assert config.ENHANCEMENT_MULT_TABLE[3] == config.ENHANCEMENT_MULT_PLUS3
+
+
+def test_tool_table_carries_no_loot_or_xp_stats():
+    """RareFind and Experience are real and are not part of a RATE model.
+
+    Same rule guild_shrine_bonuses applies to Rarity, Spirit and Scholar.
+    """
+    for name, (skill, channel, base, per) in config.TOOL_STATS.items():
+        assert channel in ("speed", "success"), name
+        assert skill in config.SKILLS, name
+    # Celestial tools grant all three stats; only the speed one is here, and a
+    # Celestial Brush priced at +0 must be its speed base, not its rare-find one.
+    assert trials.tool_bonus("Milking", "Celestial Brush", 0) == (1.05, 0.0)
+
+
+def test_rainbow_tool_is_priced_between_burble_and_holy():
+    """A tier the manual checkbox cannot express at all."""
+    burble = trials.tool_bonus("Crafting", "Burble Chisel", 5)[0]
+    rainbow = trials.tool_bonus("Crafting", "Rainbow Chisel", 5)[0]
+    holy = trials.tool_bonus("Crafting", "Holy Chisel", 5)[0]
+    assert burble < rainbow < holy
+
+
+def test_enhancing_tool_feeds_success_not_speed():
+    for tier in ("Cheese", "Verdant", "Azure", "Burble", "Crimson", "Rainbow",
+                 "Holy", "Celestial"):
+        speed, success = trials.tool_bonus("Enhancing", f"{tier} Enhancer", 7)
+        assert speed == 0.0, tier
+        assert success > 0.0, tier
+
+
+def test_enhancement_level_zero_is_the_base_stat():
+    assert trials.tool_bonus("Milking", "Holy Brush", 0) == (0.9, 0.0)
+
+
+def test_enhancement_level_is_clamped_to_the_table():
+    top = trials.tool_bonus("Milking", "Holy Brush", 20)
+    assert trials.tool_bonus("Milking", "Holy Brush", 99) == top
+    assert trials.tool_bonus("Milking", "Holy Brush", -5) == (0.9, 0.0)
+
+
+def test_blank_enhancement_uses_the_configured_default(monkeypatch):
+    monkeypatch.setattr(config, "TOOL_ENHANCE_WHEN_UNKNOWN", 0)
+    assert trials.tool_bonus("Milking", "Holy Brush", None) == (0.9, 0.0)
+    monkeypatch.setattr(config, "TOOL_ENHANCE_WHEN_UNKNOWN", 7)
+    assert trials.tool_bonus("Milking", "Holy Brush", None) == (
+        config.TOOL_SPEED_HOLY_PLUS7, 0.0)
+
+
+def test_unknown_tool_item_returns_none_rather_than_guessing_a_tier():
+    assert trials.tool_bonus("Milking", "Obsidian Brush", 7) is None
+
+
+def test_tool_slot_mismatch_is_a_structure_error():
+    """A shifted header row, which reading by NAME cannot detect."""
+    with pytest.raises(_SheetStructureError) as exc:
+        trials.tool_bonus("Milking", "Celestial Spatula", 7)
+    assert "Cooking" in str(exc.value)
+    assert "Milking" in str(exc.value)
+
+
+def test_alchemy_tool_resolves_through_the_bell_farming_column():
+    assert trials.tool_bonus("Alchemy", "Holy Alembic", 7)[0] == pytest.approx(1.0638)
+
+
+# --- the precedence ladder inside member_bonuses ---------------------------
+def test_member_bonuses_is_unchanged_when_the_skill_entry_has_no_roster_fields():
+    """Exact ==; this is what lets the ~110 existing bonus tests stand."""
+    plain = _roster_member(tool=True)
+    b = trials.member_bonuses(plain, "Milking")
+    assert b.speed == config.CAPE_SPEED_PLUS3 + config.TOOL_SPEED_CELESTIAL_PLUS7
+
+
+def test_roster_tool_overrides_the_checkbox():
+    m = _roster_member(item="Rainbow Brush", enhance=4, tool=True)
+    b = trials.member_bonuses(m, "Milking")
+    expected = trials.tool_bonus("Milking", "Rainbow Brush", 4)[0]
+    assert b.speed == config.CAPE_SPEED_PLUS3 + expected
+
+
+def test_switching_tools_off_restores_the_checkbox(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_USE_TOOLS", False)
+    m = _roster_member(item="Cheese Brush", enhance=0, tool=True)
+    b = trials.member_bonuses(m, "Milking")
+    assert b.speed == config.CAPE_SPEED_PLUS3 + config.TOOL_SPEED_CELESTIAL_PLUS7
+
+
+def test_switching_enhancement_off_keeps_the_tier_at_plus7(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_USE_TOOL_ENHANCEMENT", False)
+    m = _roster_member(item="Rainbow Brush", enhance=0)
+    b = trials.member_bonuses(m, "Milking")
+    expected = trials.tool_bonus("Milking", "Rainbow Brush",
+                                 config.ENHANCEMENT_ASSUMED_LEVEL)[0]
+    assert b.speed == config.CAPE_SPEED_PLUS3 + expected
+
+
+def test_unknown_tool_item_falls_back_to_the_checkbox_in_the_hot_path():
+    m = _roster_member(item="Obsidian Brush", enhance=9, tool=True)
+    b = trials.member_bonuses(m, "Milking")
+    assert b.speed == config.CAPE_SPEED_PLUS3 + config.TOOL_SPEED_CELESTIAL_PLUS7
+
+
+def test_enhancing_roster_tool_feeds_success_not_speed():
+    m = _roster_member(skill="Enhancing", item="Rainbow Enhancer", enhance=6)
+    b = trials.member_bonuses(m, "Enhancing")
+    assert b.success_bonus == trials.tool_bonus(
+        "Enhancing", "Rainbow Enhancer", 6)[1]
+
+
+# --- the tool audit ---------------------------------------------------------
+def test_unknown_tool_item_is_counted_and_stripped():
+    m = _roster_member(item="Obsidian Brush", enhance=9)
+    m.provenance = {"Milking.tool": "roster"}
+    audit = trials.audit_roster_tools([m])
+    assert audit.unknown_items == {"Obsidian Brush": 1}
+    assert audit.unknown_members == ["r1"]
+    assert m.skills["Milking"].tool_item is None
+    assert "unknown item: Obsidian Brush" in m.provenance["Milking.tool"]
+
+
+def test_unknown_tool_item_is_fatal_when_the_switch_says_so(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_UNKNOWN_TOOL_FATAL", True)
+    m = _roster_member(item="Obsidian Brush", enhance=9)
+    with pytest.raises(_SheetStructureError):
+        trials.audit_roster_tools([m])
+
+
+def test_audit_raises_on_a_tool_in_the_wrong_slot():
+    m = _roster_member(item="Celestial Spatula", enhance=7)
+    with pytest.raises(_SheetStructureError):
+        trials.audit_roster_tools([m])
+
+
+def test_audit_counts_blank_enhancements():
+    m = _roster_member(item="Holy Brush", enhance=None)
+    audit = trials.audit_roster_tools([m])
+    assert audit.blank_enhancements == 1
+    assert audit.roster_tools == 1
+    assert audit.unknown_count == 0
+
+
+# --- shrines: the bit-exactness cases come first ---------------------------
+def _shrine_party():
+    return [
+        _roster_member(name=f"s{i}", level=100 + i, tool=(i % 2 == 0))
+        for i in range(6)
+    ]
+
+
+def test_shrines_off_is_bit_identical_to_the_hoisted_path(monkeypatch):
+    """Removing simulate_race's once-per-race hoist must change nothing under it."""
+    party = _shrine_party()
+    monkeypatch.setattr(config, "ROSTER_USE_SHRINES", False)
+    off = trials.simulate_race(party, "Milking")
+    monkeypatch.setattr(config, "ROSTER_USE_SHRINES", True)
+    on = trials.simulate_race(party, "Milking")  # no member carries shrine levels
+    assert off.to_dict() == on.to_dict()
+
+
+def test_shrine_bonuses_stay_out_of_member_speed_and_efficiency():
+    """MemberBonuses must keep saying what the MEMBER owns.
+
+    The test that catches a well-meaning fold of the shrine terms into
+    b.speed / b.efficiency — which re-associates arithmetic that
+    _prepare_member's docstring records as having reshuffled every SC party.
+    """
+    m = _roster_member(shrines={"force": 4, "tempo": 4})
+    b = trials.member_bonuses(m, "Milking")
+    per = config.GUILD_SHRINE_SKILLING_BUFFS["force"][1]
+    assert b.shrine_efficiency == pytest.approx(4 * per)
+    assert b.shrine_speed == pytest.approx(4 * per)
+    assert b.speed == config.CAPE_SPEED_PLUS3 + config.TOOL_SPEED_HOLY_PLUS7
+    assert b.efficiency == (
+        config.ARMOUR_EFFICIENCY_PLUS7
+        + config.HOUSE_EFFICIENCY_PER_LEVEL * 4
+    )
+
+
+def test_prepare_member_addition_order_is_preserved():
+    """Exact ==, against a hand-computed floor(work_power(level, eff + shrine))."""
+    m = _roster_member(shrines={"force": 3, "tempo": 2})
+    b = trials.member_bonuses(m, "Milking")
+    prepared = trials._prepare_member(m, "Milking", b.building_levels)
+    assert prepared[4] == math.floor(
+        trials.work_power(b.level, b.efficiency + b.shrine_efficiency))
+    assert prepared[5] == trials.action_seconds(
+        "Milking", b.speed + b.shrine_speed)
+
+
+def test_member_shrine_bonuses_uses_the_members_own_level():
+    per = config.GUILD_SHRINE_SKILLING_BUFFS["force"][1]
+    m = _roster_member(shrines={"force": 4, "tempo": 0})
+    speed, efficiency = trials.member_shrine_bonuses(m)
+    assert efficiency == pytest.approx(4 * per)
+    assert speed == 0.0
+
+
+def test_only_force_and_tempo_reach_the_race_per_member():
+    """The per-member twin of the guild-wide rule. Loot and XP stay out."""
+    m = _roster_member(shrines={
+        "force": 0, "tempo": 0, "spirit": 5, "rarity": 5, "scholar": 5})
+    assert trials.member_shrine_bonuses(m) == (0.0, 0.0)
+
+
+def test_member_shrine_level_zero_lowers_the_rate_against_the_modelled_one():
+    """The five SC and ten LI members the current model OVERSTATES."""
+    zero = _roster_member(name="z", shrines={"force": 0, "tempo": 0})
+    one = _roster_member(name="o", shrines={"force": 1, "tempo": 1})
+    assert trials.rate(zero, "Milking", 8) < trials.rate(one, "Milking", 8)
+
+
+def test_shrine_levels_are_clamped_to_the_max():
+    per = config.GUILD_SHRINE_SKILLING_BUFFS["force"][1]
+    m = _roster_member(shrines={"force": 999, "tempo": -5})
+    speed, efficiency = trials.member_shrine_bonuses(m)
+    assert efficiency == pytest.approx(config.GUILD_SHRINE_MAX_LEVEL * per)
+    assert speed == 0.0
+
+
+def test_shrine_buffs_apply_in_trials_false_zeroes_the_per_member_path_too(
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "SHRINE_BUFFS_APPLY_IN_TRIALS", False)
+    m = _roster_member(shrines={"force": 4, "tempo": 4})
+    assert trials.member_shrine_bonuses(m) == (0.0, 0.0)
+
+
+def test_blank_shrine_column_falls_back_to_the_guild_map():
+    """Degrades per SHRINE, not per member."""
+    per = config.GUILD_SHRINE_SKILLING_BUFFS["force"][1]
+    m = _roster_member(shrines={"tempo": 4})  # force absent
+    speed, efficiency = trials.member_shrine_bonuses(m)
+    assert efficiency == pytest.approx(trials.guild_shrine_level("force") * per)
+    assert speed == pytest.approx(4 * per)
+
+
+def test_member_shrine_overrides_price_a_hypothetical_without_mutating():
+    m = _roster_member(shrines={"force": 2, "tempo": 2})
+    per = config.GUILD_SHRINE_SKILLING_BUFFS["force"][1]
+    speed, efficiency = trials.member_shrine_bonuses(m, {"force": 4, "tempo": 4})
+    assert efficiency == pytest.approx(4 * per)
+    assert m.shrine_levels == {"force": 2, "tempo": 2}

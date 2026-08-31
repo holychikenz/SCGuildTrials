@@ -835,6 +835,13 @@ TRIAL_TIME_BUDGET_SECONDS = 3600
 #     enhancementLevelTotalBonusMultiplierTable): +7 -> 9.1x, +3 -> 3.3x -------
 ENHANCEMENT_MULT_PLUS7 = 9.1
 ENHANCEMENT_MULT_PLUS3 = 3.3
+# The enhancement level the pre-roster model ASSUMED on every gear piece. Named
+# rather than written as a bare 7, because ROSTER_USE_TOOL_ENHANCEMENT = False
+# re-imposes it as the partial rollback of the tool slice, and a reader needs to
+# see that the 7 there is this assumption rather than a coincidence. Observed
+# reality is a mode of +5 and a spread from 0 to +14 (research/roster-as-primary-
+# source.md), which is why the assumption is worth naming before replacing.
+ENHANCEMENT_ASSUMED_LEVEL = 7
 
 # --- Tool bonuses (for the 9 non-enhancing skills the tool grants SPEED) -----
 # Holy tool +7:      base 0.9  + 9.1 * 0.018 = 1.0638   (item-stats.md §5)
@@ -847,6 +854,125 @@ TOOL_SPEED_CELESTIAL_PLUS7 = 1.2411
 # Celestial Enhancer +7: 0.042 + 9.1 * 0.00084 = 0.049644   (item-stats.md §5)
 TOOL_SUCCESS_HOLY_PLUS7 = 0.042552
 TOOL_SUCCESS_CELESTIAL_PLUS7 = 0.049644
+
+# --- The full tool catalogue, transcribed from research/item-stats.json ---
+# item name -> (SKILLS entry, model channel, base, per enhancement level).
+# effectiveStat = base + ENHANCEMENT_MULT_TABLE[level] * per, which is exactly
+# calibrate._stat's rule, generalised from four constants to eighty items.
+#
+# TRANSCRIBED, not read at runtime: config.py's header states the rule — the
+# model has no runtime dependency on the research directory. Regenerated and
+# compared by tests/test_trials.py::test_tool_table_matches_item_stats_json,
+# the same discipline calibrate._load_multiplier_table's two asserts already
+# apply to the multiplier curve.
+#
+# ONLY THE RACE-RELEVANT STAT IS CARRIED. Celestial tools also grant
+# <skill>RareFind and <skill>Experience; those buff loot and XP and must not
+# enter a RATE model, for exactly the reason guild_shrine_bonuses refuses
+# Rarity, Spirit and Scholar. Pinned by
+# test_tool_table_carries_no_loot_or_xp_stats.
+#
+# Values are rounded to 12 decimal places, which recovers the catalogue's
+# intended decimals from upstream float noise (0.018000000000000002 -> 0.018,
+# 0.0007199999999999999 -> 0.00072). That rounding is what makes the four
+# shipped *_PLUS7 constants reproduce EXACTLY at +7 rather than one ULP away,
+# and _prepare_member's docstring explains why one ULP matters here.
+TOOL_STATS = {
+    "Azure Alembic":      ('Bell Farming' , 'speed'   , 0.3, 0.006),
+    "Azure Brush":        ('Milking'      , 'speed'   , 0.3, 0.006),
+    "Azure Chisel":       ('Crafting'     , 'speed'   , 0.3, 0.006),
+    "Azure Enhancer":     ('Enhancing'    , 'success' , 0.012, 0.00024),
+    "Azure Hammer":       ('C.Smithing'   , 'speed'   , 0.3, 0.006),
+    "Azure Hatchet":      ('Woodcutting'  , 'speed'   , 0.3, 0.006),
+    "Azure Needle":       ('Tailoring'    , 'speed'   , 0.3, 0.006),
+    "Azure Pot":          ('Brewing'      , 'speed'   , 0.3, 0.006),
+    "Azure Shears":       ('Foraging'     , 'speed'   , 0.3, 0.006),
+    "Azure Spatula":      ('Cooking'      , 'speed'   , 0.3, 0.006),
+    "Burble Alembic":     ('Bell Farming' , 'speed'   , 0.45, 0.009),
+    "Burble Brush":       ('Milking'      , 'speed'   , 0.45, 0.009),
+    "Burble Chisel":      ('Crafting'     , 'speed'   , 0.45, 0.009),
+    "Burble Enhancer":    ('Enhancing'    , 'success' , 0.018, 0.00036),
+    "Burble Hammer":      ('C.Smithing'   , 'speed'   , 0.45, 0.009),
+    "Burble Hatchet":     ('Woodcutting'  , 'speed'   , 0.45, 0.009),
+    "Burble Needle":      ('Tailoring'    , 'speed'   , 0.45, 0.009),
+    "Burble Pot":         ('Brewing'      , 'speed'   , 0.45, 0.009),
+    "Burble Shears":      ('Foraging'     , 'speed'   , 0.45, 0.009),
+    "Burble Spatula":     ('Cooking'      , 'speed'   , 0.45, 0.009),
+    "Celestial Alembic":  ('Bell Farming' , 'speed'   , 1.05, 0.021),
+    "Celestial Brush":    ('Milking'      , 'speed'   , 1.05, 0.021),
+    "Celestial Chisel":   ('Crafting'     , 'speed'   , 1.05, 0.021),
+    "Celestial Enhancer": ('Enhancing'    , 'success' , 0.042, 0.00084),
+    "Celestial Hammer":   ('C.Smithing'   , 'speed'   , 1.05, 0.021),
+    "Celestial Hatchet":  ('Woodcutting'  , 'speed'   , 1.05, 0.021),
+    "Celestial Needle":   ('Tailoring'    , 'speed'   , 1.05, 0.021),
+    "Celestial Pot":      ('Brewing'      , 'speed'   , 1.05, 0.021),
+    "Celestial Shears":   ('Foraging'     , 'speed'   , 1.05, 0.021),
+    "Celestial Spatula":  ('Cooking'      , 'speed'   , 1.05, 0.021),
+    "Cheese Alembic":     ('Bell Farming' , 'speed'   , 0.15, 0.003),
+    "Cheese Brush":       ('Milking'      , 'speed'   , 0.15, 0.003),
+    "Cheese Chisel":      ('Crafting'     , 'speed'   , 0.15, 0.003),
+    "Cheese Enhancer":    ('Enhancing'    , 'success' , 0.006, 0.00012),
+    "Cheese Hammer":      ('C.Smithing'   , 'speed'   , 0.15, 0.003),
+    "Cheese Hatchet":     ('Woodcutting'  , 'speed'   , 0.15, 0.003),
+    "Cheese Needle":      ('Tailoring'    , 'speed'   , 0.15, 0.003),
+    "Cheese Pot":         ('Brewing'      , 'speed'   , 0.15, 0.003),
+    "Cheese Shears":      ('Foraging'     , 'speed'   , 0.15, 0.003),
+    "Cheese Spatula":     ('Cooking'      , 'speed'   , 0.15, 0.003),
+    "Crimson Alembic":    ('Bell Farming' , 'speed'   , 0.6, 0.012),
+    "Crimson Brush":      ('Milking'      , 'speed'   , 0.6, 0.012),
+    "Crimson Chisel":     ('Crafting'     , 'speed'   , 0.6, 0.012),
+    "Crimson Enhancer":   ('Enhancing'    , 'success' , 0.024, 0.00048),
+    "Crimson Hammer":     ('C.Smithing'   , 'speed'   , 0.6, 0.012),
+    "Crimson Hatchet":    ('Woodcutting'  , 'speed'   , 0.6, 0.012),
+    "Crimson Needle":     ('Tailoring'    , 'speed'   , 0.6, 0.012),
+    "Crimson Pot":        ('Brewing'      , 'speed'   , 0.6, 0.012),
+    "Crimson Shears":     ('Foraging'     , 'speed'   , 0.6, 0.012),
+    "Crimson Spatula":    ('Cooking'      , 'speed'   , 0.6, 0.012),
+    "Holy Alembic":       ('Bell Farming' , 'speed'   , 0.9, 0.018),
+    "Holy Brush":         ('Milking'      , 'speed'   , 0.9, 0.018),
+    "Holy Chisel":        ('Crafting'     , 'speed'   , 0.9, 0.018),
+    "Holy Enhancer":      ('Enhancing'    , 'success' , 0.036, 0.00072),
+    "Holy Hammer":        ('C.Smithing'   , 'speed'   , 0.9, 0.018),
+    "Holy Hatchet":       ('Woodcutting'  , 'speed'   , 0.9, 0.018),
+    "Holy Needle":        ('Tailoring'    , 'speed'   , 0.9, 0.018),
+    "Holy Pot":           ('Brewing'      , 'speed'   , 0.9, 0.018),
+    "Holy Shears":        ('Foraging'     , 'speed'   , 0.9, 0.018),
+    "Holy Spatula":       ('Cooking'      , 'speed'   , 0.9, 0.018),
+    "Rainbow Alembic":    ('Bell Farming' , 'speed'   , 0.75, 0.015),
+    "Rainbow Brush":      ('Milking'      , 'speed'   , 0.75, 0.015),
+    "Rainbow Chisel":     ('Crafting'     , 'speed'   , 0.75, 0.015),
+    "Rainbow Enhancer":   ('Enhancing'    , 'success' , 0.03, 0.0006),
+    "Rainbow Hammer":     ('C.Smithing'   , 'speed'   , 0.75, 0.015),
+    "Rainbow Hatchet":    ('Woodcutting'  , 'speed'   , 0.75, 0.015),
+    "Rainbow Needle":     ('Tailoring'    , 'speed'   , 0.75, 0.015),
+    "Rainbow Pot":        ('Brewing'      , 'speed'   , 0.75, 0.015),
+    "Rainbow Shears":     ('Foraging'     , 'speed'   , 0.75, 0.015),
+    "Rainbow Spatula":    ('Cooking'      , 'speed'   , 0.75, 0.015),
+    "Verdant Alembic":    ('Bell Farming' , 'speed'   , 0.225, 0.0045),
+    "Verdant Brush":      ('Milking'      , 'speed'   , 0.225, 0.0045),
+    "Verdant Chisel":     ('Crafting'     , 'speed'   , 0.225, 0.0045),
+    "Verdant Enhancer":   ('Enhancing'    , 'success' , 0.009, 0.00018),
+    "Verdant Hammer":     ('C.Smithing'   , 'speed'   , 0.225, 0.0045),
+    "Verdant Hatchet":    ('Woodcutting'  , 'speed'   , 0.225, 0.0045),
+    "Verdant Needle":     ('Tailoring'    , 'speed'   , 0.225, 0.0045),
+    "Verdant Pot":        ('Brewing'      , 'speed'   , 0.225, 0.0045),
+    "Verdant Shears":     ('Foraging'     , 'speed'   , 0.225, 0.0045),
+    "Verdant Spatula":    ('Cooking'      , 'speed'   , 0.225, 0.0045),
+}
+
+# The game's enhancementLevelTotalBonusMultiplierTable, VERBATIM (21 entries,
+# +0 .. +20). Not rounded: calibrate._load_multiplier_table reads the same
+# array straight from the JSON and asserts equality with this list, so any
+# normalisation here would put the model and the calibration campaign on two
+# different curves. Note ENHANCEMENT_MULT_PLUS7 / _PLUS3 above are entries 7
+# and 3 of this list, and remain as the named constants the shipped model uses.
+ENHANCEMENT_MULT_TABLE = [
+    0, 1, 2.1, 3.3, 4.6,
+    6, 7.5, 9.1, 10.8, 12.600000000000001,
+    14.500000000000002, 16.7, 19.2, 22, 25.1,
+    28.5, 32.2, 36.2, 40.50000000000001, 45.1,
+    50,
+]
 
 # --- Cape +3 (everyone; assumed correct-group cape) -------------------------
 # base 0.05 + 3.3 * 0.005 = 0.0665 speed   (item-stats.md §5 "+3 cape")

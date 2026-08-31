@@ -52,7 +52,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from . import config
-from .reader import MemberRow
+from .reader import MemberRow, SheetStructureError
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +213,81 @@ def _resolve_level_and_checks(
     if entry is None:
         return None, False, False, False, None
     return entry.level, entry.tool, entry.top, entry.bot, entry.house
+
+
+def _slot_mismatch(skill: str, item: str, item_skill: str) -> SheetStructureError:
+    """The tool-slot cross-check's error, built in one place for both callers."""
+    return SheetStructureError(
+        f"Roster named {item!r} as the {skill!r} tool, but that item is the "
+        f"{item_skill!r} tool. A tool in the wrong slot means the roster tab's "
+        f"header row has shifted relative to its data — reading by column NAME "
+        f"survives a REORDERING of the tool block, which is what the upstream "
+        f"module actually produces, but not a shift, for which a name lookup "
+        f"happily returns plausible values. Inspect the tab before trusting any "
+        f"of its tool columns."
+    )
+
+
+def _resolve_tool(
+    member: MemberRow, skill: str
+) -> tuple[Optional[str], Optional[int]]:
+    """Return ``(tool item name, enhancement level)`` for a member+trial-skill.
+
+    A SIBLING of :func:`_resolve_level_and_checks` rather than a sixth and
+    seventh element on its tuple. That function returns a 5-tuple which
+    ``calibrate.py:369`` unpacks positionally, and widening it for convenience
+    would break the calibration campaign for no gain.
+
+    ``(None, None)`` whenever the roster did not name a tool for this
+    member+skill — which is the gear-hiders, every member on a guild whose
+    roster was refused, and every member at all while
+    ``config.ROSTER_SOURCE_ENABLED`` is off. The caller then falls back to the
+    manual tab's Tool checkbox, which is today's behaviour.
+    """
+    entry = member.skills.get(_sheet_column(skill))
+    if entry is None:
+        return None, None
+    return entry.tool_item, entry.tool_enhance
+
+
+def tool_bonus(
+    skill: str, item: str, enhance: Optional[int]
+) -> Optional[tuple[float, float]]:
+    """``(speed, success)`` an actual named tool grants at an actual enhancement.
+
+    The generalisation of the four shipped ``TOOL_{SPEED,SUCCESS}_*_PLUS7``
+    constants from two tiers at one assumed level to eighty catalogue items at
+    any level, through the identical rule ``base + MULT[level] * per``
+    (``calibrate._stat``). At ``+7`` it reproduces all four constants EXACTLY —
+    ``==``, not ``approx``, and ``_prepare_member``'s docstring explains why one
+    ULP matters here.
+
+    For the nine gathering/production skills a tool grants SPEED, so the success
+    term is 0.0; for Enhancing it grants SUCCESS and the speed term is 0.0. The
+    caller adds whichever its branch wants, exactly where the constant used to go.
+
+    ``None`` for an item this table does not model — an item the GAME added after
+    the table was transcribed. The caller then falls back to the checkbox and says
+    so; it never guesses a tier.
+
+    Raises ``SheetStructureError`` when the item belongs to a different skill's
+    slot. THE SLOT CROSS-CHECK IS THE GUARD READING BY NAME CANNOT PROVIDE:
+    reading by header name survives a REORDERING of the tool block (which the
+    upstream module does produce), but not a header row shifted relative to its
+    data — the classic off-by-one, for which a name lookup happily returns
+    plausible values. A "Celestial Spatula" under ``tool_milking`` is that bug,
+    and this is where it stops.
+    """
+    stats = config.TOOL_STATS.get(item)
+    if stats is None:
+        return None
+    item_skill, channel, base, per = stats
+    if item_skill != _sheet_column(skill):
+        raise _slot_mismatch(skill, item, item_skill)
+    level = config.TOOL_ENHANCE_WHEN_UNKNOWN if enhance is None else enhance
+    level = max(0, min(len(config.ENHANCEMENT_MULT_TABLE) - 1, level))
+    value = base + config.ENHANCEMENT_MULT_TABLE[level] * per
+    return (value, 0.0) if channel == "speed" else (0.0, value)
 
 
 def member_skill_level(member: MemberRow, skill: str) -> Optional[int]:
@@ -383,6 +458,199 @@ def guild_building_upgrade_cost(to_level: int) -> Optional[int]:
     return config.GUILD_BUILDING_POINT_COSTS.get(to_level)
 
 
+@dataclass
+class ToolAudit:
+    """What one guild's roster said about tools, counted once per build.
+
+    The counting lives here, not in ``member_bonuses``: that runs once per member
+    per race across ~87k races in the optimizer, and in child processes under
+    ``BUILD_PARALLEL``, so a counter there would be both expensive and
+    unaggregatable. The audit runs once per guild in the parent, beside the merge.
+    """
+
+    unknown_items: dict[str, int] = field(default_factory=dict)
+    unknown_members: list[str] = field(default_factory=list)
+    blank_enhancements: int = 0
+    roster_tools: int = 0
+
+    @property
+    def unknown_count(self) -> int:
+        return sum(self.unknown_items.values())
+
+    def to_dict(self) -> dict:
+        return {
+            "unknown_items": dict(self.unknown_items),
+            "unknown_members": list(self.unknown_members),
+            "unknown_count": self.unknown_count,
+            "blank_enhancements": self.blank_enhancements,
+            "roster_tools": self.roster_tools,
+        }
+
+
+def audit_roster_tools(members: list[MemberRow]) -> ToolAudit:
+    """Validate every roster-named tool, count what is unmodelled, and STRIP it.
+
+    Called once per guild, on the MERGED list, immediately after the merge —
+    which is this repository's own list and is therefore ours to edit.
+
+    Three things happen, and each is a decision:
+
+    - An item ``config.TOOL_STATS`` does not model is COUNTED, its member and
+      item recorded, and then removed from the entry so the hot path never sees
+      it and simply falls back to the manual checkbox. Not fatal by default: one
+      new game item must not stop a deploy. Never silent, either — the count is
+      printed and rendered, and the member's tool badge is outlined with the raw
+      name. ``config.ROSTER_UNKNOWN_TOOL_FATAL = True`` makes it stop the build.
+    - An item in the WRONG SLOT raises, always. That is not a new item, it is a
+      header row shifted relative to its data, and every tool column on the tab
+      is then suspect. See :func:`tool_bonus`.
+    - A named tool with a BLANK enhancement is counted, because
+      ``TOOL_ENHANCE_WHEN_UNKNOWN = 0`` understates against an observed mode of
+      +5 and the whole justification for shipping 0 is that the count is visible.
+    """
+    audit = ToolAudit()
+    for member in members:
+        for skill, entry in member.skills.items():
+            item = entry.tool_item
+            if item is None:
+                continue
+            stats = config.TOOL_STATS.get(item)
+            if stats is None:
+                if config.ROSTER_UNKNOWN_TOOL_FATAL:
+                    raise SheetStructureError(
+                        f"Roster named tool {item!r} for {member.name!r} "
+                        f"({skill}), which config.TOOL_STATS does not model. "
+                        f"config.ROSTER_UNKNOWN_TOOL_FATAL is True, so this stops "
+                        f"the build; set it False to fall back to the manual "
+                        f"checkbox with a warning instead."
+                    )
+                audit.unknown_items[item] = audit.unknown_items.get(item, 0) + 1
+                if member.name not in audit.unknown_members:
+                    audit.unknown_members.append(member.name)
+                entry.tool_item = None
+                entry.tool_enhance = None
+                member.provenance[f"{skill}.tool"] = f"manual (unknown item: {item})"
+                continue
+            if stats[0] != skill:
+                # Not a new item: a shifted header. Raising is the point.
+                raise _slot_mismatch(skill, item, stats[0])
+            audit.roster_tools += 1
+            if entry.tool_enhance is None:
+                audit.blank_enhancements += 1
+    return audit
+
+
+def _tool_terms(
+    member: MemberRow, skill: str, tool_checkbox: bool
+) -> tuple[float, float]:
+    """``(speed, success)`` for this member's tool, by a four-step precedence.
+
+    1. The roster named a KNOWN item and gave an enhancement level -> price it.
+    2. The roster named a known item with a BLANK enhancement -> price it at
+       ``config.TOOL_ENHANCE_WHEN_UNKNOWN`` (shipped 0, provisional, counted).
+    3. The roster named an item this table does not model -> fall back to the
+       checkbox. Never guess a tier, never silently score it as Holy. In a live
+       build such items are stripped at merge time by
+       :func:`audit_roster_tools`, which counts and reports them, so this branch
+       is the belt to that braces.
+    4. The roster said nothing -> the manual Tool checkbox and today's two
+       constants, unchanged and bit-identical.
+
+    ``ROSTER_USE_TOOL_ENHANCEMENT = False`` keeps the observed TIER but re-imposes
+    the assumed +7 — the targeted partial rollback for the tool slice, which is
+    the only one of this change's four terms that points against us.
+    """
+    if config.ROSTER_USE_TOOLS:
+        item, enhance = _resolve_tool(member, skill)
+        if item is not None:
+            if not config.ROSTER_USE_TOOL_ENHANCEMENT:
+                enhance = config.ENHANCEMENT_ASSUMED_LEVEL
+            bonus = tool_bonus(skill, item, enhance)
+            if bonus is not None:
+                return bonus
+    # Steps 3 and 4: the manual tab's checkbox, which means Celestial (verified
+    # 97% faithful against the roster) and otherwise Holy, both at the assumed +7.
+    if _is_enhancing(skill):
+        return (
+            0.0,
+            config.TOOL_SUCCESS_CELESTIAL_PLUS7
+            if tool_checkbox
+            else config.TOOL_SUCCESS_HOLY_PLUS7,
+        )
+    return (
+        config.TOOL_SPEED_CELESTIAL_PLUS7
+        if tool_checkbox
+        else config.TOOL_SPEED_HOLY_PLUS7,
+        0.0,
+    )
+
+
+def member_shrine_bonuses(
+    member: MemberRow, overrides: Optional[dict[str, int]] = None
+) -> tuple[float, float]:
+    """``(speed, efficiency)`` THIS member's own purchased shrines grant them.
+
+    The per-member twin of :func:`guild_shrine_bonuses`, and the correction it
+    exists for is not a refinement. THE GUILD'S SHRINE LEVEL IS A CAP, NOT A
+    GRANT: the guild buys the right to a shrine level, the member then spends
+    their own resources to actually take it, and it is the member's purchase —
+    ``shrine_<name>_skilling`` on the roster — that multiplies their stats. The
+    model held every member at level 1 and is therefore wrong for 88-95% of them
+    (SC's mean force level is 2.99), mostly understating but not uniformly: five
+    SC and ten LI members hold level 0, where the model currently OVERSTATES.
+
+    Dispatches on the SAME ``config.GUILD_SHRINE_SKILLING_BUFFS`` channel table
+    its twin uses, in the same order, so a loot or XP shrine (Rarity, Spirit,
+    Scholar) still cannot reach the race and a future shrine still cannot be
+    silently misapplied — and so the float addition order is identical to the
+    guild-wide path, which is what lets the switched-off case be bit-identical.
+
+    A shrine the roster did not report falls back to the guild map, so a partial
+    roster row degrades per shrine rather than per member. Returns
+    ``(0.0, 0.0)`` under ``SHRINE_BUFFS_APPLY_IN_TRIALS = False``, exactly as its
+    twin does.
+
+    ``overrides`` replaces the member's levels wholesale, for pricing a
+    hypothetical without mutating anything (see :func:`probe_shrine_upgrade`).
+    """
+    if not config.SHRINE_BUFFS_APPLY_IN_TRIALS:
+        return 0.0, 0.0
+    levels = overrides if overrides is not None else member.shrine_levels
+    speed = 0.0
+    efficiency = 0.0
+    for shrine, (_buff, per_level, channel) in (
+        config.GUILD_SHRINE_SKILLING_BUFFS.items()
+    ):
+        if channel is None:
+            continue  # loot or XP: real, but not part of the tier race
+        if shrine in levels:
+            level = max(
+                0, min(config.GUILD_SHRINE_MAX_LEVEL, levels[shrine] or 0)
+            )
+        else:
+            level = guild_shrine_level(shrine)
+        if channel == "speed":
+            speed += per_level * level
+        elif channel == "efficiency":
+            efficiency += per_level * level
+        else:  # pragma: no cover - guarded so a typo fails loudly
+            raise ValueError(
+                f"shrine {shrine!r} names an unknown model channel {channel!r}"
+            )
+    return speed, efficiency
+
+
+def _resolve_shrine(member: MemberRow) -> tuple[float, float]:
+    """The shrine tuple for one member: per-member if the switch says so.
+
+    ``config.ROSTER_USE_SHRINES = False`` restores the guild-wide read, and with
+    it ``simulate_race``'s once-per-race hoist, bit-for-bit.
+    """
+    if config.ROSTER_USE_SHRINES:
+        return member_shrine_bonuses(member)
+    return guild_shrine_bonuses()
+
+
 def member_bonuses(
     member: MemberRow,
     skill: str,
@@ -426,8 +694,9 @@ def member_bonuses(
     if building_levels is None:
         building_levels = guild_building_skill_levels(skill)
     if shrine is None:
-        shrine = guild_shrine_bonuses()
+        shrine = _resolve_shrine(member)
     shrine_speed, shrine_efficiency = shrine
+    tool_speed, tool_success = _tool_terms(member, skill, tool)
 
     speed = config.CAPE_SPEED_PLUS3  # +3 cape speed, everyone, every skill
     efficiency = 0.0
@@ -435,11 +704,7 @@ def member_bonuses(
 
     if _is_enhancing(skill):
         # Tool grants SUCCESS, not speed.
-        success_bonus += (
-            config.TOOL_SUCCESS_CELESTIAL_PLUS7
-            if tool
-            else config.TOOL_SUCCESS_HOLY_PLUS7
-        )
+        success_bonus += tool_success
         # Family "gloves" grant enhancing SPEED, not efficiency.
         speed += config.GLOVES_ENHANCING_SPEED_PLUS7
         # Community enhancing-speed buff (event): +0.20 speed while live.
@@ -449,11 +714,7 @@ def member_bonuses(
         speed += config.HOUSE_ENHANCING_SPEED_PER_LEVEL * house_level
     else:
         # Tool grants SPEED.
-        speed += (
-            config.TOOL_SPEED_CELESTIAL_PLUS7
-            if tool
-            else config.TOOL_SPEED_HOLY_PLUS7
-        )
+        speed += tool_speed
         # Family piece grants efficiency.
         efficiency += config.ARMOUR_EFFICIENCY_PLUS7
         # Gathering + production house rooms grant efficiency (0.015/level),
@@ -768,7 +1029,7 @@ def clear_sigma(
         return None
     if building_levels is None:
         building_levels = guild_building_skill_levels(skill)
-    shrine = guild_shrine_bonuses()
+    shrine = None if config.ROSTER_USE_SHRINES else guild_shrine_bonuses()
     prepared = [
         p
         for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
@@ -852,7 +1113,7 @@ def _cumulative_tier_times(
     """
     if building_levels is None:
         building_levels = guild_building_skill_levels(skill)
-    shrine = guild_shrine_bonuses()
+    shrine = None if config.ROSTER_USE_SHRINES else guild_shrine_bonuses()
     prepared = [
         p
         for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
@@ -1192,10 +1453,15 @@ def simulate_race(
 
     n = len(party)
     budget = config.TRIAL_TIME_BUDGET_SECONDS
-    # Guild-wide shrine buffs, resolved ONCE for the whole race (they are a property of
-    # the guild, not of a member or a tier) — the same treatment the guild-building
-    # lookup gets, and for the same performance reason.
-    shrine = guild_shrine_bonuses()
+    # Shrine buffs. UNDER config.ROSTER_USE_SHRINES THE HOIST GOES, because the
+    # quantity it hoisted turned out not to be guild-wide: the guild's shrine level
+    # is a CAP and each member's own purchased level is what reaches the rate, so
+    # resolving once and handing the same tuple to every member would give all of
+    # them the guild map's levels. With the switch off it hoists exactly as before,
+    # bit-for-bit — pinned by test_shrines_off_is_bit_identical_to_the_hoisted_path.
+    # The cost of losing it is one 5-entry loop per member per race against a
+    # success() call that already runs ~13 times per member per race.
+    shrine = None if config.ROSTER_USE_SHRINES else guild_shrine_bonuses()
     timeline: list[TierStep] = []
     cumulative = 0.0
     tier_reached = 0

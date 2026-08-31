@@ -3549,6 +3549,31 @@ def _report_roster_join(
             + ", ".join(prov.reported_not_seated),
             file=sys.stderr,
         )
+    if prov.tools is not None and prov.tools.unknown_items:
+        detail = ", ".join(
+            f"{name} ×{n}" for name, n in sorted(prov.tools.unknown_items.items())
+        )
+        print(
+            f"WARNING ({site.key}): {prov.tools.unknown_count} roster tool "
+            f"observation(s) name item(s) config.TOOL_STATS does not model and "
+            f"fell back to the '{site.member_tab}' tab's checkbox: {detail}. "
+            f"Affected members: {', '.join(prov.tools.unknown_members)}. Add the "
+            f"item to config.TOOL_STATS from research/item-stats.json.",
+            file=sys.stderr,
+        )
+    if prov.tools is not None and prov.tools.blank_enhancements:
+        total = max(1, prov.tools.roster_tools)
+        share = prov.tools.blank_enhancements / total
+        print(
+            f"NOTE ({site.key}): {prov.tools.blank_enhancements} of "
+            f"{prov.tools.roster_tools} roster-named tools "
+            f"({share:.1%}) carry no enhancement level and were priced at "
+            f"config.TOOL_ENHANCE_WHEN_UNKNOWN = "
+            f"{config.TOOL_ENHANCE_WHEN_UNKNOWN}, which UNDERSTATES against an "
+            f"observed mode of +5. Above 5% this must be resolved before the "
+            f"ROSTER_SOURCE_ENABLED flip.",
+            file=sys.stderr,
+        )
     if prov.ambiguous:
         print(
             f"WARNING ({site.key}): {len(prov.ambiguous)} name(s) are ambiguous "
@@ -3622,6 +3647,13 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             members, roster_provenance = roster_model.merge(
                 gd.members, report, site.key
             )
+            # The tool audit runs ONCE per guild, here in the parent, on the
+            # merged list. It strips items config.TOOL_STATS does not model (so
+            # the hot loop never sees one and falls back to the checkbox), counts
+            # what it stripped and how many named tools had a blank enhancement,
+            # and RAISES on a tool in the wrong slot — which is not a new item but
+            # a shifted header row, and makes every tool column suspect.
+            roster_provenance.tools = trials_model.audit_roster_tools(members)
             _report_roster_join(site, roster_provenance)
 
     # --- The sign-up tab, and whether it is talking about THIS week --------------

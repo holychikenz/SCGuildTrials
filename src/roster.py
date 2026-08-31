@@ -364,6 +364,10 @@ class Provenance:
     # warning and the on-page banner. The merge then returns the members
     # untouched, which is today's shipped behaviour rather than nothing.
     refused: str = ""
+    # trials.ToolAudit, attached by build after the merge. Not filled here:
+    # which items exist and which channel each feeds is MODEL knowledge, and this
+    # module is a parser. Typed loosely so roster.py need not import trials.
+    tools: object = None
 
     def to_dict(self) -> dict:
         return {
@@ -382,6 +386,7 @@ class Provenance:
             "unmatched_roster": list(self.unmatched_roster),
             "ambiguous": list(self.ambiguous),
             "refused": self.refused,
+            "tools": self.tools.to_dict() if self.tools is not None else None,
         }
 
 
