@@ -170,6 +170,82 @@ GVIZ_SENTINEL_HEADERS = {
     53: ("contains", "Enhancing"),
 }
 
+# --- Roster tabs (the scripted per-character harvest) ------------------------
+# A SECOND, machine-written pair of tabs, produced by the standalone
+# `profiles-endpoint` Apps Script from a per-character harvest. One row per
+# member, 78 columns, addressed by tab name through the same credential-free
+# GVIZ_URL as the member tabs above.
+#
+# These tabs are NOT the member tabs and share none of their layout: no merged
+# header rows, no fixed five-column skill blocks, and a tool-block column order
+# that legitimately VARIES upstream (itemLocationDetailMap carries no sortIndex,
+# so it comes out alphabetical when client data was captured and in skill order
+# from the module's fallback). Everything in src/roster.py therefore addresses
+# columns BY HEADER NAME, never by position.
+#
+# DO NOT append GVIZ_NO_HEADER_COLLAPSE to a roster fetch: these tabs have a
+# single clean header row, and "&headers=0" makes gviz blank the label of every
+# numeric column — which is most of the tab (verified live 2026-08-31).
+ROSTER_TABS = {
+    "sc": "SC Roster",
+    "li": "LI Roster",
+}
+
+# Roster column names per SKILLS entry, and the single source of truth for BOTH
+# the parser and the header guard in roster._validate_header — one table, so the
+# two can never drift.
+#
+# Two traps are defused here and nowhere else:
+#   - "Bell Farming" is the guild's in-joke name for the ALCHEMY column, so it
+#     reads `alchemy` / `house_laboratory` / `tool_alchemy` (the same joke
+#     TRIAL_SKILL_TO_SHEET_COLUMN handles for the manual tab);
+#   - "C.Smithing" is `cheesesmithing` upstream.
+# House-room <-> skill pairing confirmed against the game catalogue.
+ROSTER_COLUMNS = {
+    #  SKILLS entry     level             house                   tool
+    "Milking":      ("milking",        "house_dairy_barn",     "tool_milking"),
+    "Foraging":     ("foraging",       "house_garden",         "tool_foraging"),
+    "Woodcutting":  ("woodcutting",    "house_log_shed",       "tool_woodcutting"),
+    "C.Smithing":   ("cheesesmithing", "house_forge",          "tool_cheesesmithing"),
+    "Crafting":     ("crafting",       "house_workshop",       "tool_crafting"),
+    "Tailoring":    ("tailoring",      "house_sewing_parlor",  "tool_tailoring"),
+    "Cooking":      ("cooking",        "house_kitchen",        "tool_cooking"),
+    "Brewing":      ("brewing",        "house_brewery",        "tool_brewing"),
+    "Bell Farming": ("alchemy",        "house_laboratory",     "tool_alchemy"),
+    "Enhancing":    ("enhancing",      "house_observatory",    "tool_enhancing"),
+}
+# The tool ENHANCEMENT column is always the tool column plus this suffix
+# ("tool_milking" -> "tool_milkingEnh"), so it is derived rather than listed
+# again: one place to be wrong instead of two.
+ROSTER_TOOL_ENH_SUFFIX = "Enh"
+
+# Per-member columns that are not per-skill. `name` is the join key; capturedAt
+# and revision carry staleness; the five shrine columns are each member's OWN
+# purchased skilling-shrine level (see the GUILD_SHRINE_LEVELS note far below:
+# the guild's level is a CAP, the member's purchase is what reaches the rate).
+# All five are read, not just force and tempo, so member_shrine_bonuses can
+# dispatch on the same channel table guild_shrine_bonuses uses and a loot or XP
+# shrine is refused by the MODEL rather than by never having been parsed.
+ROSTER_SINGLETON_COLUMNS = (
+    "name",
+    "characterId",
+    "capturedAt",
+    "revision",
+    "shrine_force_skilling",
+    "shrine_tempo_skilling",
+    "shrine_spirit_skilling",
+    "shrine_rarity_skilling",
+    "shrine_scholar_skilling",
+)
+# roster shrine column -> GUILD_SHRINE_SKILLING_BUFFS key.
+ROSTER_SHRINE_COLUMNS = {
+    "shrine_force_skilling": "force",
+    "shrine_tempo_skilling": "tempo",
+    "shrine_spirit_skilling": "spirit",
+    "shrine_rarity_skilling": "rarity",
+    "shrine_scholar_skilling": "scholar",
+}
+
 # ===========================================================================
 # Guild Trials (Phase 1) — model constants + this week's draw
 # ===========================================================================

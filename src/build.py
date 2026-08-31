@@ -104,6 +104,16 @@ class GuildSite:
         return config.TABS[self.key]
 
     @property
+    def roster_tab(self) -> str:
+        """This guild's scripted per-character harvest tab (src/roster.py).
+
+        A SECOND tab, written by a separate Apps Script deployment, carrying
+        levels, houses, tools + their enhancement and per-member shrine levels.
+        Read only when config.ROSTER_SOURCE_ENABLED is on.
+        """
+        return config.ROSTER_TABS[self.key]
+
+    @property
     def signup_tab(self) -> str:
         return signup_model.SIGNUP_TABS[self.key]
 
