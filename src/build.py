@@ -147,6 +147,292 @@ GUILD_SITES = [
 ]
 
 
+# Short tier labels for the tool badge. The page has no room for
+# "Celestial Brush" in a table cell, and the tier is the part that ranks.
+_TOOL_TIER_ABBREV = {
+    "Cheese": "Chz", "Verdant": "Vrd", "Azure": "Azu", "Burble": "Bur",
+    "Crimson": "Crm", "Rainbow": "Rbw", "Holy": "Holy", "Celestial": "Cel",
+}
+
+
+def _provenance_block(inputs: "_GuildInputs") -> dict:
+    """What the pages and the JSON say about WHERE each member's data came from.
+
+    Built once per guild and attached to trials.json, signup.json and data.json
+    alike, so a reader of any of the three can tell a roster-backed number from a
+    hand-maintained one from an assumed one. With
+    ``config.ROSTER_SOURCE_ENABLED`` off every count is zero and ``source`` reads
+    "manual tab", which is the honest description of today's build.
+    """
+    member_count = inputs.register.get("member_count", len(inputs.members))
+    prov = inputs.roster_provenance
+    out = {
+        "enabled": bool(config.ROSTER_SOURCE_ENABLED),
+        "source": "manual tab",
+        "roster_backed": 0,
+        "manual_backed": member_count,
+        "admitted": 0,
+        "admitted_names": [],
+        "reported_not_seated": [],
+        "captured_at": "",
+        "age_days": None,
+        "stale": False,
+        "gear_hidden": 0,
+        "unknown_tools": 0,
+        "unknown_tool_items": {},
+        "blank_enhancements": 0,
+        "unmatched_roster": [],
+        "unmatched_members": [],
+        "normalized_matches": [],
+        "ambiguous": [],
+        "refused": "",
+        "unavailable": inputs.roster_unavailable,
+    }
+    if prov is None:
+        return out
+
+    out.update(
+        {
+            "source": "roster tab" if not prov.refused else "manual tab",
+            "roster_backed": prov.roster_backed,
+            "manual_backed": prov.manual_backed,
+            "admitted": prov.admitted,
+            "admitted_names": list(prov.admitted_names),
+            "reported_not_seated": list(prov.reported_not_seated),
+            "captured_at": prov.captured_at,
+            "gear_hidden": len(prov.gear_hidden),
+            "unmatched_roster": list(prov.unmatched_roster),
+            "unmatched_members": list(prov.unmatched_members),
+            "normalized_matches": list(prov.normalized_matches),
+            "ambiguous": list(prov.ambiguous),
+            "refused": prov.refused,
+        }
+    )
+    if prov.tools is not None:
+        out["unknown_tools"] = prov.tools.unknown_count
+        out["unknown_tool_items"] = dict(prov.tools.unknown_items)
+        out["blank_enhancements"] = prov.tools.blank_enhancements
+    age = _capture_age_days(prov.captured_at)
+    out["age_days"] = age
+    out["stale"] = age is not None and age > config.ROSTER_MAX_AGE_DAYS
+    return out
+
+
+def _capture_age_days(captured_at: str) -> Optional[int]:
+    """Whole days between a roster capture and now; None when unparseable.
+
+    Unparseable rather than crashing: the timestamp is written by a separate
+    deployment, and a format change there must cost the caption, not the build.
+    """
+    if not captured_at:
+        return None
+    try:
+        stamp = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - stamp).days)
+
+
+def _caveat_texts(prov: dict) -> dict:
+    """The three footnotes the roster makes false, in whichever form is TRUE now.
+
+    EDITED rather than appended to. This repository's doctrine, argued at length
+    in src/draw.py's docstring, is that a stale caption is worse than none: a
+    reader who is told "+7 on every piece" while the model prices an observed +5
+    has been misinformed by the page's own explanation of itself. Two of the
+    caveats become false for roster-backed members and one becomes half false, so
+    each carries both readings and the build picks.
+    """
+    live = prov["enabled"] and not prov["refused"] and not prov["unavailable"]
+    backed = prov["roster_backed"]
+    if live and backed:
+        tool = (
+            f"<strong>Tools are observed, not assumed, for {backed} of "
+            f"{backed + prov['manual_backed']} members</strong>: the scripted "
+            f"roster tab records the actual item and its actual enhancement "
+            f"level, so a Rainbow Chisel at <code>+4</code> is priced as one "
+            f"rather than as a holy tool at <code>+7</code>. The "
+            f"{prov['gear_hidden']} member(s) who hide their gear, and anyone "
+            f"the roster has not seen, still fall back to the checkbox at "
+            f"<code>+7</code>."
+        )
+        house = (
+            "House levels come from the roster tab where it has them, so a "
+            "blank &ldquo;H&rdquo; cell no longer means a guessed "
+            f"<code>level&nbsp;{config.DEFAULT_HOUSE_LEVEL}</code> for a "
+            "roster-backed member; it still does for everyone else."
+        )
+        sigma_enh = (
+            "enhancement levels away from the assumed +7 <em>for members the "
+            "roster has not seen</em> (for the rest they are observed)"
+        )
+    else:
+        tool = (
+            "Everyone is assumed to run a <code>+7</code> tool (celestial if the "
+            "sheet's tool box is checked, else holy)."
+        )
+        house = (
+            "A blank &ldquo;H&rdquo; cell falls back to the assumed default of "
+            f"<code>level&nbsp;{config.DEFAULT_HOUSE_LEVEL}</code>."
+        )
+        sigma_enh = "enhancement levels away from the assumed +7"
+    return {
+        "tool_caveat": tool,
+        "house_caveat": house,
+        "sigma_enh_clause": sigma_enh,
+    }
+
+
+def _provenance_placeholder(member_count: int) -> dict:
+    """The pre-roster answer, for a page rendered from a JSON that predates R4.
+
+    trials.json is a published artefact and old copies exist; a page built from
+    one must still render, and must say the honest thing rather than nothing.
+    """
+    return {
+        "enabled": False, "source": "manual tab", "roster_backed": 0,
+        "manual_backed": member_count, "admitted": 0, "admitted_names": [],
+        "reported_not_seated": [], "captured_at": "", "age_days": None,
+        "stale": False, "gear_hidden": 0, "unknown_tools": 0,
+        "unknown_tool_items": {}, "blank_enhancements": 0,
+        "unmatched_roster": [], "unmatched_members": [], "normalized_matches": [],
+        "ambiguous": [], "refused": "", "unavailable": "",
+    }
+
+
+def _render_provenance_strip(prov: dict) -> str:
+    """The per-guild "Member data" strip, beside the buff strip and styled alike.
+
+    IT SHIPS BEFORE THE FLIP, and that is the point: nothing may go out with
+    better numbers than the page admits to. With the roster off it says so
+    plainly rather than being absent, because "this page is built from the
+    officers' hand-maintained tab" is itself a fact a reader should have.
+
+    Outlined and captioned when the capture is older than
+    ``config.ROSTER_MAX_AGE_DAYS``, exactly as the buff strip is outlined off the
+    published level.
+    """
+    total = prov["roster_backed"] + prov["manual_backed"]
+    bits: list[str] = []
+
+    if not prov["enabled"]:
+        bits.append(
+            f"<strong>{total}</strong> members, all from the officers' "
+            f"hand-maintained member tab. The scripted roster tab is not being "
+            f"read (<code>ROSTER_SOURCE_ENABLED</code> is off), so tool "
+            f"enhancement is assumed <code>+7</code>, blank house cells fall "
+            f"back to <code>level&nbsp;{config.DEFAULT_HOUSE_LEVEL}</code> and "
+            f"guild shrines are modelled as one level for every member."
+        )
+    elif prov["refused"]:
+        bits.append(
+            f"<strong>{total}</strong> members from the manual tab. The roster "
+            f"was <strong>refused</strong> for this guild: "
+            f"{html.escape(prov['refused'])}"
+        )
+    elif prov["unavailable"]:
+        bits.append(
+            f"<strong>{total}</strong> members from the manual tab. The roster "
+            f"tab could not be read this build, so the page is built from the "
+            f"officers' own tab &mdash; which is exactly what it was built from "
+            f"before this feature existed."
+        )
+    else:
+        age = prov["age_days"]
+        when = html.escape((prov["captured_at"] or "")[:10]) or "an unknown date"
+        ago = "" if age is None else f" ({age} day{'' if age == 1 else 's'} ago)"
+        bits.append(
+            f"<strong>{total}</strong> members. "
+            f"<strong>{prov['roster_backed']}</strong> roster-backed, captured "
+            f"{when}{ago}."
+        )
+        if prov["manual_backed"]:
+            bits.append(
+                f"{prov['manual_backed']} matched no roster row and keep the "
+                f"manual tab's numbers."
+            )
+        if prov["gear_hidden"]:
+            bits.append(
+                f"{prov['gear_hidden']} hide their gear &rarr; tools from the "
+                f"manual tab."
+            )
+        if prov["admitted"]:
+            bits.append(
+                f"<strong>{prov['admitted']}</strong> seated from the roster "
+                f"alone ({html.escape(', '.join(prov['admitted_names']))}) "
+                f"&mdash; before this they were dropped entirely. They carry no "
+                f"Top/Bot, so their rates are if anything understated."
+            )
+        if prov["reported_not_seated"]:
+            bits.append(
+                f"{len(prov['reported_not_seated'])} roster name(s) not on the "
+                f"member tab and <strong>not seated</strong>."
+            )
+        bits.append(
+            f"{prov['unknown_tools']} unmodelled tool item(s), "
+            f"{prov['blank_enhancements']} tool(s) with no recorded enhancement."
+        )
+
+    cls = "prov stale" if prov.get("stale") else "prov"
+    caption = ""
+    if prov.get("stale"):
+        caption = (
+            f'<span class="prov-warn">Capture is older than '
+            f'{config.ROSTER_MAX_AGE_DAYS} days &mdash; treat these numbers as '
+            f'lagging reality.</span>'
+        )
+    return (
+        f'<div class="{cls}"><span class="prov-label">Member data</span>'
+        f'<span class="prov-body">{" ".join(bits)}</span>{caption}</div>'
+    )
+
+
+def _source_mark(source: str) -> str:
+    """A filled mark for a roster-backed member, hollow for a manual one."""
+    if source == "roster":
+        return ('<span class="src on" title="Levels, houses and tools from the '
+                'scripted roster tab">&#9679;</span>')
+    if source == "roster-only":
+        return ('<span class="src only" title="This member exists ONLY on the '
+                'roster tab; seated from it, with no Top/Bot recorded">'
+                '&#9673;</span>')
+    return ('<span class="src off" title="From the officers\' hand-maintained '
+            'member tab">&#9675;</span>')
+
+
+def _tool_badge(entry: dict) -> str:
+    """The tool cell: the actual tier and enhancement when the roster knows them.
+
+    This is the single highest-information change on the page. It turns "this
+    member has a tool" into "this member has a Rainbow Chisel at +4", which is
+    the fact that moves their rank &mdash; the checkbox could express neither the
+    six intermediate tiers nor any enhancement level at all.
+
+    Muted when it came from the checkbox; outlined, with the raw name in its
+    title, when the roster named an item config.TOOL_STATS does not model.
+    """
+    item = entry.get("tool_item")
+    source = entry.get("tool_source") or "manual"
+    if source.startswith("manual (unknown item"):
+        raw = source.split("unknown item: ", 1)[-1].rstrip(")")
+        return (
+            f'<span class="badge unknown" title="Roster named {html.escape(raw)}, '
+            f'which the model does not carry; priced from the manual checkbox">'
+            f'?</span>'
+        )
+    if item:
+        tier = _TOOL_TIER_ABBREV.get(item.split(" ", 1)[0], item.split(" ", 1)[0])
+        enh = entry.get("tool_enhance")
+        label = tier if enh is None else f"{tier}&nbsp;+{enh}"
+        return (
+            f'<span class="badge tool on" title="{html.escape(item)}'
+            f'{"" if enh is None else f" +{enh}"} (roster)">{label}</span>'
+        )
+    return _badge(entry.get("tool", False), "Tool")
+
+
 def _badge(present: bool, label: str) -> str:
     """Render a small T/T/B style badge; filled when present, muted when not."""
     cls = "badge on" if present else "badge off"
@@ -449,15 +735,20 @@ def _fav_button(name: str) -> str:
     )
 
 
-def _member_cell(name: str) -> str:
-    """A roster row's member cell: the pin control, then the name.
+def _member_cell(name: str, source: str = "manual") -> str:
+    """A roster row's member cell: the pin control, the source mark, the name.
 
     ``data-sort`` carries the BARE name because the client-side text sorter falls
     back to ``textContent`` when the attribute is absent — and textContent here
-    begins with the star glyph, which would sort every row identically.
+    begins with the star glyph, which would sort every row identically. The
+    source mark sits inside the same cell for the same reason it is a glyph
+    rather than a column: it is a caption on the name, not a datum to sort by.
     """
     safe = html.escape(name)
-    return f'<th scope=row data-sort="{safe}">{_fav_button(name)}{safe}</th>'
+    return (
+        f'<th scope=row data-sort="{safe}">{_fav_button(name)}'
+        f'{_source_mark(source)}{safe}</th>'
+    )
 
 
 def _assign_summary(trial: dict) -> tuple[str, str, str]:
@@ -625,11 +916,11 @@ def _render_trial_card(trial: dict, t_index: int, cap: int) -> tuple[str, list[d
 
     roster_rows = "".join(
         f'<tr id="r-{t_index}-{i}">'
-        f"{_member_cell(r['name'])}"
+        f"{_member_cell(r['name'], r.get('source', 'manual'))}"
         f"<td class=num data-sort=\"{'' if r['level'] is None else r['level']}\">"
         f"{'' if r['level'] is None else r['level']}</td>"
         f"<td class=cbadges data-sort=\"{int(r['tool']) + int(r['top']) + int(r['bot'])}\">"
-        f"{_badge(r['tool'], 'Tool')}{_badge(r['top'], 'Top')}{_badge(r['bot'], 'Bot')}"
+        f"{_tool_badge(r)}{_badge(r['top'], 'Top')}{_badge(r['bot'], 'Bot')}"
         f"</td>"
         f"<td class=num data-sort=\"{r['rate_tier1']!r}\">{_num(r['rate_tier1'])}</td>"
         f"<td class=num data-sort=\"{r['rate_final']!r}\">{_num(r['rate_final'])}</td>"
@@ -1794,6 +2085,11 @@ def _render_trials_html(
     page, the selector re-rates this one.
     """
     strip = _stat_strip(week)
+    _prov = week.get("provenance") or _provenance_placeholder(week["member_count"])
+    provenance_strip = _render_provenance_strip(_prov)
+    _caveats = _caveat_texts(_prov)
+    tool_caveat = _caveats["tool_caveat"]
+    house_caveat = _caveats["house_caveat"]
 
     cards_parts: list[str] = []
     assign_index: list[dict] = []
@@ -1950,6 +2246,23 @@ def _render_trials_html(
             border-radius: 3px; font-size: 10px; font-weight: 700; margin: 0 1px; }}
   .badge.on {{ background: var(--on); color: #06231a; }}
   .badge.off {{ background: var(--off); color: #6b7180; }}
+  /* --- Data provenance: which source each number came from -------------- */
+  .badge.tool {{ width: auto; padding: 0 5px; letter-spacing: .2px; }}
+  .badge.unknown {{ background: transparent; color: var(--warn);
+                    border: 1px solid var(--warn); }}
+  .src {{ font-size: 9px; margin-right: 5px; vertical-align: 1px; }}
+  .src.on {{ color: var(--on); }}
+  .src.only {{ color: var(--rec, #6ea8fe); }}
+  .src.off {{ color: var(--off); }}
+  .prov {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem .75rem;
+           margin: .75rem 0 0; padding: .6rem .8rem; border-radius: 8px;
+           background: var(--panel, #171a21); border: 1px solid transparent;
+           font-size: .85rem; color: var(--muted); }}
+  .prov.stale {{ border-color: var(--warn); }}
+  .prov-label {{ text-transform: uppercase; letter-spacing: .4px; font-weight: 700;
+                 font-size: .75rem; color: var(--muted); }}
+  .prov-body strong {{ color: var(--fg, #e6e8ee); }}
+  .prov-warn {{ color: var(--warn); }}
   .alert {{ background: #2a1f10; border: 1px solid var(--warn); color: #f2dca6;
             border-radius: 8px; padding: .8rem 1rem; margin: 0 0 1.25rem;
             font-size: .9rem; }}
@@ -2103,6 +2416,7 @@ def _render_trials_html(
     <div id="pinned-list" class="pin-list"></div>
   </section>
   <div class="strip" id="strip">{strip}</div>
+  {provenance_strip}
 
   <div class="search">
     <input id="member-search" type="search" autocomplete="off"
@@ -2172,13 +2486,15 @@ def _render_trials_html(
         it actually records each member's <em>Alchemy</em> level. So Alchemy
         levels and Tool/Top/Bot ownership are read straight from that column,
         exactly like any other skill (no proxy, no stand-in).</li>
-    <li><strong>Equipment baselines.</strong> Everyone is assumed to run a
-        <code>+7</code> tool (celestial if the sheet's tool box is checked, else
-        holy), a <code>+3</code> correct-group cape, and a <code>+7</code> family
-        piece; <code>+7</code> top/bottom count only when checked. Enhancing is
-        special: its tool grants success (not speed) and its gloves grant speed
-        (not efficiency). Skilling top/bottom are modelled as efficiency for all
-        skills (in-game the Enhancer's set grants speed instead).</li>
+    <li><strong>Equipment baselines.</strong> {tool_caveat} Everyone is
+        additionally assumed to run a <code>+3</code> correct-group cape and a
+        <code>+7</code> family piece; <code>+7</code> top/bottom count only when
+        checked, and the roster tab does not record them &mdash; body and legs
+        are excluded upstream as rotating combat slots, so those two stay
+        hand-maintained permanently. Enhancing is special: its tool grants
+        success (not speed) and its gloves grant speed (not efficiency).
+        Skilling top/bottom are modelled as efficiency for all skills (in-game
+        the Enhancer's set grants speed instead).</li>
     <li><strong>Community buffs (magnitudes CONFIRMED; level assumed).</strong>
         Three community buffs are modelled, one per skill family, and each is
         bought with cowbells on its own <strong>level ladder 1&ndash;20</strong>.
@@ -2218,8 +2534,8 @@ def _render_trials_html(
         column. Per the game data, gathering and production house rooms grant
         <code>+0.015</code> efficiency per level, while the enhancing house
         (Observatory) grants <code>+0.010</code> action-speed per level rather
-        than efficiency. A blank H cell falls back to the assumed default of
-        <code>level&nbsp;4</code>; levels are clamped to the in-game max of 8.</li>
+        than efficiency. {house_caveat} Levels are clamped to the in-game max
+        of 8.</li>
     <li><strong>Guild buildings (guild-wide, CONFIRMED game data).</strong>
         Quite separate from the personal houses above: each of the ten skilling
         <em>guild</em> buildings grants <code>+2 levels</code> in its own skill to
@@ -2718,13 +3034,17 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             p.get('optimal_total'), p.get('optimal_credit_total'))}</div></div>"""\
         f"""{safety_tile}{odds_tile}"""
 
+    _prov = p.get("provenance") or _provenance_placeholder(p["roster_count"])
+    provenance_strip = _render_provenance_strip(_prov)
+    sigma_enh_clause = _caveat_texts(_prov)["sigma_enh_clause"]
+
     # --- Per-trial enforced rosters ----------------------------------------
     # Every row carries a stable DOM id so the player search can jump to it, the
     # same contract the full-optimum page uses (see _render_trial_card).
     def _row(r: dict, row_id: str) -> str:
         assigned = r["status"] == "assigned"
         cls = "assigned" if assigned else "rec"
-        badges = _badge(r["tool"], "Tool") + _badge(r["top"], "Top") + _badge(r["bot"], "Bot")
+        badges = _tool_badge(r) + _badge(r["top"], "Top") + _badge(r["bot"], "Bot")
         # A FILL NOW HAS A PRICE, AND IT MAY BE NEGATIVE. Under the old step objective a
         # marginal seat was worth exactly zero, so every rider was "safe". Partial credit
         # prices the seat — an extra head raises every tier's target — so a rider seated
@@ -2748,7 +3068,8 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         level = "" if r["level"] is None else r["level"]
         return (
             f'<tr class="{cls}" id="{row_id}">'
-            f'<th scope=row>{html.escape(r["name"])}</th>'
+            f'<th scope=row>{_source_mark(r.get("source", "manual"))}'
+            f'{html.escape(r["name"])}</th>'
             f'<td class=num>{level}</td>'
             f'<td class=cbadges>{badges}</td>'
             f'<td class=num>{_num(r["rate_final"])}</td>'
@@ -3075,6 +3396,23 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             border-radius: 3px; font-size: 10px; font-weight: 700; margin: 0 1px; }}
   .badge.on {{ background: var(--on); color: #06231a; }}
   .badge.off {{ background: var(--off); color: #6b7180; }}
+  /* --- Data provenance: which source each number came from -------------- */
+  .badge.tool {{ width: auto; padding: 0 5px; letter-spacing: .2px; }}
+  .badge.unknown {{ background: transparent; color: var(--warn);
+                    border: 1px solid var(--warn); }}
+  .src {{ font-size: 9px; margin-right: 5px; vertical-align: 1px; }}
+  .src.on {{ color: var(--on); }}
+  .src.only {{ color: var(--rec, #6ea8fe); }}
+  .src.off {{ color: var(--off); }}
+  .prov {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem .75rem;
+           margin: .75rem 0 0; padding: .6rem .8rem; border-radius: 8px;
+           background: var(--panel, #171a21); border: 1px solid transparent;
+           font-size: .85rem; color: var(--muted); }}
+  .prov.stale {{ border-color: var(--warn); }}
+  .prov-label {{ text-transform: uppercase; letter-spacing: .4px; font-weight: 700;
+                 font-size: .75rem; color: var(--muted); }}
+  .prov-body strong {{ color: var(--fg, #e6e8ee); }}
+  .prov-warn {{ color: var(--warn); }}
   /* Row colour-coding: green = signed up, blue = recommended fill. */
   tr.assigned > th, tr.assigned > td {{ background: rgba(62,207,142,.09);
      box-shadow: inset 3px 0 0 var(--assigned); }}
@@ -3173,6 +3511,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
 </header>
 <main>
   <div class="strip">{strip}</div>
+  {provenance_strip}
   <p class="legend">
     <span><span class="sw" style="background:var(--assigned)"></span> Signed up (locked)</span>
     <span><span class="sw" style="background:var(--rec)"></span> Recommended fill (from the uncommitted pool)</span>
@@ -3285,8 +3624,8 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         computed per party: the per-action dice (derived exactly, Wald first passage,
         ~1.5&ndash;2%) added in quadrature to
         {config.RISK_SIGMA_SYSTEMATIC * 100:.1f}% for unmodelled gear &mdash; the neck,
-        ring and earring slots the sheet has no column for, enhancement levels away
-        from the assumed +7, and mis-ticked checkboxes. The map is steeply non-linear
+        ring and earring slots no sheet has a column for, {sigma_enh_clause}, and
+        mis-ticked checkboxes. The map is steeply non-linear
         near the buzzer, which is why a margin that looks small can still be safe and
         why the two are shown together rather than one standing for the other.
         <strong>The figure is conditional on the assigned party turning up</strong> &mdash;
@@ -3858,6 +4197,18 @@ def _write_guild(
     """
     out = site.out_dir
     out.mkdir(parents=True, exist_ok=True)
+
+    # WHERE THE NUMBERS CAME FROM, attached to all three artefacts before any of
+    # them is written. One block, three consumers: a reader of trials.json,
+    # signup.json or data.json can each tell a roster-backed number from a
+    # hand-maintained one without having to know which page they came from.
+    provenance = _provenance_block(inputs)
+    inputs.register["provenance"] = provenance
+    week["provenance"] = provenance
+    if week_maxbuff is not None:
+        week_maxbuff["provenance"] = provenance
+    if inputs.plan_dict is not None:
+        inputs.plan_dict["provenance"] = provenance
 
     # --- Member skill register (index.html + data.json) ---------------------
     (out / "data.json").write_text(

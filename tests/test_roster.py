@@ -379,6 +379,21 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
     got = week.to_dict()
     got.pop("generated_at", None)
     got.pop("week_date", None)
+
+    # R4 added four ADDITIVE provenance keys to every roster entry, so the
+    # golden — generated before they existed — is compared after they are
+    # stripped. They are not simply discarded: each is asserted to carry the
+    # pre-roster answer first, which IS the R4 property ("renders manual for
+    # everything while the switch is off"). What the golden pins is the RACE,
+    # and the race must still match bit for bit.
+    for trial in got["trials"]:
+        for entry in trial["roster"]:
+            assert entry.pop("source") == "manual"
+            assert entry.pop("tool_source") == "manual"
+            assert entry.pop("tool_item") is None
+            assert entry.pop("tool_enhance") is None
+    got.pop("provenance", None)
+
     with open(_GOLDEN_PATH, encoding="utf-8") as fh:
         expected = json.load(fh)
     assert got == expected
@@ -761,3 +776,142 @@ def test_a_member_on_both_tabs_is_never_admitted_twice():
     merged, prov = roster.merge(members, roster.join(members, rows), "li")
     assert [m.name for m in merged].count("Felisie") == 1
     assert prov.member_count == len(merged) == 6
+
+
+# ===========================================================================
+# R4 — provenance on the pages and in the JSON
+# ===========================================================================
+def _prov_on(**overrides):
+    base = {
+        "enabled": True, "source": "roster tab", "roster_backed": 98,
+        "manual_backed": 9, "admitted": 5,
+        "admitted_names": ["IronPugs", "U3", "auuughhh", "yiyaa", "yiyya"],
+        "reported_not_seated": [], "captured_at": "2026-08-28T11:19:06.697Z",
+        "age_days": 3, "stale": False, "gear_hidden": 9, "unknown_tools": 0,
+        "unknown_tool_items": {}, "blank_enhancements": 0,
+        "unmatched_roster": [], "unmatched_members": [], "normalized_matches": [],
+        "ambiguous": [], "refused": "", "unavailable": "",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_provenance_strip_says_manual_when_the_roster_is_off():
+    """Nothing may ship with better numbers than the page admits to."""
+    html_ = build_model._render_provenance_strip(
+        build_model._provenance_placeholder(107)
+    )
+    assert "107" in html_
+    assert "hand-maintained member tab" in html_
+    assert "ROSTER_SOURCE_ENABLED" in html_
+    assert "roster-backed" not in html_
+
+
+def test_provenance_strip_reports_the_counts_when_the_roster_is_on():
+    html_ = build_model._render_provenance_strip(_prov_on())
+    assert "roster-backed" in html_
+    assert "2026-08-28" in html_
+    assert "3 days ago" in html_
+    assert "9 hide their gear" in html_
+    assert "seated from the roster" in html_
+    assert "yiyaa" in html_
+
+
+def test_provenance_strip_is_outlined_when_the_capture_is_stale():
+    fresh = build_model._render_provenance_strip(_prov_on())
+    stale = build_model._render_provenance_strip(_prov_on(age_days=40, stale=True))
+    assert 'class="prov"' in fresh
+    assert 'class="prov stale"' in stale
+    assert "older than" in stale
+
+
+def test_provenance_strip_says_so_when_the_roster_was_refused():
+    html_ = build_model._render_provenance_strip(
+        _prov_on(refused="only 3 of 107 members (3%) joined a roster row")
+    )
+    assert "refused" in html_
+    assert "3 of 107" in html_
+
+
+def test_capture_age_is_none_rather_than_fatal_on_an_unparseable_stamp():
+    assert build_model._capture_age_days("not a date") is None
+    assert build_model._capture_age_days("") is None
+    assert build_model._capture_age_days("2026-08-28T11:19:06.697Z") is not None
+
+
+def test_source_mark_is_filled_for_roster_and_hollow_for_manual():
+    assert "src on" in build_model._source_mark("roster")
+    assert "src off" in build_model._source_mark("manual")
+    assert "src only" in build_model._source_mark("roster-only")
+    assert "no Top/Bot recorded" in build_model._source_mark("roster-only")
+
+
+def test_tool_badge_shows_the_tier_and_enhancement():
+    html_ = build_model._tool_badge(
+        {"tool": False, "tool_item": "Rainbow Chisel", "tool_enhance": 4,
+         "tool_source": "roster"}
+    )
+    assert "Rbw" in html_ and "+4" in html_
+    assert "Rainbow Chisel" in html_
+
+
+def test_tool_badge_falls_back_to_the_checkbox_when_the_roster_said_nothing():
+    on = build_model._tool_badge(
+        {"tool": True, "tool_item": None, "tool_source": "manual"})
+    off = build_model._tool_badge(
+        {"tool": False, "tool_item": None, "tool_source": "manual"})
+    assert "badge on" in on and ">T<" in on
+    assert "badge off" in off
+
+
+def test_tool_badge_is_outlined_for_an_unmodelled_item():
+    html_ = build_model._tool_badge(
+        {"tool": True, "tool_item": None,
+         "tool_source": "manual (unknown item: Obsidian Brush)"}
+    )
+    assert "badge unknown" in html_
+    assert "Obsidian Brush" in html_
+
+
+def test_caveats_state_the_assumption_while_the_roster_is_off():
+    texts = build_model._caveat_texts(build_model._provenance_placeholder(107))
+    assert "assumed to run a <code>+7</code> tool" in texts["tool_caveat"]
+    assert "assumed default" in texts["house_caveat"]
+    assert texts["sigma_enh_clause"] == "enhancement levels away from the assumed +7"
+
+
+def test_caveats_stop_claiming_what_the_roster_has_made_false():
+    """A stale caption is worse than none (src/draw.py's docstring)."""
+    texts = build_model._caveat_texts(_prov_on())
+    assert "observed, not assumed" in texts["tool_caveat"]
+    assert "assumed to run a <code>+7</code> tool" not in texts["tool_caveat"]
+    assert "no longer means a guessed" in texts["house_caveat"]
+    assert "roster has not seen" in texts["sigma_enh_clause"]
+
+
+def test_a_refused_roster_restores_the_assumption_caveats():
+    texts = build_model._caveat_texts(_prov_on(refused="join rate too low"))
+    assert "assumed to run a <code>+7</code> tool" in texts["tool_caveat"]
+
+
+def test_roster_entries_carry_provenance_through_to_the_page():
+    members = [_member("Yedic", level=110)]
+    rows = roster.parse(_roster_csv([{"name": "Yedic"}]))
+    merged, _prov = roster.merge(members, roster.join(members, rows), "sc")
+    trials.audit_roster_tools(merged)
+    result = trials.simulate_race(merged, "Milking")
+    entry = result.roster[0]
+    assert entry.source == "roster"
+    assert entry.tool_item == "Celestial Brush"
+    assert entry.tool_enhance == 10
+    assert entry.tool_source == "roster"
+    # And it survives the trip through to_dict, which is what the page reads.
+    d = result.to_dict()["roster"][0]
+    assert d["source"] == "roster" and d["tool_item"] == "Celestial Brush"
+
+
+def test_roster_entry_defaults_to_manual_for_an_unmerged_member():
+    entry = trials.simulate_race([_member("plain", level=110)], "Milking").roster[0]
+    assert entry.source == "manual"
+    assert entry.tool_item is None
+    assert entry.tool_source == "manual"

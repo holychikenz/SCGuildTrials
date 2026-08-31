@@ -78,3 +78,62 @@ mean two characters. Both guilds also turn out to seat every member they have �
 SC 28+24+28+27 = 107, LI 25+24+26+26 = 101, i.e. the whole roster each — so these
 five are the only additional capacity in existence, not a change to who is
 benched.
+
+## 1.5 R1-R4 — what was measured while the master switch stayed OFF
+
+Phases R1-R4 land the whole mechanism dark: `ROSTER_SOURCE_ENABLED = False`, so
+no published number has moved. Everything below is either a rollback proof or a
+measurement taken by running the merge live and throwing the result away.
+
+**The rollback is proved twice, not asserted.** A full live build at R2 produced
+`_site/` byte-identical to `/tmp/R0-site` — the only differences in the whole
+tree were the embedded generation timestamps. Offline,
+`test_roster_disabled_reproduces_the_golden_week` compares a thirty-member
+synthetic week against `tests/golden/week_pre_roster.json`, which was generated
+by running the same fixture inside a git worktree of the pre-change commit
+`265326b`, so it compares against the OLD code rather than against itself.
+
+**The join, live.** Exactly the ResearchPack's figures, re-measured through the
+shipped code: SC 107/107 matched (6 recovered by case-insensitivity alone), LI
+100/101, with `OTZ` the one LI member the roster has never seen. 9 SC and 7 LI
+members hide their gear — all twenty tool columns blank, levels, houses and
+shrines fully populated — which is the case the per-field precedence exists for.
+
+**Roster-only members: five, and all real.** `IronPugs` (characterId 280884),
+`U3` (281111), `auuughhh` (117231), `yiyaa` (287196), `yiyya` (287200). All 105
+LI roster ids are distinct. See §1's RESOLVED note: they are now admitted.
+
+**Shrines, re-measured through the merge.** Mean purchased force level 2.99 (SC)
+and 2.30 (LI), against the 1.0 the model holds for everybody — matching the
+ResearchPack exactly.
+
+**The tool audit found nothing to warn about.** Zero unmodelled items and zero
+named-tool-with-blank-enhancement observations on either guild, out of 980 roster
+tool observations each. `config.TOOL_ENHANCE_WHEN_UNKNOWN` is therefore currently
+never exercised on live data, and plan §11.6's "resolve before R5 if it exceeds
+5%" trigger is not met at 0.0%. The 27 SC and 21 LI blank enhancement cells are
+all attached to blank tool cells — the gear-hiders — so they never reach the
+pricing path at all.
+
+**The tool table reproduces the four shipped constants exactly.** `==`, not
+`approx`, at `+7`, for Holy/Celestial Brush and Holy/Celestial Enhancer. That
+required rounding the `(base, per)` pairs to 12 decimal places, which recovers
+the catalogue's intended decimals from upstream float noise
+(`0.0007199999999999999` → `0.00072`); the multiplier curve itself is transcribed
+verbatim, because `calibrate._load_multiplier_table` reads the same array from
+the same file.
+
+**One plan claim is wrong, and it is a cost.** Plan §7.5 and Risk 9 state "ZERO
+added work inside `_prepare_member` or `simulate_race`". Removing
+`simulate_race`'s once-per-race shrine hoist costs about **+9%** on the race
+itself — measured on a live 26-member LI party, 0.21 ms/race hoisted against
+0.23 ms/race per-member, 300 races each. Small, worth the correctness, and not
+zero. R5's timing check should expect it rather than treat it as a regression.
+
+**R4 changes the artefacts without changing a number.** A second full build, still
+with the switch off, differs from R0 in exactly three ways: four additive keys per
+roster entry (`source`, `tool_source`, `tool_item`, `tool_enhance`), one
+`provenance` block per artefact, and the new page furniture (the Member-data
+strip, the per-member source marks, the tool badge, the three re-worded caveats).
+Every number in `trials.json`, `signup.json` and `data.json` on both guilds is
+identical once those keys are stripped, and all 107 SC source marks render hollow.

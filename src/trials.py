@@ -1371,6 +1371,17 @@ class RosterEntry:
     bot: bool
     rate_tier1: float
     rate_final: float  # rate at the final tier reached (or tier 1 if none)
+    # --- Provenance, for the page to say WHERE these numbers came from ------
+    # A member whose numbers come from the roster tab, from the officers' manual
+    # tab, or from a constant is three different epistemic states, and the site's
+    # own discipline (the "MAY BE STALE" banner, the buff-ladder outline) is that
+    # a guessed or stale input is captioned. These carry that caption's inputs.
+    # All default to the pre-roster answer, so a page built with
+    # config.ROSTER_SOURCE_ENABLED off renders "manual" for everything.
+    tool_item: Optional[str] = None      # the actual item, e.g. "Rainbow Chisel"
+    tool_enhance: Optional[int] = None   # its observed enhancement level
+    source: str = "manual"               # member-level: manual|roster|roster-only
+    tool_source: str = "manual"          # per-field, for the tool badge
 
 
 @dataclass
@@ -1539,6 +1550,7 @@ def simulate_race(
     # One member_bonuses per member (it used to be called four times each), and
     # the two reported rates reuse the prepared factors.
     roster = []
+    sheet_col = _sheet_column(skill)
     for m in party:
         b = member_bonuses(m, skill, building_levels, shrine)
         p = _prepare_member(m, skill, building_levels, shrine)
@@ -1555,6 +1567,7 @@ def simulate_race(
                 * wp
                 / asec
             )
+        entry = m.skills.get(sheet_col)
         roster.append(
             RosterEntry(
                 name=m.name,
@@ -1564,6 +1577,10 @@ def simulate_race(
                 bot=b.bot,
                 rate_tier1=rate_tier1,
                 rate_final=rate_final,
+                tool_item=entry.tool_item if entry else None,
+                tool_enhance=entry.tool_enhance if entry else None,
+                source=m.provenance.get("member", "manual"),
+                tool_source=m.provenance.get(f"{sheet_col}.tool", "manual"),
             )
         )
 
