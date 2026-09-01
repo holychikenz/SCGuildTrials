@@ -129,6 +129,17 @@ class GuildSite:
         return config.party_cap(self.key)
 
     @property
+    def shrine_caps(self) -> dict[str, int]:
+        """This guild's shrine CAPS (config.GUILD_SHRINE_CAPS).
+
+        Per guild since 2026-09-01: SC force 4 / tempo 4, LI 3 / 3, derived from the
+        observed per-member maximum on each roster tab. Feeds the two shrine probes
+        and nothing in the rate model — the guild's level is a CAP and each member's
+        own purchase is what reaches the rate. See config.GUILD_SHRINE_CAPS.
+        """
+        return config.shrine_caps(self.key)
+
+    @property
     def out_dir(self) -> Path:
         return OUTPUT_DIR / self.subdir if self.subdir else OUTPUT_DIR
 
@@ -1664,6 +1675,17 @@ def _render_upgrades_section(week: dict) -> str:
 """
 
 
+# The two shrine buffs that are real and do not touch the tier race, and what to
+# print instead of a gain. config.GUILD_SHRINE_SKILLING_BUFFS' third element is the
+# authority on WHICH shrines these are (channel None); this only names the currency,
+# so a reader is never left to infer why a row is priced at nothing.
+_LOOT_OR_XP_BUFFS = {
+    "rare_find": "loot only",
+    "essence_find": "loot only",
+    "wisdom": "XP only",
+}
+
+
 def _render_shrines_section(week: dict) -> str:
     """Guild shrines: what they grant every member today, and what one level more costs.
 
@@ -1678,11 +1700,27 @@ def _render_shrines_section(week: dict) -> str:
     Rows whose gain is exactly zero are the loot and XP shrines. They are rendered
     greyed rather than dropped, so the reader can see they were considered and priced at
     nothing — the same contract the buildings' "checked and rejected" line honours.
+
+    TWO TABLES SINCE 2026-09-01, and the ORDER OF THEM IS THE POINT. The guild's
+    shrine level is a CAP, not a grant: each member spends their own resources to
+    take the level, so raising the cap buys nothing on the day it completes, while
+    the headroom the guild has ALREADY paid for and its members have not is free.
+    The free question therefore goes first.
+
+    IT LEADS ON COST, NOT ON SIZE, and the distinction is worth keeping straight
+    because the live figures do not support the stronger claim. Measured 2026-09-01
+    on Force: SC's unbought headroom is worth +1.658 credit points a week against
+    +0.501 for a cap raise, so there the free option is also the bigger one — but on
+    LI it is +0.861 against +1.078, and the cap raise wins on size. It still loses,
+    because it costs 2450 guild points and takes ~2270 weeks to repay them while the
+    other costs nothing and pays this week. Quote the ordering that way round.
     """
     upgrades = week.get("shrine_upgrades") or []
+    adoption = week.get("shrine_adoption") or []
     speed = week.get("shrine_speed") or 0.0
     efficiency = week.get("shrine_efficiency") or 0.0
     levels = week.get("guild_shrine_levels") or {}
+    caps = week.get("guild_shrine_caps") or {}
     if not upgrades and not levels:
         return ""
 
@@ -1700,11 +1738,11 @@ def _render_shrines_section(week: dict) -> str:
 
     rows = []
     for u in ranked:
-        gain = u.get("points_gained") or 0.0
+        gain = u.get("points_gained_at_full_adoption") or 0.0
         # A shrine that does not feed the race at all: say WHICH currency it pays in
         # instead, from the buff the game itself names, so "0" never reads as "broken".
         if gain == 0.0:
-            note = "XP only" if u.get("buff") == "wisdom" else "loot only"
+            note = _LOOT_OR_XP_BUFFS.get(u.get("buff"), "nobody is at the cap")
             if u.get("at_cap"):
                 note = "at the level cap"
             rows.append(
@@ -1713,6 +1751,8 @@ def _render_shrines_section(week: dict) -> str:
                 f"<td>{html.escape(u.get('buff') or '?')}</td>"
                 f"<td class=num>{u.get('from_level', 0)}</td>"
                 f"<td class=num>{_gp(u.get('next_level_cost'))}</td>"
+                f"<td class=num>0</td>"
+                f"<td class=num>&mdash;</td>"
                 f"<td class=num>&mdash;</td>"
                 f"<td class=num>{note}</td>"
                 "</tr>"
@@ -1724,7 +1764,10 @@ def _render_shrines_section(week: dict) -> str:
             f"<td>{html.escape(u.get('buff') or '?')}</td>"
             f"<td class=num>{u.get('from_level', 0)}</td>"
             f"<td class=num>{_gp(u.get('next_level_cost'))}</td>"
+            f"<td class=num>0</td>"
             f"<td class=num>+{_cp(gain)}</td>"
+            f"<td class=num>{u.get('members_at_cap', 0)} of "
+            f"{u.get('members_seated', 0)}</td>"
             f"<td class=num><strong>{_payback(u.get('weeks_to_return'))}</strong></td>"
             "</tr>"
         )
@@ -1733,39 +1776,109 @@ def _render_shrines_section(week: dict) -> str:
     <div class="scroll">
       <table>
         <thead><tr>
-          <th>Shrine</th><th>Buff</th><th class=num>Level</th>
-          <th class=num>Next level (gp)</th><th class=num>Gain/week</th>
+          <th>Shrine</th><th>Buff</th><th class=num>Cap</th>
+          <th class=num>Next level (gp)</th><th class=num>Gain on the day</th>
+          <th class=num>Gain/week at full adoption</th>
+          <th class=num>Members it reaches</th>
           <th class=num>Weeks to repay</th>
         </tr></thead>
         <tbody>{"".join(rows)}</tbody>
       </table>
     </div>""" if rows else ""
 
+    # The free table. Ranked by what it is worth, descending, because unlike the
+    # upgrade table there is no cost to trade against — the only question is size.
+    adopt_rows = []
+    for a in sorted(adoption, key=lambda a: -(a.get("points_gained") or 0.0)):
+        gain = a.get("points_gained") or 0.0
+        below = a.get("members_below_cap") or 0
+        cls = "" if gain > 0 else " class=dim"
+        if gain > 0:
+            worth = f"+{_cp(gain)}"
+        elif a.get("buff") in _LOOT_OR_XP_BUFFS:
+            # The currency check comes FIRST. Rarity's cap is 0 on both guilds, so
+            # "nobody is below it" is true and would otherwise be printed instead of
+            # the actual reason it is worth nothing here — it buys rare finds, which
+            # the tier race never reads. The reader must not be left to infer which.
+            worth = _LOOT_OR_XP_BUFFS[a.get("buff")]
+        elif below == 0:
+            worth = "everyone is at the cap"
+        else:
+            worth = "nothing measurable"
+        adopt_rows.append(
+            f"<tr{cls}>"
+            f"<th>{html.escape(a.get('name') or a.get('shrine') or '?')}</th>"
+            f"<td>{html.escape(a.get('buff') or '?')}</td>"
+            f"<td class=num>{a.get('cap', 0)}</td>"
+            f"<td class=num>{a.get('mean_level', 0.0):.2f}</td>"
+            f"<td class=num>{below} of {a.get('members_seated', 0)}</td>"
+            f"<td class=num>{a.get('levels_unbought', 0)}</td>"
+            f"<td class=num><strong>{worth}</strong></td>"
+            "</tr>"
+        )
+
+    adopt_table = f"""
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Shrine</th><th>Buff</th><th class=num>Guild cap</th>
+          <th class=num>Mean level held</th><th class=num>Below the cap</th>
+          <th class=num>Levels unbought</th>
+          <th class=num>Worth/week, at zero guild cost</th>
+        </tr></thead>
+        <tbody>{"".join(adopt_rows)}</tbody>
+      </table>
+    </div>""" if adopt_rows else ""
+
     built = ", ".join(
         f"<strong>{html.escape(config.GUILD_SHRINE_NAMES.get(k, k))} lv {lv}</strong>"
         for k, lv in levels.items() if lv
     ) or "none built"
+    capped = ", ".join(
+        f"<strong>{html.escape(config.GUILD_SHRINE_NAMES.get(k, k))} {lv}</strong>"
+        for k, lv in caps.items() if lv
+    ) or "nothing bought"
 
     return f"""
   <section class="card" id="shrines-section">
-    <h2>Guild shrines &mdash; the buff every member carries into every trial</h2>
+    <h2>Guild shrines &mdash; the level the guild buys is a <em>cap</em>, not a gift</h2>
     <p class="meta">Since the 2026-08-11 patch the shrine buffs apply inside guild
-       trials, so every member of every party this week runs with
+       trials. But the guild&rsquo;s shrine level does not hand anybody anything: it
+       sets the <strong>ceiling</strong>, and each member then spends their own
+       resources to actually take the level. This week&rsquo;s caps: {capped}. A
+       member whose own purchase the roster does not report is modelled at the
+       guild-wide fallback ({built}), which contributes
        <code>+{efficiency * 100:.1f}%</code> efficiency and
-       <code>+{speed * 100:.1f}%</code> action speed on top of their own gear and house.
-       Levels in place: {built}. Unlike a guild building, which grants skill levels in
-       <em>one</em> skill and therefore earns nothing in the weeks that skill is not
-       drawn, a shrine pays in <strong>all four trials, every week</strong> &mdash; so
-       the payback below carries no draw-frequency discount.</p>
-    <p class="meta">And yet the verdict is that <strong>buildings dominate shrines as an
-       investment</strong>. The shrine guild-point ladder is exactly <em>double</em> the
-       buildings' at every level, while the measured effect of one level is a fraction of
-       a tier spread across four parties, so the payback runs far longer than any
-       building's on this page. The gain is only priceable at all because of partial-tier
-       credit: under the old step objective one shrine level almost never crossed a tier
-       boundary anywhere, so it scored exactly zero in every trial and the upgrade could
-       not be valued. Parties are held fixed here, exactly as in the buildings' table, so
-       each gain is a lower bound and each payback an upper bound.</p>{table}
+       <code>+{speed * 100:.1f}%</code> action speed &mdash; most members are well
+       above that, and a few are below it.</p>
+    <p class="meta"><strong>Which makes the first table the one to read.</strong> The
+       guild has already paid for headroom its members have not taken up, and closing
+       that gap costs the guild <em>nothing</em> &mdash; no guild points, no vote, no
+       waiting, and it pays this week rather than in a thousand. Every level in the
+       &ldquo;levels unbought&rdquo; column is a rate increase already unlocked and
+       sitting there. It is not always the <em>larger</em> of the two numbers on this
+       card; it is the one that costs nothing, which is a different and better
+       reason to do it first.</p>{adopt_table}
+    <p class="meta">The second table prices the other question: what would
+       <em>raising the cap</em> buy? Nothing at all on the day it completes &mdash;
+       that is the <code>0</code> column, and it is arithmetic rather than a
+       measurement, because a cap raise changes no member&rsquo;s stats until they
+       buy in. The gain quoted beside it assumes <strong>full adoption</strong> by
+       the members already at today&rsquo;s cap (the only ones a raise can reach at
+       all), so it is a best case on top of a best case. Unlike a guild building,
+       which grants skill levels in <em>one</em> skill and therefore earns nothing in
+       the weeks that skill is not drawn, a shrine pays in <strong>all four trials,
+       every week</strong>, so the payback carries no draw-frequency discount.</p>
+    <p class="meta">And yet the verdict is still that <strong>buildings dominate
+       shrines as an investment</strong>. The shrine guild-point ladder is exactly
+       <em>double</em> the buildings&rsquo; at every level, while the measured effect
+       of one level is a fraction of a tier spread across four parties, so the
+       payback runs far longer than any building&rsquo;s on this page. The gain is
+       only priceable at all because of partial-tier credit: under the old step
+       objective one shrine level almost never crossed a tier boundary anywhere, so
+       it scored exactly zero in every trial and the upgrade could not be valued.
+       Parties are held fixed in both tables, exactly as in the buildings&rsquo;
+       table, so each gain is a lower bound and each payback an upper bound.</p>{table}
   </section>
 """
 
@@ -4083,6 +4196,7 @@ def _compute_unit(job: dict) -> dict:
     skills = job["skills"]
     min_levels = job["min_levels"]
     cap = job["cap"]
+    shrine_caps = job["shrine_caps"]
 
     ladder: dict = {}
     if level is None:
@@ -4094,17 +4208,20 @@ def _compute_unit(job: dict) -> dict:
         # processes.
         if config.TRIALS_BUFF_LEVEL_SLIDER:
             week, rungs = trials_model.run_week_ladder(
-                members, skills=skills, cap=cap, min_levels=min_levels
+                members, skills=skills, cap=cap, min_levels=min_levels,
+                shrine_caps=shrine_caps,
             )
             ladder = {str(k): v.to_dict() for k, v in rungs.items()}
         else:
             week = trials_model.run_week(
-                members, skills=skills, cap=cap, min_levels=min_levels
+                members, skills=skills, cap=cap, min_levels=min_levels,
+                shrine_caps=shrine_caps,
             )
     else:
         with trials_model.community_buff_level(level):
             week = trials_model.run_week(
-                members, skills=skills, cap=cap, min_levels=min_levels
+                members, skills=skills, cap=cap, min_levels=min_levels,
+                shrine_caps=shrine_caps,
             )
 
     out: dict = {"week": week.to_dict(), "ladder": ladder}
@@ -4376,8 +4493,10 @@ def _unit_jobs(site: "GuildSite", inputs: _GuildInputs, week_draw) -> list[dict]
         # THIS guild's seat cap (config.TRIAL_PARTY_CAPS), resolved here in the
         # parent and shipped with the job rather than looked up in the child: the
         # unit is plain data by contract, and a child re-deriving it from a key
-        # would be a second place for the mapping to be read.
+        # would be a second place for the mapping to be read. Same contract, same
+        # reason, for the shrine caps.
         "cap": site.party_cap,
+        "shrine_caps": site.shrine_caps,
     }
     jobs = [{**common, "level": None, "picks": inputs.picks}]
     if config.TRIALS_PUBLISH_MAXBUFF_PAGE:

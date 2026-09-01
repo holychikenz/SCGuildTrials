@@ -1734,6 +1734,10 @@ def test_the_compute_unit_plans_at_the_guilds_own_cap():
     ``_unit_jobs`` resolves each guild's cap in the parent and ``_compute_unit``
     hands it to ``run_week``; if either link is dropped the week silently
     reverts to config.TRIAL_PARTY_CAP and only SC's page would be wrong.
+
+    The shrine caps ride the same contract for the same reason (R7), and are
+    checked the same way: they are resolved in the parent, shipped as data, and
+    must arrive in the WeekResult rather than being re-derived in the child.
     """
     from src import build
 
@@ -1745,12 +1749,14 @@ def test_the_compute_unit_plans_at_the_guilds_own_cap():
             "skills": ["Foraging"],
             "min_levels": {},
             "cap": site.party_cap,
+            "shrine_caps": site.shrine_caps,
             "level": 1,
             "picks": None,
         }
         out = build._compute_unit(job)
         assert out["week"]["cap"] == site.party_cap
         assert len(out["week"]["trials"][0]["roster"]) <= site.party_cap
+        assert out["week"]["guild_shrine_caps"] == config.shrine_caps(site.key)
 
 
 # ===========================================================================
@@ -2084,3 +2090,201 @@ def test_member_shrine_overrides_price_a_hypothetical_without_mutating():
     speed, efficiency = trials.member_shrine_bonuses(m, {"force": 4, "tempo": 4})
     assert efficiency == pytest.approx(4 * per)
     assert m.shrine_levels == {"force": 2, "tempo": 2}
+
+
+# --- R7: the shrine probes, under the corrected mechanic --------------------
+# The guild's shrine level is a CAP, not a grant, so "one more level" and "the
+# headroom already paid for" are two different questions with two different
+# answers, and the probe that used to conflate them reported the wrong one.
+def _probe_party(levels):
+    """Four members per trial, each carrying ``levels`` as their own purchase."""
+    party = [
+        _roster_member(name=f"p{i}", level=110 + i, shrines=dict(levels))
+        for i in range(4)
+    ]
+    return {"Milking": party[:2], "Cooking": party[2:]}
+
+
+_PROBE_SKILLS = ["Milking", "Cooking"]
+_CAPS = {"force": 4, "tempo": 4, "spirit": 2, "rarity": 0, "scholar": 2}
+
+
+def test_probe_shrine_upgrade_immediate_gain_is_zero():
+    """BY CONSTRUCTION, for every shrine, at every mix of member levels.
+
+    Not an observation that happened to come out at zero: raising a cap changes no
+    member's stats until each of them spends their own resources, so the field is a
+    literal 0.0 and this test exists to keep it one. The mixes below include the
+    case where EVERY member sits at the cap — the only case in which a cap raise
+    reaches anybody at all — precisely because that is where a "gain on the day"
+    would show up if one had crept in.
+    """
+    for levels in ({}, {"force": 0, "tempo": 0}, {"force": 4, "tempo": 4},
+                   {"force": 2, "tempo": 4}):
+        parties = _probe_party(levels)
+        for shrine in config.GUILD_SHRINE_SKILLING_BUFFS:
+            u = trials.probe_shrine_upgrade(
+                parties, _PROBE_SKILLS, shrine, caps=_CAPS
+            )
+            assert u.points_gained_immediate == 0.0, (shrine, levels)
+
+
+def test_probe_shrine_upgrade_moves_only_members_at_the_cap():
+    """A member BELOW the cap gains nothing from raising it — they had room already.
+
+    Two parties differing only in how many members sit at the cap. The gain must
+    scale with that count, and a party with nobody at the cap must gain exactly
+    nothing: the ceiling rose over an empty room.
+    """
+    at_cap = trials.probe_shrine_upgrade(
+        _probe_party({"force": 4, "tempo": 4}), _PROBE_SKILLS, "force", caps=_CAPS
+    )
+    below = trials.probe_shrine_upgrade(
+        _probe_party({"force": 2, "tempo": 4}), _PROBE_SKILLS, "force", caps=_CAPS
+    )
+    assert at_cap.members_at_cap == 4 and at_cap.members_seated == 4
+    assert below.members_at_cap == 0 and below.members_seated == 4
+    assert at_cap.points_gained_at_full_adoption > 0.0
+    assert below.points_gained_at_full_adoption == 0.0
+    assert below.credit_points_after == below.credit_points_now
+    # And the payback follows the gain: no gain, no payback to quote.
+    assert below.weeks_to_return is None
+    assert at_cap.weeks_to_return is not None
+
+
+def test_probe_shrine_adoption_counts_members_below_the_cap():
+    """The headroom probe: what is already unlocked and unbought.
+
+    Live figures this mirrors: SC's cap is 4 with 54 of 107 members below it on
+    force; LI's is 3 with 49 of 105 below (research §4).
+    """
+    parties = _probe_party({"force": 1, "tempo": 4})
+    a = trials.probe_shrine_adoption(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert a.cap == 4
+    assert a.members_seated == 4
+    assert a.members_below_cap == 4
+    assert a.levels_unbought == 4 * (4 - 1)
+    assert a.mean_level == 1.0
+    assert a.points_gained > 0.0
+    assert a.cost_to_guild == 0
+
+    # Nobody below the cap: nothing to buy, and no counterfactual to price.
+    full = trials.probe_shrine_adoption(
+        _probe_party({"force": 4, "tempo": 4}), _PROBE_SKILLS, "force", caps=_CAPS
+    )
+    assert full.members_below_cap == 0
+    assert full.levels_unbought == 0
+    assert full.points_gained == 0.0
+    assert full.credit_points_at_cap is None
+
+
+def test_adoption_beats_the_cap_raise_on_a_party_below_the_cap():
+    """And, on a party AT the cap, it is the other way round — which is the point.
+
+    The page publishes adoption first because it is FREE, not because it is always
+    bigger, and this test pins both halves of that so the page copy cannot drift
+    into the stronger claim. Measured live on Force (research §4): SC's headroom is
+    worth +1.658 against a cap raise's +0.501, but LI's is +0.861 against +1.078 —
+    the cap raise wins on size there and still loses, because it costs 2450 guild
+    points and repays them in ~2270 weeks while the other costs nothing.
+    """
+    below = _probe_party({"force": 1, "tempo": 4})
+    assert trials.probe_shrine_adoption(
+        below, _PROBE_SKILLS, "force", caps=_CAPS).points_gained > \
+        trials.probe_shrine_upgrade(
+            below, _PROBE_SKILLS, "force", caps=_CAPS
+        ).points_gained_at_full_adoption
+
+    at_cap = _probe_party({"force": 4, "tempo": 4})
+    a = trials.probe_shrine_adoption(at_cap, _PROBE_SKILLS, "force", caps=_CAPS)
+    u = trials.probe_shrine_upgrade(at_cap, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert a.points_gained == 0.0            # no headroom left to take up
+    assert u.points_gained_at_full_adoption > 0.0
+    assert a.cost_to_guild == 0 and u.next_level_cost > 0
+    assert u.points_gained_immediate == 0.0
+
+
+def test_the_loot_and_xp_shrines_are_priced_at_nothing_by_BOTH_probes():
+    """Rarity, Spirit and Scholar do not feed the race, at any level, either way."""
+    parties = _probe_party({"force": 1, "tempo": 1, "spirit": 0, "scholar": 0})
+    for shrine in ("rarity", "spirit", "scholar"):
+        u = trials.probe_shrine_upgrade(
+            parties, _PROBE_SKILLS, shrine, caps=_CAPS)
+        a = trials.probe_shrine_adoption(
+            parties, _PROBE_SKILLS, shrine, caps=_CAPS)
+        assert u.points_gained_at_full_adoption == 0.0, shrine
+        assert u.credit_points_after is None, shrine
+        assert a.points_gained == 0.0, shrine
+        assert a.credit_points_at_cap is None, shrine
+
+
+def test_neither_probe_mutates_the_members_it_prices():
+    """Both price a hypothetical by handing simulate_race REPLACEMENT rows.
+
+    The rebinding trick this replaced overwrote config.GUILD_SHRINE_LEVELS and put
+    it back in a finally; that worked but could only express a guild-wide
+    hypothetical, which is exactly the one the corrected mechanic says is wrong.
+    """
+    parties = _probe_party({"force": 1, "tempo": 2})
+    before = [dict(m.shrine_levels) for m in parties["Milking"] + parties["Cooking"]]
+    saved = dict(config.GUILD_SHRINE_LEVELS)
+    trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    trials.probe_shrine_adoption(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    after = [dict(m.shrine_levels) for m in parties["Milking"] + parties["Cooking"]]
+    assert before == after
+    assert config.GUILD_SHRINE_LEVELS == saved
+
+
+def test_probe_caps_default_to_the_modelled_guild_map():
+    """caps=None means the modelled guild-wide levels, which is what it meant before.
+
+    A caller naming no guild has no roster and therefore no observed maximum, so
+    config.GUILD_SHRINE_LEVELS is the only reading available — and it is exactly the
+    map probe_shrine_upgrade read before R7. This is what keeps
+    tests/test_roster.py's golden week reproducible.
+    """
+    parties = _probe_party({})
+    u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force")
+    assert u.from_level == trials.guild_shrine_level("force")
+    a = trials.probe_shrine_adoption(parties, _PROBE_SKILLS, "force")
+    assert a.cap == trials.guild_shrine_level("force")
+    # Every member falls back to the guild level, so all of them sit AT that cap.
+    assert a.members_below_cap == 0
+    assert u.members_at_cap == u.members_seated == 4
+
+
+def test_member_shrine_level_is_the_one_resolution_rule():
+    """The probes and member_shrine_bonuses must agree on "what level is this?"."""
+    m = _roster_member(shrines={"tempo": 4})       # force absent
+    assert trials.member_shrine_level(m, "tempo") == 4
+    assert trials.member_shrine_level(m, "force") == \
+        trials.guild_shrine_level("force")
+    clamped = _roster_member(name="c", shrines={"force": 999})
+    assert trials.member_shrine_level(clamped, "force") == \
+        config.GUILD_SHRINE_MAX_LEVEL
+
+
+def test_shrine_caps_are_configured_per_guild_and_refuse_a_typo():
+    """Both live guilds, and a KeyError rather than a silent other-guild answer."""
+    assert config.shrine_caps("sc")["force"] == 4
+    assert config.shrine_caps("li")["force"] == 3
+    assert set(config.shrine_caps("sc")) == set(config.GUILD_SHRINE_SKILLING_BUFFS)
+    assert set(config.shrine_caps("li")) == set(config.GUILD_SHRINE_SKILLING_BUFFS)
+    with pytest.raises(KeyError):
+        config.shrine_caps("scc")
+
+
+def test_a_cap_below_the_guild_fallback_still_prices_the_first_level():
+    """The rarity row on both live guilds: cap 0, because nobody has bought one.
+
+    An observed per-member maximum is a FLOOR on the cap, not a measurement of it —
+    where nobody has bought anything the floor is 0 and the true cap is unknown. The
+    probe must handle that without dividing by anything or claiming a gain.
+    """
+    parties = _probe_party({"rarity": 0})
+    u = trials.probe_shrine_upgrade(
+        parties, _PROBE_SKILLS, "rarity", caps={"rarity": 0})
+    assert u.from_level == 0
+    assert u.next_level_cost == config.GUILD_SHRINE_POINT_COSTS[1]
+    assert u.points_gained_immediate == 0.0
+    assert u.points_gained_at_full_adoption == 0.0

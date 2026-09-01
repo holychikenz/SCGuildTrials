@@ -1437,18 +1437,41 @@ GUILD_SHRINE_SKILLING_BUFFS = {
     "scholar": ("wisdom", 0.005, None),
 }
 GUILD_SHRINE_MAX_LEVEL = 20
-# Live levels (guild_updated capture 2026-07-22, Survey Corps id 4): the guild's
-# guildBuildingLevelMap holds "/guild_shrines/force": 1 and "/guild_shrines/tempo": 1
-# and nothing else. ONE map serves both guilds, exactly as GUILD_BUILDING_LEVELS does
-# and with the same caveat: split it per guild the moment SC and LI diverge.
+
+# --- The mechanic, ANSWERED 2026-08-31; and why there are now TWO maps -------
+# The open question that stood here — does the shrine LEVEL the guild buys with
+# guild points multiply a member's stats, or the separately-bought BUFF level? —
+# is CLOSED, and the answer is neither alone: **the guild's shrine level is a CAP,
+# and each member's own purchase is what reaches the rate.** The scripted roster
+# tab carries that purchase per member (`shrine_<name>_skilling`), and the live
+# tabs settle it beyond argument: SC's members hold force levels 0..4 with a mean
+# of 2.99, against the flat 1 this map used to lend everybody. A single guild-wide
+# grant cannot produce a spread.
 #
-# OPEN QUESTION, recorded in research/guild-shrines.md §6: the shrine LEVEL (bought
-# with guild points, and what this map holds) and the BUFF level (bought with guild
-# tokens + credits, on each guildBuffDetailMap entry's own levelCosts ladder) are
-# separate. It is the buff level that ought to multiply the values above, and no
-# capture this repo holds records it. The patch's new [View Buffs] button is the
-# intended resolution. Until then this map is the best available reading and it errs
-# low, since the buff level cannot exceed the shrine level.
+# So the one map has become two, with two different jobs. Conflating them is the
+# mistake this comment exists to prevent, because both are "the guild's shrine
+# levels" in English and they are not the same number:
+#
+#   GUILD_SHRINE_LEVELS  the MODELLED guild-wide levels. Read by
+#                        trials.guild_shrine_level / guild_shrine_bonuses, which
+#                        serve exactly two callers: the ROLLBACK path
+#                        (ROSTER_USE_SHRINES = False restores the guild-wide read
+#                        and simulate_race's once-per-race hoist, bit-for-bit) and
+#                        the per-shrine FALLBACK for a member whose roster column
+#                        is blank. It stays at force 1 / tempo 1 — the 2026-07-22
+#                        guild_updated capture — because that is what makes the
+#                        rollback bit-identical, and because a blank column tells
+#                        us nothing about that member and reading it as "at the
+#                        cap" would be optimistic about the one case we cannot see.
+#
+#   GUILD_SHRINE_CAPS    the guild's CAP, per guild. Feeds the two page probes
+#                        (trials.probe_shrine_upgrade and probe_shrine_adoption)
+#                        and NOTHING in the rate model.
+#
+# NB the 2026-07-22 capture is therefore also stale AS A CAP: members are observed
+# at force 4 on SC, and a member cannot exceed the cap, so SC's shrine level has
+# risen to at least 4 since that capture. The caps below are the only current
+# evidence this repo holds.
 GUILD_SHRINE_LEVELS = {
     "force": 1,
     "tempo": 1,
@@ -1456,6 +1479,39 @@ GUILD_SHRINE_LEVELS = {
     "rarity": 0,
     "scholar": 0,
 }
+
+# Each guild's shrine CAP, derived from the observed per-member MAXIMUM on that
+# guild's roster tab (2026-09-01, SC 107 members / LI 105). A member cannot buy
+# past the cap, so the maximum is a FLOOR on it and not a measurement of it: where
+# nobody has bought anything the floor is 0 and the true cap is unknown, which is
+# exactly the rarity row on both guilds. The probes read that honestly — a cap of 0
+# prices the first level, which is the right question for an unbought shrine.
+#
+# Split per guild because SC and LI have diverged, which the old single map's own
+# comment named as the trigger for splitting it. Full distributions in
+# research/roster-as-primary-source.md §4.
+GUILD_SHRINE_CAPS = {
+    #        force  tempo  spirit  rarity  scholar
+    "sc": {"force": 4, "tempo": 4, "spirit": 2, "rarity": 0, "scholar": 2},
+    "li": {"force": 3, "tempo": 3, "spirit": 1, "rarity": 0, "scholar": 1},
+}
+
+
+def shrine_caps(guild: str) -> dict[str, int]:
+    """One guild's shrine caps ("sc" | "li").
+
+    Raises KeyError on an unknown key rather than falling back, for the same reason
+    :func:`party_cap` does: a typo'd guild key quietly pricing the other guild's
+    upgrade is the class of silent wrongness this repo keeps losing days to.
+    """
+    try:
+        return GUILD_SHRINE_CAPS[guild]
+    except KeyError:
+        raise KeyError(
+            f"no shrine caps configured for guild {guild!r}; "
+            f"known guilds: {sorted(GUILD_SHRINE_CAPS)}"
+        ) from None
+
 # Guild-point cost to REACH each shrine level (guildShrineDetailMap guildPointCosts,
 # verbatim; all five shrines share one ladder). Note it is exactly DOUBLE the
 # building ladder at every level — which, with the measured effect being a fraction

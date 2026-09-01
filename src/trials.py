@@ -47,9 +47,9 @@ from __future__ import annotations
 import contextlib
 import math
 import random
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from . import config
 from .reader import MemberRow, SheetStructureError
@@ -623,12 +623,7 @@ def member_shrine_bonuses(
     ):
         if channel is None:
             continue  # loot or XP: real, but not part of the tier race
-        if shrine in levels:
-            level = max(
-                0, min(config.GUILD_SHRINE_MAX_LEVEL, levels[shrine] or 0)
-            )
-        else:
-            level = guild_shrine_level(shrine)
+        level = _shrine_level_in(levels, shrine)
         if channel == "speed":
             speed += per_level * level
         elif channel == "efficiency":
@@ -638,6 +633,28 @@ def member_shrine_bonuses(
                 f"shrine {shrine!r} names an unknown model channel {channel!r}"
             )
     return speed, efficiency
+
+
+def _shrine_level_in(levels: dict[str, int], shrine: str) -> int:
+    """The level ``shrine`` sits at for a member whose own levels are ``levels``.
+
+    The member's own purchase where the roster reported one, the guild-wide map
+    where it did not — so a PARTIAL roster row degrades per shrine rather than per
+    member. Clamped either way, so a typo cannot inflate a rate.
+
+    Factored out of :func:`member_shrine_bonuses` because
+    :func:`probe_shrine_adoption` has to ask the same question — "what level is
+    this member actually on?" — and two readings of one resolution rule would
+    drift, in a place where the drift would show up as a plausible number.
+    """
+    if shrine in levels:
+        return max(0, min(config.GUILD_SHRINE_MAX_LEVEL, levels[shrine] or 0))
+    return guild_shrine_level(shrine)
+
+
+def member_shrine_level(member: MemberRow, shrine: str) -> int:
+    """The level ``shrine`` grants THIS member — their purchase, or the guild map."""
+    return _shrine_level_in(member.shrine_levels, shrine)
 
 
 def _resolve_shrine(member: MemberRow) -> tuple[float, float]:
@@ -1910,27 +1927,139 @@ class ShrineUpgrade:
     are. They are still a poor buy — see the fields — but they deserve the honest
     number.
 
-    ``points_gained`` is in CREDIT points, which is the only currency in which this
+    Both point figures are in CREDIT points, which is the only currency in which this
     question has an answer at all: before partial-tier credit, one shrine level almost
     never crossed a tier boundary anywhere, so the gain was exactly zero in every
     trial and the upgrade was unpriceable.
+
+    RE-SPECIFIED 2026-09-01 (plan §5.5), because the corrected mechanic INVERTS what
+    this class used to claim. It reported one ``points_gained``, computed by giving
+    every member the extra level at once, and its docstring called that a LOWER bound
+    on the benefit. Under a cap it is the opposite — a CEILING, and a distant one:
+    raising the cap changes no member's stats on the day it completes, because each
+    member still has to spend their own resources to take the level. The page was
+    quoting a payback period for a purchase with no effect. So the one number becomes
+    two, and neither of them is a lower bound:
+
+      * ``points_gained_immediate`` is **0.0, by construction** — not measured, not
+        rounded down to zero, but the arithmetic consequence of the cap being a cap.
+        Saying that plainly is more use than any payback figure.
+      * ``points_gained_at_full_adoption`` is the ceiling: what the week scores if
+        every member who is ALREADY AT the cap takes one more level. Members below
+        the cap are excluded because they gain nothing from a cap raise — they
+        already have room, which is what :func:`probe_shrine_adoption` is about.
+
+    ``weeks_to_return`` is quoted against the ceiling, and is therefore a BEST case
+    on top of a best case: it assumes total adoption, instantly, for free.
     """
 
     shrine: str              # config key, e.g. "force"
     name: str                # in-game display name, e.g. "Shrine of Force"
     buff: str                # in-game buff type, e.g. "efficiency"
-    from_level: int
+    from_level: int          # the GUILD'S CAP for this shrine (config.shrine_caps)
+    # True when there is no next level to buy — the shrine is at the GAME's maximum,
+    # config.GUILD_SHRINE_MAX_LEVEL. NB not "at the guild's cap": the guild's cap IS
+    # from_level, and every level of it is already bought.
     at_cap: bool
     next_level_cost: Optional[int]     # gp for ONE more level (None at the cap)
     speed_now: float                   # this shrine's own contribution today
     efficiency_now: float
     credit_points_now: float           # week total, at today's shrine levels
-    credit_points_after: Optional[float]   # week total with one more level
-    points_gained: float               # summed across the week's drawn trials
+    credit_points_after: Optional[float]   # week total at full adoption of +1
+    members_at_cap: int      # how many seated members the raise could reach at all
+    members_seated: int      # denominator for the above
+    points_gained_immediate: float     # 0.0. Always. By construction.
+    points_gained_at_full_adoption: float   # summed across the week's drawn trials
     weeks_to_return: Optional[float]   # cost / gain — every week, not every 2.5
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class ShrineAdoption:
+    """What is ALREADY UNLOCKED AND UNBOUGHT — the headroom under the guild's cap.
+
+    The mirror of :class:`ShrineUpgrade`, and the more actionable of the two. The
+    upgrade probe asks "what would another guild-point purchase buy?"; this asks
+    "what would cost the guild nothing at all?" — because the guild's shrine level
+    is a cap and a member below it can raise their own rate today, for no guild
+    spend whatsoever.
+
+    NOT NECESSARILY THE LARGER NUMBER, and the claim must not be inflated into that.
+    Measured 2026-09-01 on Force: SC's headroom is worth +1.658 credit points a week
+    against +0.501 for a cap raise, but LI's is +0.861 against +1.078 — there the cap
+    raise is bigger. It still loses, because it costs 2450 guild points and repays
+    them in ~2270 weeks while this costs nothing and pays this week. The advantage is
+    price and immediacy, not magnitude.
+
+    The model could not previously see this question. It held every member at level
+    1, so there was no such thing as a member below the cap.
+
+    ``points_gained`` holds the parties FIXED, exactly as the upgrade probe does, so
+    it is a lower bound on the benefit and the number to quote as "at least".
+    """
+
+    shrine: str
+    name: str
+    buff: str
+    cap: int                 # the guild's cap for this shrine
+    members_seated: int
+    members_below_cap: int   # how many could buy a level today
+    levels_unbought: int     # summed gap to the cap over those members
+    mean_level: float        # what the seated members actually hold on average
+    credit_points_now: float
+    credit_points_at_cap: Optional[float]   # every member moved UP TO the cap
+    points_gained: float
+    cost_to_guild: int = 0   # zero, and the reason this probe leads the section
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _week_credit(
+    parties: dict[str, list[MemberRow]],
+    skills: list[str],
+    target_scale: float,
+    remap: Optional[Callable[[MemberRow], MemberRow]] = None,
+) -> float:
+    """The week's summed credit points, optionally over rewritten members.
+
+    ``remap`` returns a REPLACEMENT MemberRow per member, which is how both shrine
+    probes price a hypothetical: they hand ``simulate_race`` members whose
+    ``shrine_levels`` say something else, and nothing global is touched.
+
+    THAT REPLACES A REBINDING TRICK, and the replacement is not cosmetic.
+    ``probe_shrine_upgrade`` used to temporarily overwrite
+    ``config.GUILD_SHRINE_LEVELS`` and re-race, which expressed "every member
+    instantly gains the level" — the exact hypothetical the corrected mechanic says
+    is wrong. Under a cap the hypothetical has to be per member, and the config map
+    cannot express a per-member anything.
+
+    ``dataclasses.replace`` is a shallow copy: the ``skills`` dict is shared, so the
+    levels, houses, checkboxes and roster tools every other term reads are the SAME
+    objects and the arithmetic is bit-identical outside the shrine channel.
+    """
+    if remap is None:
+        return sum(
+            simulate_race(parties[s], s, target_scale).credit_points for s in skills
+        )
+    return sum(
+        simulate_race([remap(m) for m in parties[s]], s, target_scale).credit_points
+        for s in skills
+    )
+
+
+def _seated(parties: dict[str, list[MemberRow]], skills: list[str]):
+    """Every member seated this week, in party order, with duplicates kept.
+
+    A member appears once per trial they are seated in — which for the shipped
+    parties is exactly once, since a member cannot be in two trials. Counting over
+    seats rather than over names is deliberate: the probes price the WEEK, and a
+    member seated twice would contribute twice to it.
+    """
+    for skill in skills:
+        yield from parties[skill]
 
 
 def probe_shrine_upgrade(
@@ -1938,12 +2067,20 @@ def probe_shrine_upgrade(
     skills: list[str],
     shrine: str,
     target_scale: Optional[float] = None,
+    caps: Optional[dict[str, int]] = None,
 ) -> ShrineUpgrade:
-    """Price one more level of ``shrine`` against the whole week's drawn trials.
+    """Price one more level of ``shrine``'s CAP against the whole week's draw.
 
-    The parties are held FIXED, exactly as :func:`probe_building_upgrade` holds them,
-    so the gain is a LOWER bound on the benefit (a stronger buff might also let the
-    optimizer reshuffle) and the payback an upper bound on the wait.
+    Two numbers, for the reason :class:`ShrineUpgrade` sets out: ``0.0`` on the day
+    the purchase completes, and a full-adoption ceiling that moves only the members
+    already sitting AT the cap. The parties are held fixed, exactly as
+    :func:`probe_building_upgrade` holds them.
+
+    ``caps`` is the guild's own cap map (``config.shrine_caps``); None falls back to
+    the modelled guild-wide ``config.GUILD_SHRINE_LEVELS``, which is what a caller
+    naming no guild has to mean — with no guild there is no roster and therefore no
+    observed maximum, so the modelled map is the only reading available, and it is
+    exactly what this probe priced before R7.
 
     Returns a zero-gain entry for a shrine that does not feed the race at all
     (Rarity/Spirit/Scholar), so the page can show that it was considered and priced at
@@ -1951,11 +2088,13 @@ def probe_shrine_upgrade(
     """
     if target_scale is None:
         target_scale = config.TARGET_SCALE
+    if caps is None:
+        caps = config.GUILD_SHRINE_LEVELS
 
     buff, per_level, channel = config.GUILD_SHRINE_SKILLING_BUFFS.get(
         shrine, ("unknown", 0.0, None)
     )
-    from_level = guild_shrine_level(shrine)
+    from_level = max(0, min(config.GUILD_SHRINE_MAX_LEVEL, caps.get(shrine) or 0))
     at_cap = from_level >= config.GUILD_SHRINE_MAX_LEVEL
     speed_now, efficiency_now = (
         (per_level * from_level, 0.0) if channel == "speed"
@@ -1963,32 +2102,25 @@ def probe_shrine_upgrade(
         else (0.0, 0.0)
     )
 
-    def week_total(levels: Optional[dict[str, int]]) -> float:
-        # simulate_race resolves the shrine itself, so the hypothetical is applied by
-        # temporarily overriding the level map — the same trick probe_building_upgrade
-        # avoids by threading an override, but here the buff is guild-wide rather than
-        # per-skill and threading it would touch every call site for a dev-only number.
-        if levels is None:
-            return sum(
-                simulate_race(parties[s], s, target_scale).credit_points
-                for s in skills
-            )
-        saved = config.GUILD_SHRINE_LEVELS
-        try:
-            config.GUILD_SHRINE_LEVELS = {**saved, **levels}
-            return sum(
-                simulate_race(parties[s], s, target_scale).credit_points
-                for s in skills
-            )
-        finally:
-            config.GUILD_SHRINE_LEVELS = saved
+    seats = list(_seated(parties, skills))
+    at_the_cap = [m for m in seats if member_shrine_level(m, shrine) >= from_level]
 
-    now = week_total(None)
+    def raise_those_at_the_cap(member: MemberRow) -> MemberRow:
+        """Members AT the cap take one more level; everybody else is untouched."""
+        level = member_shrine_level(member, shrine)
+        if level < from_level:
+            return member
+        return replace(
+            member,
+            shrine_levels={**member.shrine_levels, shrine: level + 1},
+        )
+
+    now = _week_credit(parties, skills, target_scale)
     after: Optional[float] = None
     gained = 0.0
     cost = None if at_cap else guild_shrine_upgrade_cost(from_level + 1)
     if channel is not None and not at_cap:
-        after = week_total({shrine: from_level + 1})
+        after = _week_credit(parties, skills, target_scale, raise_those_at_the_cap)
         gained = after - now
 
     return ShrineUpgrade(
@@ -2002,9 +2134,76 @@ def probe_shrine_upgrade(
         efficiency_now=efficiency_now,
         credit_points_now=now,
         credit_points_after=after,
-        points_gained=gained,
+        members_at_cap=len(at_the_cap),
+        members_seated=len(seats),
+        # NOT a measurement. A cap raise changes no member's stats until each of them
+        # spends their own resources, so this is 0.0 as a matter of arithmetic, and
+        # tests/test_trials.py pins it by construction rather than by observation.
+        points_gained_immediate=0.0,
+        points_gained_at_full_adoption=gained,
         # weeks_between_draws=1.0: a shrine pays every week, in every trial.
         weeks_to_return=upgrade_payback_weeks(cost, gained, 1.0),
+    )
+
+
+def probe_shrine_adoption(
+    parties: dict[str, list[MemberRow]],
+    skills: list[str],
+    shrine: str,
+    target_scale: Optional[float] = None,
+    caps: Optional[dict[str, int]] = None,
+) -> ShrineAdoption:
+    """How much of ``shrine`` is already unlocked and unbought, and what it is worth.
+
+    The headroom probe (plan §5.5), and the most actionable finding of the whole
+    roster change: on the live tabs 54 of 107 SC members and 49 of 105 LI members sit
+    BELOW their guild's force cap, so they can raise their own rate today at zero
+    guild spend. Every member is moved up TO the cap — not past it, which is what the
+    guild would have to buy — and the week is re-raced with the parties held fixed.
+
+    ``caps`` as in :func:`probe_shrine_upgrade`.
+    """
+    if target_scale is None:
+        target_scale = config.TARGET_SCALE
+    if caps is None:
+        caps = config.GUILD_SHRINE_LEVELS
+
+    buff, _per_level, channel = config.GUILD_SHRINE_SKILLING_BUFFS.get(
+        shrine, ("unknown", 0.0, None)
+    )
+    cap = max(0, min(config.GUILD_SHRINE_MAX_LEVEL, caps.get(shrine) or 0))
+
+    seats = list(_seated(parties, skills))
+    levels = [member_shrine_level(m, shrine) for m in seats]
+    below = [lv for lv in levels if lv < cap]
+
+    def take_it_to_the_cap(member: MemberRow) -> MemberRow:
+        level = member_shrine_level(member, shrine)
+        if level >= cap:
+            return member
+        return replace(
+            member, shrine_levels={**member.shrine_levels, shrine: cap}
+        )
+
+    now = _week_credit(parties, skills, target_scale)
+    at_cap: Optional[float] = None
+    gained = 0.0
+    if channel is not None and below:
+        at_cap = _week_credit(parties, skills, target_scale, take_it_to_the_cap)
+        gained = at_cap - now
+
+    return ShrineAdoption(
+        shrine=shrine,
+        name=config.GUILD_SHRINE_NAMES.get(shrine, shrine.title()),
+        buff=buff,
+        cap=cap,
+        members_seated=len(seats),
+        members_below_cap=len(below),
+        levels_unbought=sum(cap - lv for lv in below),
+        mean_level=(sum(levels) / len(levels)) if levels else 0.0,
+        credit_points_now=now,
+        credit_points_at_cap=at_cap,
+        points_gained=gained,
     )
 
 
@@ -2079,16 +2278,27 @@ class WeekResult:
     # would buy this week's trial another tier, what those levels cost in total,
     # and how long the spend takes to earn itself back.
     building_upgrades: list[BuildingUpgrade] = field(default_factory=list)
-    # The guild's shrine levels, and the (speed, efficiency) they grant every member in
-    # every trial since the 2026-08-11 patch. Recorded so the page states the
-    # assumption rather than hiding it, exactly as guild_building_levels does.
+    # The MODELLED guild-wide shrine levels, and the (speed, efficiency) they grant a
+    # member whose own purchase the roster did not report. Recorded so the page states
+    # the assumption rather than hiding it, exactly as guild_building_levels does. NB
+    # since the roster flip these are a FALLBACK, not what most members run on: the
+    # levels a member actually carries are per member, and guild_shrine_caps below is
+    # the ceiling on them. See config.GUILD_SHRINE_LEVELS.
     guild_shrine_levels: dict[str, int] = field(default_factory=dict)
     shrine_speed: float = 0.0
     shrine_efficiency: float = 0.0
-    # One entry per shrine: what ONE more level buys across the whole week, and how
-    # long that spend takes to pay for itself. Unlike the buildings, a shrine pays in
-    # every trial every week — see ShrineUpgrade.
+    # This guild's shrine CAPS (config.GUILD_SHRINE_CAPS), which is what the two
+    # probes below are asking about.
+    guild_shrine_caps: dict[str, int] = field(default_factory=dict)
+    # One entry per shrine: what raising the CAP by one buys across the whole week —
+    # nothing on the day, and a full-adoption ceiling thereafter — and how long that
+    # spend takes to pay for itself. Unlike the buildings, a shrine pays in every
+    # trial every week. See ShrineUpgrade.
     shrine_upgrades: list[ShrineUpgrade] = field(default_factory=list)
+    # One entry per shrine: how much of the cap the guild has ALREADY bought and its
+    # members have not, and what closing that gap is worth at zero guild spend. The
+    # more actionable of the two: free, and it pays this week. See ShrineAdoption.
+    shrine_adoption: list[ShrineAdoption] = field(default_factory=list)
     # Per-trial minimum sign-up level: what the officers have set, and what would
     # reproduce the model's own party. The lever that turns the model's bench into
     # something the game will enforce — see MinLevelAdvice.
@@ -2125,7 +2335,9 @@ class WeekResult:
             "guild_shrine_levels": self.guild_shrine_levels,
             "shrine_speed": self.shrine_speed,
             "shrine_efficiency": self.shrine_efficiency,
+            "guild_shrine_caps": self.guild_shrine_caps,
             "shrine_upgrades": [u.to_dict() for u in self.shrine_upgrades],
+            "shrine_adoption": [a.to_dict() for a in self.shrine_adoption],
             "min_levels": self.min_levels,
             "min_level_advice": [a.to_dict() for a in self.min_level_advice],
             "community_buff_level": self.community_buff_level,
@@ -2216,6 +2428,7 @@ def score_assignment(
     strategy: Optional[str] = None,
     min_levels: Optional[dict[str, Optional[int]]] = None,
     now: Optional[datetime] = None,
+    shrine_caps: Optional[dict[str, int]] = None,
 ) -> WeekResult:
     """Rate a FIXED set of parties. THE CHEAP HALF: ~2ms for the whole week.
 
@@ -2226,6 +2439,13 @@ def score_assignment(
 
     ``now`` pins ``generated_at``/``week_date`` so a whole ladder of results can
     carry ONE timestamp: they describe one build, not twenty.
+
+    ``shrine_caps`` is this guild's shrine cap map, read by the two shrine probes and
+    by nothing in the rate model. Passed as DATA rather than as a guild key, for the
+    reason ``build._unit_jobs`` gives for doing the same with ``cap``: a caller
+    re-deriving it from a key would be a second place for the mapping to be read.
+    None means "the modelled guild-wide levels", which is what a caller naming no
+    guild has to mean and is exactly what these probes used before R7.
 
     NOTE the seam this exposes. Re-scoring fixed parties under a different regime
     answers "what would THIS plan score there", which is a LOWER BOUND on "what is
@@ -2262,11 +2482,22 @@ def score_assignment(
         )
         for skill, result in zip(skills, trials)
     ]
-    # What the shrines grant today, and what one more level of each would buy across
-    # the whole week. Cheap: five shrines x four races, well outside the hot loop.
+    # What the shrines grant a member the roster did not report, what raising the cap
+    # by one would buy across the whole week, and — the actionable one — what the
+    # members already BELOW the cap could buy themselves for nothing. Cheap: ten
+    # probes x four races, well outside the hot loop.
     shrine_speed, shrine_efficiency = guild_shrine_bonuses()
+    caps = config.GUILD_SHRINE_LEVELS if shrine_caps is None else shrine_caps
     shrine_upgrades = [
-        probe_shrine_upgrade(assignment.parties, skills, shrine, target_scale)
+        probe_shrine_upgrade(
+            assignment.parties, skills, shrine, target_scale, caps
+        )
+        for shrine in config.GUILD_SHRINE_SKILLING_BUFFS
+    ]
+    shrine_adoption = [
+        probe_shrine_adoption(
+            assignment.parties, skills, shrine, target_scale, caps
+        )
         for shrine in config.GUILD_SHRINE_SKILLING_BUFFS
     ]
     now = datetime.now(timezone.utc) if now is None else now
@@ -2298,7 +2529,9 @@ def score_assignment(
         },
         shrine_speed=shrine_speed,
         shrine_efficiency=shrine_efficiency,
+        guild_shrine_caps=dict(caps),
         shrine_upgrades=shrine_upgrades,
+        shrine_adoption=shrine_adoption,
         min_levels=min_levels,
         min_level_advice=[
             advise_min_level(
@@ -2324,18 +2557,21 @@ def run_week(
     target_scale: Optional[float] = None,
     strategy: Optional[str] = None,
     min_levels: Optional[dict[str, Optional[int]]] = None,
+    shrine_caps: Optional[dict[str, int]] = None,
 ) -> WeekResult:
     """Assign parties and simulate all of this week's skilling trials.
 
     Unchanged in behaviour: :func:`choose_assignment` followed by
     :func:`score_assignment`, which is exactly what this function's body used to be
-    in one piece.
+    in one piece. ``shrine_caps`` only reaches the two page probes — see
+    :func:`score_assignment`.
     """
     assignment = choose_assignment(
         members, skills, seed, cap, target_scale, strategy, min_levels
     )
     return score_assignment(
-        assignment, members, skills, seed, cap, target_scale, strategy, min_levels
+        assignment, members, skills, seed, cap, target_scale, strategy, min_levels,
+        shrine_caps=shrine_caps,
     )
 
 
@@ -2348,6 +2584,7 @@ def run_week_ladder(
     strategy: Optional[str] = None,
     min_levels: Optional[dict[str, Optional[int]]] = None,
     levels: Optional[list[int]] = None,
+    shrine_caps: Optional[dict[str, int]] = None,
 ) -> tuple[WeekResult, dict[int, WeekResult]]:
     """ONE optimiser run, then that same plan rated at every community-buff level.
 
@@ -2375,7 +2612,8 @@ def run_week_ladder(
     )
     now = datetime.now(timezone.utc)
     args = (assignment, members, skills, seed, cap, target_scale, strategy, min_levels)
-    published = score_assignment(*args, now=now)
+    kwargs = {"now": now, "shrine_caps": shrine_caps}
+    published = score_assignment(*args, **kwargs)
     ladder: dict[int, WeekResult] = {published.community_buff_level: published}
     for level in levels:
         if level in ladder:
@@ -2385,5 +2623,5 @@ def run_week_ladder(
         # the loop. NB: never hand an optimizer.AssignmentScorer across this
         # boundary — its cache is keyed on the party alone and is regime-blind.
         with community_buff_level(level):
-            ladder[level] = score_assignment(*args, now=now)
+            ladder[level] = score_assignment(*args, **kwargs)
     return published, dict(sorted(ladder.items()))

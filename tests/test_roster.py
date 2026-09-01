@@ -408,6 +408,40 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
     with open(_GOLDEN_PATH, encoding="utf-8") as fh:
         expected = json.load(fh)
 
+    # R7 RE-SPECIFIED THE SHRINE PROBE AND ADDED A SECOND ONE, and the golden
+    # predates both. Reconciled the same way R4's additive member keys are above:
+    # every difference is ASSERTED to carry the pre-roster answer before it is
+    # stripped, so what the golden pins is not weakened by being brought forward.
+    #
+    # The corrected mechanic is that the guild's shrine level is a CAP and each
+    # member's own purchase is what reaches the rate. With the roster off no member
+    # carries a purchase, so every one of them falls back to the guild map — which
+    # means every member sits exactly AT the cap, nobody sits below it, and
+    # "raise the cap and let the members at it buy in" is precisely the old
+    # "give everybody the level at once". Hence the equalities below hold exactly.
+    seats = sum(len(t["roster"]) for t in got["trials"])
+    assert got.pop("guild_shrine_caps") == expected["guild_shrine_levels"]
+    for adopt in got.pop("shrine_adoption"):
+        assert adopt["members_seated"] == seats
+        assert adopt["members_below_cap"] == 0        # all on the guild fallback
+        assert adopt["levels_unbought"] == 0
+        assert adopt["points_gained"] == 0.0
+        assert adopt["credit_points_at_cap"] is None
+    for got_u, exp_u in zip(
+        got["shrine_upgrades"], expected["shrine_upgrades"], strict=True
+    ):
+        assert got_u["shrine"] == exp_u["shrine"]
+        assert got_u.pop("points_gained_immediate") == 0.0
+        assert got_u.pop("members_at_cap") == seats
+        assert got_u.pop("members_seated") == seats
+        # THE LOAD-BEARING EQUALITY: the re-specified full-adoption gain reproduces
+        # the old points_gained EXACTLY, not approximately. It is computed a
+        # different way — per-member replacement rows rather than a temporary
+        # rebinding of config.GUILD_SHRINE_LEVELS — so this is what proves the new
+        # arithmetic did not re-associate anything.
+        assert got_u.pop("points_gained_at_full_adoption") == \
+            exp_u.pop("points_gained"), got_u["shrine"]
+
     # LIBM IS NOT BIT-PORTABLE, AND ONE FIELD IS BUILT FROM IT.
     # Everything this golden exists to pin -- the parties the search chose, every
     # tier, every step point, credit_points, partial_fraction and the totals -- is

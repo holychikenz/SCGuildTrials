@@ -490,3 +490,111 @@ Fixed by pinning the constant inside the test, by name, at the value the golden 
 generated under — not by regenerating the golden and not by loosening a tolerance.
 The constant's own movement is checked where it belongs, in
 `tests/test_calibrate.py`.
+
+## 4. R7 — the shrine caps and the two probes, measured
+
+### 4.1 The caps, and why they are a FLOOR rather than a measurement
+
+Observed per-member maxima on the roster tabs, 2026-09-01 (SC 107 rows, LI 105):
+
+| shrine | SC cap | SC mean | SC distribution | LI cap | LI mean | LI distribution |
+|---|---|---|---|---|---|---|
+| force | **4** | 2.99 | 0:5, 1:13, 2:13, 3:23, 4:53 | **3** | 2.30 | 0:10, 1:5, 2:34, 3:56 |
+| tempo | **4** | 3.13 | 0:7, 1:6, 2:12, 3:23, 4:59 | **3** | 2.31 | 0:10, 1:7, 2:28, 3:60 |
+| spirit | **2** | 1.04 | 0:44, 1:15, 2:48 | **1** | 0.81 | 0:20, 1:85 |
+| scholar | **2** | 1.36 | 0:28, 1:12, 2:67 | **1** | 0.76 | 0:25, 1:80 |
+| rarity | **0** | 0.00 | 0:107 | **0** | 0.00 | 0:105 |
+
+A member cannot buy past the cap, so the maximum is a **floor** on it, not a
+measurement of it. Where nobody has bought anything the floor is 0 and the true cap
+is unknown — which is the rarity row on both guilds, and the probes say so by
+pricing the first level rather than by claiming the shrine is maxed.
+
+**The old single map was stale as a cap, not merely coarse.** `GUILD_SHRINE_LEVELS`
+carries force 1 / tempo 1 from a `guild_updated` capture of 2026-07-22. Members are
+observed at force 4 on SC and cannot exceed the cap, so SC's shrine level has risen
+to at least 4 since that capture. The caps above are the only current evidence this
+repo holds, and the spread in the distributions is by itself proof that the level is
+not a guild-wide grant: one grant cannot produce five different values.
+
+### 4.2 The plan met the real code badly here, and the split is three-way
+
+Plan §7 R7.1 says to "split `config.GUILD_SHRINE_LEVELS` per guild and re-point its
+meaning at the guild's cap". Done that way it would have been **wrong twice**:
+
+- `GUILD_SHRINE_LEVELS` still feeds the **rate model**, in two places the plan does
+  not mention — `ROSTER_USE_SHRINES = False` (the whole shrine rollback, which
+  restores `simulate_race`'s once-per-race hoist bit-for-bit) and the per-shrine
+  fallback for a member whose roster column is blank. Re-pointing it at the cap
+  would have moved both, and would have broken
+  `test_roster_disabled_reproduces_the_golden_week` — the rollback proof.
+- Reading a **blank** column as "at the cap" is optimistic about precisely the case
+  we cannot see. The conservative reading is the modelled level, which is also the
+  one that keeps the rollback exact.
+
+So there are now two maps with two jobs, and the config comment's main work is
+stopping anyone conflating them: `GUILD_SHRINE_LEVELS` is the modelled guild-wide
+**fallback** (unchanged, force 1 / tempo 1), and `GUILD_SHRINE_CAPS` is the
+per-guild **cap**, which feeds the two probes and nothing in the rate model.
+
+### 4.3 The two probes, live, on the published parties
+
+Both probes hold the parties fixed, exactly as `probe_building_upgrade` does.
+`points_gained_immediate` is `0.0` on all ten rows, **by construction** —
+`tests/test_trials.py::test_probe_shrine_upgrade_immediate_gain_is_zero` asserts it
+across four different mixes of member levels, including the mix where every member
+sits at the cap, which is the only one where a cap raise reaches anybody.
+
+**SC** — 107 seated of 107 merged (parties 28/24/28/27)
+
+| shrine | cap | mean held | below cap | levels unbought | **free gain/wk** | at cap | day-1 | full-adoption gain | gp | weeks to repay |
+|---|---|---|---|---|---|---|---|---|---|---|
+| force | 4 | 2.99 | **54 of 107** | 108 | **+1.658** | 53 | 0.0 | +0.501 | 3300 | 6590 |
+| tempo | 4 | 3.13 | 48 of 107 | 93 | +0.754 | 59 | 0.0 | +0.547 | 3300 | 6028 |
+| rarity | 0 | 0.00 | 0 of 107 | 0 | loot only | 107 | 0.0 | 0.0 | 1000 | — |
+| spirit | 2 | 1.04 | 59 of 107 | 103 | loot only | 48 | 0.0 | 0.0 | 1800 | — |
+| scholar | 2 | 1.36 | 40 of 107 | 68 | XP only | 67 | 0.0 | 0.0 | 1800 | — |
+
+**LI** — 104 seated of 111 merged (parties 26/26/26/26, all four at cap)
+
+| shrine | cap | mean held | below cap | levels unbought | **free gain/wk** | at cap | day-1 | full-adoption gain | gp | weeks to repay |
+|---|---|---|---|---|---|---|---|---|---|---|
+| force | 3 | 2.31 | **48 of 104** | 72 | **+0.861** | 56 | 0.0 | +1.078 | 2450 | 2272 |
+| tempo | 3 | 2.34 | 44 of 104 | 69 | +0.648 | 60 | 0.0 | +0.611 | 2450 | 4013 |
+| rarity | 0 | 0.00 | 0 of 104 | 0 | loot only | 104 | 0.0 | 0.0 | 1000 | — |
+| spirit | 1 | 0.82 | 19 of 104 | 19 | loot only | 85 | 0.0 | 0.0 | 1350 | — |
+| scholar | 1 | 0.77 | 24 of 104 | 24 | XP only | 80 | 0.0 | 0.0 | 1350 | — |
+
+**Against the expected counts.** SC force **54 of 107 — exact**. LI force reads
+**48 of 104**, against the expected 49 of 105: the probe's denominator is SEATS, and
+LI now seats 104 of its 111 members, so one of the 49 below-cap members is benched.
+On the whole-roster denominator the probe's own inputs reproduce **49 of 105
+(mean 2.30) exactly**. The two numbers answer two different questions and both are
+printed; the page quotes the seated one, because a benched member's shrine purchase
+does not move this week's rate.
+
+### 4.4 One claim in §5.5 does not survive its own measurement
+
+Plan §5.5 calls the adoption probe "the more actionable of the two by a wide
+margin". Actionable, yes. **Bigger, not always:** on SC's force the free headroom is
+worth +1.658 against a cap raise's +0.501, but on **LI it is +0.861 against
++1.078** — the cap raise wins on size there.
+
+It still loses, and for a better reason than size: the raise costs 2450 guild points
+and takes ~2270 weeks to repay them, while closing the headroom costs **nothing** and
+pays this week. So the page's ordering is justified on **price and immediacy**, not
+on magnitude, and the copy says exactly that. Pinned in both directions by
+`test_adoption_beats_the_cap_raise_on_a_party_below_the_cap`, which also asserts the
+reverse case, so the page copy cannot drift back into the stronger claim.
+
+### 4.5 What R7 does not touch
+
+No rate, no tier, no point. Verified: both probes' `credit_points_now` is `==` the
+live week's own `sum(simulate_race(...).credit_points)` on both guilds
+(4927.78262769608 SC, 4644.2161825465855 LI), so the probes are reading the same week
+the page publishes rather than a private re-derivation. And the golden week is
+reproduced with the probe changes reconciled key by key, including the load-bearing
+equality that the re-specified full-adoption gain equals the old `points_gained`
+**exactly** — computed a different way (per-member replacement rows rather than a
+temporary rebinding of `config.GUILD_SHRINE_LEVELS`), which is what proves the new
+arithmetic re-associated nothing.
