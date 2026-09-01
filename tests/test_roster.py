@@ -396,6 +396,45 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
 
     with open(_GOLDEN_PATH, encoding="utf-8") as fh:
         expected = json.load(fh)
+
+    # LIBM IS NOT BIT-PORTABLE, AND ONE FIELD IS BUILT FROM IT.
+    # Everything this golden exists to pin -- the parties the search chose, every
+    # tier, every step point, credit_points, partial_fraction and the totals -- is
+    # pure +-*/ and math.floor, which IS bit-identical everywhere, and is compared
+    # with `==` below. `clear_probability` is not: it is
+    # _normal_cdf(-log(1-margin)/sigma), i.e. math.erf and math.log, and glibc on
+    # Linux x86-64 disagrees with macOS ARM64's libm in the last bit.
+    #
+    # MEASURED, 2026-09-01, this fixture in a bookworm container against the same
+    # commit on the generating Mac: Cooking 0.9955980563574409 vs ...408 and
+    # Brewing 0.9999998236781167 vs ...168 -- ONE ULP each, both directions, and
+    # NOTHING else differed. That failure (CI runs 33401288541, 33476139779) is
+    # what this split fixes.
+    #
+    # expected_points shares the exposure (its quadrature calls math.exp) and
+    # happened to agree, so it is compared tolerantly too rather than exactly:
+    # relying on that agreement would leave the same trap armed for the next
+    # platform. rel=1e-12 is ~1e4 times looser than an ULP here and still ~1e10
+    # tighter than any change anyone would care about.
+    #
+    # Note what is NOT being relaxed. `_prepare_member`'s docstring records a live
+    # one-ULP change reshuffling every SC party, so the fear was that a libm
+    # difference would move the SEARCH. It does not: perturbing _normal_cdf by
+    # exactly one ULP (math.nextafter) leaves this week's assignment, tiers and
+    # totals untouched, and the container agrees with the Mac on every one of them.
+    # The search's ULP-exactness is still pinned by `==`; only two reported
+    # probabilities are not.
+    _LIBM_FIELDS = ("clear_probability", "expected_points")
+    for got_trial, exp_trial in zip(got["trials"], expected["trials"], strict=True):
+        assert got_trial["skill"] == exp_trial["skill"]
+        for field in _LIBM_FIELDS:
+            assert got_trial.pop(field) == pytest.approx(
+                exp_trial.pop(field), rel=1e-12
+            ), f"{exp_trial['skill']}.{field} moved by more than libm's last bit"
+    assert got.pop("total_expected_points") == pytest.approx(
+        expected.pop("total_expected_points"), rel=1e-12
+    )
+
     assert got == expected
 
 
