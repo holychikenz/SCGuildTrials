@@ -1,6 +1,25 @@
 # 🗺️ Implementation Plan: the scripted Roster tabs as the PRIMARY member-data source
 
-**Status:** plan only — nothing implemented.
+**Status: COMPLETE.** R0–R8 all shipped, 2026-08-31 to 2026-09-01. This document is
+now a historical artefact and is **not** the record of what happened —
+`research/roster-as-primary-source.md` is, and `README.md` § "Where member data
+comes from" is the reader-facing account.
+
+**Four claims in here were refuted by their own measurements.** Read them against
+the research note before acting on anything below:
+
+| this plan says | measured | where |
+|---|---|---|
+| §7 R5: "Tiers are now expected to be **gained** … any tier that is *lost* is a surprise" | **No tier changed, on either guild, in any run.** A ~6.7% rate gain is nowhere near a 400-unit boundary. The gain went into *safety*: LI's thinnest trial 0.5031 → 0.9333. | note §2.3 |
+| §7 R6.4: "a change in the deterministic `credit_points` between R5 and R6 would mean the recalibration has leaked into the rate model" | **Too strong.** `OPT_OBJECTIVE = "expected"` is the search's objective and reads the constant, so a re-seat is a legitimate consequence — measured, SC −0.244 and LI +1.003 credit points. The invariant that detects a leak is *fixed-lineup* invariance, and it holds exactly. | note §3.4 |
+| §5.5: `probe_shrine_adoption` is "the more actionable of the two by a wide margin" | Actionable yes; **not always bigger** — on LI's force the cap raise wins on size (+1.078 vs +0.861). It loses on price: 2450 gp and ~2270 weeks against free and this week. | note §4.4 |
+| §7 R7.1: "split `config.GUILD_SHRINE_LEVELS` per guild and re-point its meaning at the guild's cap" | **The split is three-way.** That map still feeds the rate model in two places this plan does not mention (the `ROSTER_USE_SHRINES` rollback, and the blank-column fallback), so re-pointing it would have broken the golden week. A separate `GUILD_SHRINE_CAPS` feeds the probes. | note §4.2 |
+
+Two further corrections: §7.5 and Risk 9's "ZERO added work inside `_prepare_member`
+or `simulate_race`" costs about **+9%** on the race (note §1.5), and §7 R6's
+`--reps 4000` default **cannot rank the eight systematic remainders** — their
+separation is smaller than their own error bars at that count (note §3.3).
+
 **ResearchPack:** `.claude/plans/roster-as-primary-source-researchpack.md` (live-verified
 2026-08-31). Every figure it measures is taken as given here and is not re-derived.
 
@@ -1369,9 +1388,14 @@ The change is complete when:
 - ✅ Tool columns are read by name, and a shuffled tool block parses identically.
 - ✅ A renamed roster column fails loudly and *degrades* rather than stopping the deploy.
 - ✅ `tool_bonus` reproduces all four shipped constants exactly at `+7`.
-- ✅ Every R5 slice lands within `±0.1pp` of its band (§2.3): levels `+2.41 / +6.57`,
-  houses `+0.03 / −0.16`, shrines `+1.33 / +0.89`, tools `−0.52 / −1.26`, combined
-  `+3.30 / +6.00` — with slice 4 **negative** and the interaction residual under 0.1pp.
+- ✅ Every R5 slice lands within `±0.1pp` of its band — **to 0.000pp on every slice**,
+  against bands re-derived for the actual DRAWN four skills rather than the all-ten
+  figures quoted here (levels `+2.539 / +6.713`, houses `+0.035 / −0.120`, shrines
+  `+1.444 / +0.954`, tools `−0.211 / −0.872`, combined `+3.867 / +6.680`). Slice 4 is
+  **negative** on both guilds and the interaction residual is under 0.1pp. The
+  all-ten numbers below are not the ones a four-skill draw should be measured
+  against; note §2.1 explains the difference (Enhancing's tool feeds the success
+  channel, not speed).
 - ✅ Shrines are per-member, Rarity/Spirit/Scholar still contribute exactly 0.0, and
   `ROSTER_USE_SHRINES = False` is bit-identical to today's hoisted path.
 - ✅ `MemberBonuses.speed` / `.efficiency` still report only what the member owns; the shrine
@@ -1382,8 +1406,10 @@ The change is complete when:
   standing.
 - ✅ `RISK_SIGMA_SYSTEMATIC`'s new value is traceable to a published ablation row, and the
   R5 and R6 deltas are reported separately.
-- ✅ The totals **rose** by the predicted amount, tier changes are gains rather than losses,
-  and any tier *lost* is explained rather than absorbed.
+- ⚠️ The totals **rose** — SC 4910.4 → 4926.9, LI 4592.3 → 4640.8 E[points] — but
+  **NO TIER CHANGED**, so "tier changes are gains rather than losses" was answered by
+  there being none to classify. See the status block at the top and note §2.3: the
+  criterion assumed the wrong outcome, and the gain landed in safety instead.
 - ✅ Both pages state, for every member, which of the three sources their numbers came from,
   and how old the capture is; and the `Assumptions & caveats` block no longer claims anything
   the roster has made false.
@@ -1395,7 +1421,12 @@ The change is complete when:
   provenance, and the `index.html` (101) vs `trials.html` (106) discrepancy is captioned
   rather than left to look like a bug.
 - ✅ LI's manual-only member (`OTZ`) survives the merge.
-- ✅ The build's per-unit timings are unchanged outside noise.
+- ⚠️ The build's per-unit timings are unchanged outside noise — **not verifiable as
+  stated**, because `build.py`'s own timing table turns out to predate
+  `OPT_OBJECTIVE = "expected"` and understates a full search by a large factor. The
+  shrine hoist's removal costs about +9% on the race itself (note §1.5), which is
+  real and small; the table it would have been compared against is the problem. Both
+  places are flagged; re-measuring is a follow-up.
 - ✅ `research/roster-as-primary-source.md` carries the before/after tables, the four slices,
   run 5's composition table, the ablation, and §11's open questions — including the finding
   that neither guild was cap-constrained before this change and that LI becomes so after it.

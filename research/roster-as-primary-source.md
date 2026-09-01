@@ -465,16 +465,44 @@ now), so the difference between two builds would carry an officer's edits as wel
 as the constant. The frozen-input pair above is the stronger claim, not a weaker
 substitute for it — it varies one thing where a rebuild would have varied two.
 
-**The one thing this pair does NOT settle** is whether the optimiser re-seats. It
-may, legitimately: `OPT_OBJECTIVE = "expected"` is the search's objective, so a new
-sigma is a new objective and a different assignment is a consequence rather than a
-leak. Measuring it means four full searches, and a full search now costs far more
-than the ~85 s per guild recorded in `build.py`'s 2026-08-14 timing table — that
-table predates `OPT_OBJECTIVE = "expected"`, which calls `clear_sigma` and
-`_cumulative_tier_times` inside every objective evaluation. **The build is
-therefore slower than its own documented figures**, which is a finding in its own
-right and one nobody had noticed, because the only thing that ever runs a full
-search is CI.
+**And the optimiser DOES re-seat**, which settles the last piece. Four full
+searches on the same frozen inputs, unconstrained optimum, seed 42:
+
+| | step | credit | E[points] | search re-seated |
+|---|---|---|---|---|
+| SC @ 0.0131 | 4900 | 4928.0720 | 4926.9959 | — |
+| SC @ 0.0123 | **4900** | **4927.8284** (−0.244) | 4927.0258 (+0.030) | **yes**, 4 members |
+| LI @ 0.0131 | 4600 | 4652.7648 | 4650.9739 | — |
+| LI @ 0.0123 | **4600** | **4653.7680** (+1.003) | 4651.4217 (+0.448) | **yes**, 6 members |
+
+`credit_points` moves, **in opposite directions on the two guilds**, and the step
+points do not move at all. SC's search gives up 0.244 deterministic credit points to
+buy 0.030 expected ones; LI's happens to gain on both. That is precisely what
+maximising `E` means under a new sigma, and it is the direct refutation of the
+plan's "must not move at all": a new risk constant is a new objective, so a
+different assignment is a **consequence**, not a leak. What must not move — and does
+not — is the score of a lineup somebody else chose.
+
+The re-seats are small and local, four members on SC and six on LI, all of them
+swaps between trials rather than changes to who is seated at all:
+
+```
+SC  C.Smithing −IronMessiah −Living2Die  +IronAegis +Mike111
+    Milking    −Mike111                  +IronGoatMilkBEST +IronMessiah
+    Enhancing  −IronGoatMilkBEST         +Atka
+    Tailoring  −Atka −IronAegis          +Living2Die
+```
+
+**One incidental finding, and it is not small.** Those four searches took over an
+hour. `build.py`'s timing table records ~85 s per guild for `run_week`, but that
+table was measured on 2026-08-14 and `OPT_OBJECTIVE = "expected"` landed after it —
+and the expected objective calls `clear_sigma` and `_cumulative_tier_times` inside
+*every* objective evaluation, of which the search makes ~87 000. **The build is
+therefore far slower than its own documented figures**, and nobody had noticed
+because the only thing that ever runs a full search is CI, where it is measured in
+nothing but a green tick. `README.md`'s "Where the run time goes" and `build.py`'s
+table both need re-measuring; that is out of this change's scope and is recorded
+here so it is not lost.
 
 ### 3.5 One thing R6 broke, which was worth breaking
 
@@ -598,3 +626,52 @@ equality that the re-specified full-adoption gain equals the old `points_gained`
 **exactly** — computed a different way (per-member replacement rows rather than a
 temporary rebinding of `config.GUILD_SHRINE_LEVELS`), which is what proves the new
 arithmetic re-associated nothing.
+
+## 5. Closing — what this change actually did, in one place
+
+| | before (R0) | after (R8) |
+|---|---|---|
+| per-member source | one hand-maintained tab | scripted harvest, manual tab per field, constants last |
+| SC step points | 4900 | **4900** |
+| LI step points | 4600 | **4600** |
+| SC E[points] | 4910.4 | **4926.9** |
+| LI E[points] | 4592.3 | **4640.8** |
+| SC thinnest `P(holds)` | 0.9485 | **0.9870** |
+| LI thinnest `P(holds)` | **0.5031** | **0.9333** |
+| LI members | 101 | **106** at the flip, 111 today |
+| shrine levels in the model | 1, for everybody | each member's own purchase (means 2.99 / 2.30) |
+| `RISK_SIGMA_SYSTEMATIC` | 0.0131 | **0.0123** |
+| unbought shrine headroom | invisible | **54 of 107 (SC), 49 of 105 (LI)**, and priced |
+
+**No tier was gained.** That is the headline correction to the plan and it is worth
+repeating, because "the rate rose 6.7%" and "the tier changed" are different
+questions and the plan conflated them. Tier boundaries are 400 target units apart
+and both guilds' parties were mid-ramp.
+
+**What the change actually bought is that the numbers are now true.** LI's Tailoring
+trial was banking tier 11 with two ten-thousandths of a percent to spare and the page
+said `P(holds) = 0.5031` — an honest report of a lineup chosen against dishonest
+inputs. The same trial now holds the same tier at 0.9333. A reader glancing at the
+page sees almost nothing different; what changed is that it is no longer a coin flip
+dressed as a plan.
+
+**And one thing shipped stale for a cycle, which is recorded rather than tidied
+away.** The flip (R5) went out against a `RISK_SIGMA_SYSTEMATIC` that still priced
+three now-observed facts as unknowns. Conservative, not wrong — the published figures
+were pessimistic rather than falsely reassuring — but stale, and knowingly so, for
+one deploy. R6 closed it.
+
+### Three follow-ups this change uncovered and did not do
+
+1. **`build.py`'s timing table and `README.md`'s "Where the run time goes" are badly
+   stale** (§3.4). They predate `OPT_OBJECTIVE = "expected"`, which calls
+   `clear_sigma` and `_cumulative_tier_times` inside all ~87 000 of the search's
+   objective evaluations. Both places are flagged; re-measuring is open, and a
+   memoisation pass on `_cumulative_tier_times` may well be the actual fix.
+2. **The unrecorded neck / ring / earring slots are now the largest term in the risk
+   budget** — 0.0081–0.0110 against a ~0.012 systematic total, larger on their own
+   than everything R6 retired. The upstream `stableGear` block (plan §11.2) is the
+   fix and is the highest-value remaining work in this area.
+3. **`GUILD_SHRINE_CAPS` is a floor, not a measurement** (§4.1). Where nobody has
+   bought a level the floor is 0 and the true cap is unknown — rarity, both guilds.
+   One `guild_updated` capture would settle it.

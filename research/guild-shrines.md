@@ -6,7 +6,10 @@ re-verified on 2026-08-11. **The dump is PRE-patch** — see below — but the p
 notes themselves supply the cross-check that says the two buffs this model cares
 about were *not* re-tuned (§3). What is **NOT** confirmed is the guild's live
 **buff** level, because a shrine level and a buff level are two different ladders
-and only the first is in any capture we hold (§4, §6).
+and only the first is in any capture we hold (§4). **§6 is now ANSWERED** — the
+shrine level is a *cap* and each member's own purchase is the multiplier, measured
+per member off the scripted roster tab — so the buff-level ladder turns out not to
+be the quantity the model needed.
 
 **Source**: `/Users/morgan/pie/cowstuff/milkyway_client_info.json`,
 `gameVersion v1.20260715.0`, `versionTimestamp 2026-07-16T03:24:51Z`. Keys read:
@@ -16,8 +19,11 @@ the implementation plan and the cheapest route to resolving §6.
 
 **Why this note exists**: the patch made the shrines' *skilling* buffs apply
 **inside Trials**, so two of them now enter this repo's rate model for the first
-time. Survey Corps holds both at level 1, which means the shipped model is
-currently wrong by a measured **+0.61 points per trial** (§5). The companion note
+time. §5's "+0.61 points per trial" was computed on the belief that Survey Corps
+held both at level 1 for everybody; **that belief was wrong** — the level is a cap
+and the measured per-member means are 2.99 (SC) and 2.30 (LI), so the shrine slice
+is worth **+1.444% (SC) / +0.954% (LI)** of mean per-member rate. See §6 and
+`research/roster-as-primary-source.md` §2.1. The companion note
 `research/partial-tier-credit.md` carries the patch notes verbatim and the rest of
 the patch.
 
@@ -232,9 +238,50 @@ level buys a measurable number, and the honest table shows the shrine rows losin
 
 ---
 
-## 6. Open question: which ladder drives the multiplier, and what are the live levels?
+## 6. ANSWERED: the shrine level is a CAP, and the member's purchase is the multiplier
 
-**WORKING ASSUMPTION** (adopted for Phase 3): the **shrine** level from
+**CLOSED 2026-08-31 by the scripted roster tab.** This section's question — does the
+shrine level from `guildBuildingLevelMap` drive the multiplier, or the separately
+bought buff level? — had the wrong shape. The answer is neither alone:
+
+> **The guild's shrine level is a CAP. The member's own purchase is what multiplies
+> their stats.** They are in series, not in competition.
+
+The evidence is not an inference. The roster tab carries a
+`shrine_<name>_skilling` column per member, and on the live tabs (2026-09-01) SC's
+107 members hold force levels 0, 1, 2, 3 and 4 — 5, 13, 13, 23 and 53 of them
+respectively, mean 2.99 — while LI's 105 span 0 to 3, mean 2.30. **A guild-wide
+grant cannot produce a spread.** And a member cannot exceed the cap, which is what
+makes the observed maximum a floor on it.
+
+Three consequences, all now shipped:
+
+- The rate model reads **each member's own level**
+  (`trials.member_shrine_bonuses`), not the guild map. The old model held everybody
+  at level 1 and was therefore wrong for **88–95% of members** — mostly
+  understating, but *not uniformly*: five SC and ten LI members hold level 0, where
+  it overstated.
+- The 2026-07-22 capture below is **stale as a cap**, not merely coarse. It records
+  force 1 while members are observed at force 4, so SC's shrine level has risen to
+  at least 4 since. The per-guild caps now live in `config.GUILD_SHRINE_CAPS`,
+  derived from the observed per-member maxima; the old single map survives, unchanged
+  at force 1 / tempo 1, as the modelled **fallback** for a member whose column is
+  blank and as the switched-off path.
+- `probe_shrine_upgrade`'s framing **inverted**. Raising a cap gives nobody anything
+  until each member spends their own resources, so its "lower bound on the benefit"
+  was a ceiling. It now reports `points_gained_immediate = 0.0` by construction,
+  and the new `probe_shrine_adoption` answers the better question: 54 of 107 SC
+  members and 49 of 105 LI members sit *below* the cap the guild has already paid
+  for. See `research/roster-as-primary-source.md` §4.
+
+**What is still open** is narrower and unchanged by the above: whether the buffs
+reach a skilling trial *at all*. The patch notes say so, but no capture yet shows a
+resolved figure inside a trial, and `SHRINE_BUFFS_APPLY_IN_TRIALS = False` remains
+the one-line rollback. The `[View Buffs]` button is still the settling measurement.
+
+### The original working assumption, kept for the record
+
+**SUPERSEDED.** The **shrine** level from
 `guildBuildingLevelMap` drives the buff magnitude, i.e. Force 1 / Tempo 1 grants
 `0.005` efficiency and `0.005` action speed to every member.
 
@@ -253,12 +300,12 @@ buildings. That is the *shrine* level (§4.1, guild points). The **buff** level
 nothing in the dump says which of the two the resolved magnitude reads from — or
 whether it is `min`, `max` or the product of both.
 
-**Resolution**: the patch's new `[View Buffs]` button, which per the patch notes
-splits active guild buffs into Skilling and Combat — i.e. it displays exactly the
-resolved magnitudes needed, with no inference. Until then `GUILD_SHRINE_LEVELS` is
-a hand-entered config map carrying the caveat `config.py` already carries for
-`GUILD_BUILDING_LEVELS`: **one map serves both guilds today, and it must be split
-the moment SC and LI diverge.** Two smaller consequences of the same gap:
+**Resolution, as it stood:** the patch's new `[View Buffs]` button, which per the
+patch notes splits active guild buffs into Skilling and Combat. It was overtaken by
+the roster tab, which reports the per-member purchase directly. The "one map serves
+both guilds today, and it must be split the moment SC and LI diverge" caveat came
+due exactly as written: SC's caps are force 4 / tempo 4 against LI's 3 / 3. Two
+smaller consequences of the same gap:
 
 * `SHRINE_BUFFS_APPLY_IN_TRIALS = False` is the one-line rollback if the shrine
   terms turn out to be wrong or mis-scaled; all-zero levels are equivalent.

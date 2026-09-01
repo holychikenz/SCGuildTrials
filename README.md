@@ -54,6 +54,160 @@ open _site/index.html
 build path — the shipped optimizer is pure-Python. Plain `pip install -e ".[dev]"`
 still works if you prefer a classic venv.
 
+## Where member data comes from
+
+Every rate in this project is built from four facts about a member: their **skill
+level**, their **house room** level for that skill, the **tool** they hold, and the
+**shrine levels they have bought**. Until 2026-08-31 all four came from a
+hand-maintained spreadsheet tab, and three of them were partly guesses. Now they
+come from a scripted per-character harvest (`apps-script/profiles/`, written to an
+**SC Roster** / **LI Roster** tab and read by `src/roster.py`), with the manual tab
+as a per-field fallback.
+
+### The precedence is per FIELD, not per member
+
+```
+roster tab   ->  the member's actual level, house room, tool item + its
+                 enhancement level, and their five purchased shrine levels
+manual tab   ->  whatever the roster did not report: the Tool checkbox, and
+                 the skilling Top / Bottom, which the roster does not carry
+                 and never will (the upstream module excludes rotating
+                 combat slots)
+constants    ->  last resort: DEFAULT_HOUSE_LEVEL, the assumed +7 gear,
+                 GUILD_SHRINE_LEVELS
+```
+
+Per field because that is what the data looks like. **Nine SC and seven LI members
+hide their gear** — all twenty tool columns blank, while their levels, houses and
+shrines are fully populated — and the right answer for them is *roster for what it
+knows, manual for the rest*. A per-member switch would have thrown away real levels
+to avoid a missing tool. Every resolution is tagged, the tags are counted into a
+`provenance` block in each artefact, and the pages render a mark per member so a
+reader can see which of the three tiers their own row came from.
+
+**Five LI members are new.** They exist on the roster with full levels, houses,
+shrines and tools, they all signed up for trials, and the manual tab had never heard
+of them — the pre-change build log records itself ignoring them by name. They are
+now seated (`ROSTER_ADMITS_NEW_MEMBERS`), appended after the manual members in
+roster-tab order so the seed-fixed optimizer trajectory stays reproducible. They do
+**not** enter `index.html`, which mirrors the officers' own tab and must keep doing
+so — that is the page an officer uses to notice the missing row.
+
+### The switch ladder
+
+Every one of these is a one-line rollback, and each was measured on its own:
+
+| switch | off restores |
+|---|---|
+| `ROSTER_SOURCE_ENABLED` | the pre-roster build **bit for bit** — no second fetch, no merge, no new JSON keys, no page changes. Pinned by `test_roster_disabled_reproduces_the_golden_week`, which compares a whole week against a golden generated from the pre-change commit. |
+| `ROSTER_USE_LEVELS` | the manual tab's levels |
+| `ROSTER_USE_HOUSES` | the manual tab's `H` column, then `DEFAULT_HOUSE_LEVEL` |
+| `ROSTER_USE_TOOLS` | the manual tab's Tool checkbox at an assumed +7 |
+| `ROSTER_USE_TOOL_ENHANCEMENT` | the observed tool tier at the assumed +7 — the targeted partial rollback for the one adverse slice |
+| `ROSTER_USE_SHRINES` | the guild-wide shrine read, and `simulate_race`'s once-per-race hoist, bit for bit |
+| `ROSTER_ADMITS_NEW_MEMBERS` | "reported, not seated" for the five roster-only LI members |
+| `ROSTER_MIN_JOIN_RATE` | below this join rate the roster is **refused** for that guild and every member keeps the manual tab's data. Guards the catastrophic case: gviz serving a different tab past the header guard would otherwise silently reprice a whole guild. |
+
+### The four slices, measured one at a time
+
+Mean change in per-member rate over matched member × drawn skill, each switch flipped
+alone. Two independent code paths were compared — a hand-rolled mirror of the rate
+model that does not import `src/roster.py`, against `roster.merge` +
+`trials._prepare_member` — and they agreed to **0.000pp on every slice**:
+
+| slice | SC | LI | |
+|---|---|---|---|
+| levels | **+2.539%** | **+6.713%** | the manual tab was simply behind |
+| houses | +0.035% | −0.120% | small both ways; LI's blank cells averaged *below* the flat default |
+| shrines | +1.444% | +0.954% | the model held everyone at level 1; the real means are 2.99 and 2.30 |
+| tools | **−0.211%** | **−0.872%** | **adverse, and this is the point** |
+| all four | +3.867% | +6.680% | |
+
+**The adverse slice is the evidence that this is a correction rather than a coat of
+optimism.** The tool slice is negative because the model assumed every tool was +7
+and most are not. A change that made every number better would be indistinguishable
+from a change that made every number bigger; one that makes three better and one
+worse, in the directions the data says, is a different kind of claim.
+
+### What it bought — and it was not a tier
+
+| | before | after | |
+|---|---|---|---|
+| SC step points | 4900 | **4900** | unchanged |
+| SC E[points] | 4910.4 | **4926.9** | +16.5 |
+| SC thinnest `P(holds)` | 0.9485 | **0.9870** | |
+| LI step points | 4600 | **4600** | unchanged |
+| LI E[points] | 4592.3 | **4640.8** | +48.5 (of which **+11.0** is the five admitted members) |
+| LI thinnest `P(holds)` | **0.5031** | **0.9333** | |
+
+**No tier was gained, on either guild, in any run**, and the implementation plan
+predicted otherwise. A ~6.7% rate improvement is nowhere near a tier boundary — the
+boundaries are 400 target units per tier level and the parties were mid-ramp, not
+near a crossing. The prediction confused "the rate rises a lot" with "the tier
+changes", and the ramp/step structure of partial credit is exactly what makes those
+two different questions.
+
+**The gain went into safety instead, and it is worth more than a tier.** LI's
+thinnest trial had been banking tier 11 on a coin flip: `partial_fraction` 0.0002 —
+two ten-thousandths past the boundary — at `P(holds) = 0.5031`. It now holds that
+same tier at **0.9333**. Nothing on the page reads differently at a glance; what
+changed is that the number is now true.
+
+### Shrines: the guild's level is a CAP, not a gift
+
+Worth stating plainly, because it is the thing a reader will otherwise misread from
+`config.GUILD_SHRINE_LEVELS`, and because the model had it wrong for **88–95% of
+members**:
+
+> The guild buys the *right* to a shrine level with guild points. Each member then
+> spends **their own** resources to actually take it. It is the member's purchase
+> that multiplies their stats.
+
+The model held every member at level 1. Measured, SC's members hold force levels 0
+through 4 with a mean of 2.99 and LI's 0 through 3 with a mean of 2.30 — a spread
+that a guild-wide grant cannot produce. So the rate model reads each member's own
+purchased level (`trials.member_shrine_bonuses`), and two page probes read the cap:
+
+- **`probe_shrine_adoption`** — how many members sit *below* the cap the guild has
+  already paid for. **54 of 107 on SC, 49 of 105 on LI**, on force. Those members
+  can raise their own rate today for **no guild spend whatsoever**. This is the most
+  actionable finding of the whole change, and the model could not previously see it
+  because it believed everybody was at level 1.
+- **`probe_shrine_upgrade`** — what raising the cap buys. **Nothing at all on the
+  day it completes**, by construction, because no member's stats change until they
+  buy in; and a full-adoption ceiling thereafter that moves only the members already
+  at today's cap. Before this change the page reported a payback period for a
+  purchase with no immediate effect, and its docstring called that figure a *lower*
+  bound.
+
+Two config maps, deliberately, because both are "the guild's shrine levels" in
+English and they are not the same number: `GUILD_SHRINE_LEVELS` is the modelled
+guild-wide **fallback** for a member whose column is blank (and the switched-off
+path), while `GUILD_SHRINE_CAPS` is the per-guild **cap** and feeds the two probes
+and nothing in the rate model.
+
+### The risk constant was recalibrated, and it had been stale at deploy time
+
+`config.RISK_SIGMA_SYSTEMATIC` prices what the model does not know: unmodelled
+neck / ring / earring gear, enhancement levels away from the assumed +7, mis-ticked
+tool checkboxes, house-level slips. Three of those four are now **observed** per
+member, so 0.0131 had become a pessimism that was knowingly false — and
+`expected_credit_points`, the shipped objective, under-reached because of it.
+
+**It shipped stale, for one deploy cycle, and that is worth admitting rather than
+quietly fixing.** The roster flip and the recalibration are two phases, and the flip
+went first: the totals above were published against a sigma that still priced three
+observed facts as unknowns. Conservative rather than wrong — the live figures were
+pessimistic, not falsely reassuring — but stale.
+
+Re-measured at 20 000 replicates on both guilds' shipped plans:
+**0.0131 → 0.0123**, traceable to a named row of a published ablation table
+(`research/roster-as-primary-source.md` §3). It **shrank but did not vanish**, which
+was the prediction recorded before the run: the unrecorded neck slot survives in
+full at 0.0081–0.0110 and is on its own larger than everything the recalibration
+retired. A sigma near zero would have been a bug — it would mean pretending to know
+things that are still unknown.
+
 ## Guild Trials optimizer (Phase 2)
 
 `src/trials.py` models each weekly skilling trial as a cumulative tier race and
@@ -354,6 +508,16 @@ loop runs longer.
 The output is byte-identical either way: every seed is fixed and no unit reads
 another's state. `config.BUILD_PARALLEL = False` runs the same units serially in one
 process when a traceback needs reading in peace.
+
+> **The table above is STALE, and by a lot.** It was measured on 2026-08-14;
+> `OPT_OBJECTIVE = "expected"` landed after it, and the expected objective calls
+> `trials.clear_sigma` and `_cumulative_tier_times` inside *every* objective
+> evaluation, of which the search makes ~87 000. Four full searches run locally on
+> 2026-09-01 took **over an hour** between them, against the ~4m50s these figures
+> predict. Nobody had noticed because the only thing that ever runs a full search
+> is CI, where the cost shows up as nothing but a slower green tick. The figures
+> need re-measuring; the note two sections up about the counterfactual being the
+> dearer run is unaffected, since both runs got slower together.
 
 ### One-time manual step
 

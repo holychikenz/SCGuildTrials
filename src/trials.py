@@ -1194,9 +1194,24 @@ def expected_credit_points(
     the deterministic answer to within 1e-9 — asserted in the tests.
 
     Returns None when there is nothing to price: the party cannot move, or sigma cannot
-    be derived. Note this is deliberately NOT the objective — optimising it would choose
-    the same parties, because the gamble it prices survives its own test — so it never
-    enters :class:`src.optimizer.AssignmentScorer`.
+    be derived.
+
+    THIS *IS* THE OBJECTIVE, since 2026-08-14. An earlier revision of this docstring
+    said the opposite — "deliberately NOT the objective ... it never enters
+    :class:`src.optimizer.AssignmentScorer`" — on the prediction that optimising it
+    would choose the same parties. That prediction was refuted and the objective moved
+    (``config.OPT_OBJECTIVE = "expected"``; ``optimizer._objective_value`` calls this
+    function), and the docstring did not follow. Two things depend on the correction
+    being stated here rather than inferred from optimizer.py:
+
+      * every one of the search's ~87k objective evaluations pays for the
+        :func:`clear_sigma` and :func:`_cumulative_tier_times` calls below, which is
+        why the build is far slower than README's timing table claims; and
+      * ``config.RISK_SIGMA_SYSTEMATIC`` therefore reaches the SEARCH, so
+        recalibrating it can re-seat the parties and move the deterministic
+        ``credit_points`` with them. That is a consequence, not a leak — see
+        research/roster-as-primary-source.md §3.4, where believing this docstring
+        cost a wrongly-stated invariant.
     """
     if not config.RISK_EXPECTED_POINTS:
         return None
