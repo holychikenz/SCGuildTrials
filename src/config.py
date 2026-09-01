@@ -704,12 +704,46 @@ SLACK_OK = 0.15
 #     rates fall toward SUCCESS_FLOOR.
 #  2. SYSTEMATIC — everything else, and the constant below.
 #
-# RISK_SIGMA_SYSTEMATIC comes from the calibration campaign (src/calibrate.py,
-# live SC lineup 2026-08-01): the full budget measured sigma = 0.0231 at the
-# marginal tier against an aleatoric 0.0190, so the systematic remainder is
-# sqrt(0.0231^2 - 0.0190^2) = 0.0131. It covers unmodelled neck/ring/earring gear
-# (the sheet has no column for them), enhancement levels away from the assumed +7,
-# mis-ticked tool checkboxes, and house-level slips.
+# RISK_SIGMA_SYSTEMATIC comes from the calibration campaign (src/calibrate.py).
+# It covers unmodelled neck/ring/earring gear (no source this repo reads has a
+# column for those slots), enhancement levels away from the assumed +7, mis-ticked
+# tool checkboxes, and house-level slips.
+#
+# RECALIBRATED 2026-09-01 (plan phase R6), 0.0131 -> 0.0123, after the scripted
+# roster tab became the primary per-member source. Three of the four things the
+# constant covers are now OBSERVED per member — the tool's actual item, its actual
+# enhancement level, and the house level read off the game's own building map — so
+# pricing them as unknown had become a pessimism that was knowingly false, and
+# `expected_credit_points` (the shipped objective) under-reached because of it.
+# calibrate.Sources.respect_provenance skips exactly those draws for a member+skill
+# whose provenance tag says "roster", and only those: the 9 SC / 7 LI members who
+# hide their gear keep every one of them.
+#
+#   NOW      sigma_total 0.0221, aleatoric 0.0183, remainder
+#            sqrt(0.0221^2 - 0.0183^2) = 0.0123
+#            SC Milking, tier 12, seed 20260901, 20 000 reps. The LARGEST of the
+#            eight live trials (SC + LI x four drawn skills); the other seven run
+#            0.0085-0.0117, so one constant serving both guilds over-covers all but
+#            this row, which is the direction this constant is meant to err in.
+#            Reproduced at seeds 20260801 (0.0120) and 777 (0.0121); the spread over
+#            three seeds is +/-0.0002, and the max is quoted rather than the mean.
+#   CONTROL  0.0141 on the SAME row and seed with --ignore-provenance, i.e. the
+#            same post-merge lineup with the observed quantities priced as unknown
+#            anyway. That 0.0141 -> 0.0123 is the recalibration proper.
+#   BEFORE   0.0131, from the pre-roster campaign (live SC lineup 2026-08-01):
+#            sigma_total 0.0231 against an aleatoric 0.0190, i.e.
+#            sqrt(0.0231^2 - 0.0190^2) = 0.0131, at that lineup's marginal tier.
+#
+# IT SHRANK BUT DID NOT VANISH, and the second half of that matters more than the
+# first. The full ablation is published in research/roster-as-primary-source.md §3;
+# its largest single row is the unrecorded NECK slot's efficiency (0.0081-0.0110
+# across the eight trials), which this change does not touch at all and cannot
+# until the upstream `stableGear` block is harvested (plan §11.2). Retiring the
+# three observed sources removes ~0.0023 in quadrature from a ~0.012 budget, which
+# is a real cut and a small one. A sigma near zero here would have been a BUG, not
+# a triumph: it would mean provenance was being respected for uncertainties that
+# remain genuinely unknown, and every published P(holds) would be over-confident on
+# exactly the thin trials the risk bridge exists to flag.
 #
 # DELIBERATELY EXCLUDED, and each for a stated reason:
 #   * turnout       — this tool says WHERE to go and WHEN to switch, not IF a
@@ -730,7 +764,7 @@ SLACK_OK = 0.15
 # error 0.014. The published number over-covers by design.
 #
 # Set to 0.0 to publish the aleatoric floor alone (a one-line change).
-RISK_SIGMA_SYSTEMATIC = 0.0131
+RISK_SIGMA_SYSTEMATIC = 0.0123
 
 # --- E[points]: the number officers should actually plan against --------------
 # WHY THIS BECAME NECESSARY on 2026-08-11, having been deferred for weeks as

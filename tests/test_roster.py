@@ -369,6 +369,17 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
     ULP-exactness IS the property under test.
     """
     monkeypatch.setattr(config, "ROSTER_SOURCE_ENABLED", False)
+    # WHAT THIS GOLDEN PINS IS THE RATE MODEL, NOT THE RISK CALIBRATION, and until
+    # R6 recalibrated RISK_SIGMA_SYSTEMATIC (0.0131 -> 0.0123) nothing had made that
+    # distinction because the constant had never moved. Two of the fields compared
+    # below are built from it — `clear_probability` and `expected_points` — so a
+    # recalibration was failing a test whose subject is which parties the search
+    # chose and what they scored. Pinned at the value the golden was generated
+    # under, deliberately and by name: the risk constant is measured by
+    # src/calibrate.py and its own movement is checked in tests/test_calibrate.py
+    # (::test_the_deterministic_score_does_not_depend_on_risk_sigma_systematic),
+    # which is where a change to it belongs.
+    monkeypatch.setattr(config, "RISK_SIGMA_SYSTEMATIC", 0.0131)
     week = trials.run_week(
         golden_members(),
         skills=list(GOLDEN_DRAW),

@@ -92,11 +92,12 @@ import math
 import os
 import random
 import statistics
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Callable, Iterable, Optional
 
-from . import config, trials
+from . import config, roster as roster_model, trials
 from .reader import MemberRow
+from .roster import ROSTER as _ROSTER
 
 # ---------------------------------------------------------------------------
 # Enhancement multiplier table (research/item-stats.json)
@@ -235,10 +236,44 @@ class Sources:
     q_filled: float = 1.0     # turnout probability for an optimizer-filled seat
     target_cv: float = 0.0    # lognormal CV on the work target (model-form error)
     stochastic: bool = False  # per-action RNG (the ALEATORIC term) — see race()
+    # --- PROVENANCE: stop pricing what is now OBSERVED (R6.1) ---------------
+    # The scripted roster tab reports each member's actual tool, its actual
+    # enhancement level and their actual house level. Three of the sources above
+    # are ESTIMATES OF THOSE VERY QUANTITIES, so continuing to draw them for a
+    # roster-backed member+skill prices an uncertainty that no longer exists:
+    #
+    #   augment    -> only the TOOL slot is observed. The cape, the family piece
+    #                 and the skilling top/bottom are still assumed +7/+3 and are
+    #                 still drawn, because the roster has no column for them.
+    #   tool_flip  -> the manual Tool checkbox is not even consulted once the
+    #                 roster names the item, so the flip is retired outright.
+    #   house      -> both the recorded-cell slip and the blank-cell resample.
+    #                 A machine read of the game's own building map is not a
+    #                 transcription, and what remains is the same one-sided
+    #                 staleness drift this module deliberately excludes for levels
+    #                 (see DEFAULT's level_common note): excluding it keeps every
+    #                 published P a conservative floor.
+    #
+    # PER MEMBER AND PER SKILL, not a global switch, and that is the whole point:
+    # the gear-hiders (9 SC, 7 LI — every tool column blank, levels and houses
+    # full) keep every one of those uncertainties and go on paying for them.
+    # Read from MemberRow.provenance, which roster.merge writes per field.
+    respect_provenance: bool = False
 
     def label(self) -> str:
-        on = [f"{k}={v}" for k, v in self.__dict__.items()
-              if v not in (0, 0.0, 1.0)]
+        """Every field that differs from its own default, for the report header.
+
+        Compared against the field DEFAULTS rather than against ``(0, 0.0, 1.0)``,
+        which is what this did until R6 and which silently swallowed every BOOLEAN
+        switch: ``True == 1`` in Python, so ``house_blank``, ``stochastic`` and
+        ``respect_provenance`` were all filtered out of the label of the very run
+        they governed — and ``house=1`` with them.
+        """
+        on = [
+            f"{f.name}={getattr(self, f.name)}"
+            for f in fields(self)
+            if getattr(self, f.name) != f.default
+        ]
         return ", ".join(on) or "none (golden)"
 
 
@@ -271,6 +306,17 @@ DEFAULT = Sources(
 
     augment=3,          # gear is assumed +7 for all; reality varies
     tool_flip=0.03,     # a few mis-ticked celestial boxes
+    respect_provenance=True,
+                        # ON since 2026-08-31, when the scripted roster tab became
+                        # the primary member-data source. The three sources
+                        # immediately above (and `house` above them) are estimates
+                        # of quantities the roster now MEASURES per member, and
+                        # pricing a measured quantity as unknown is the same class
+                        # of error as leaving RISK_SIGMA_SYSTEMATIC stale — it just
+                        # points the other way. Run with --ignore-provenance to
+                        # reproduce the pre-roster treatment on the same lineup;
+                        # that control is the second column of the R6 table in
+                        # research/roster-as-primary-source.md §3.
     target_cv=0.0,      # MODEL-FORM ERROR: DELIBERATELY OFF. The work formulas
                         # are confirmed, not guessed — TotalWork(t,N) =
                         # DifficultyLevel(t)*400*(1+N/100) and the success delta
@@ -336,6 +382,90 @@ class Seat:
     volunteered: bool = True
 
 
+def _house_is_observed(member: MemberRow, skill: str) -> bool:
+    """True when THIS member's house level for ``skill`` came from the roster.
+
+    ``roster.merge`` tags every (member, skill, field) triple it resolves, so this
+    is a lookup rather than a re-derivation. The tag is keyed by the SHEET COLUMN
+    (Alchemy lives in the "Bell Farming" column), which is why it goes through
+    ``trials._sheet_column`` rather than the trial skill's own name.
+    """
+    if not config.ROSTER_USE_HOUSES:
+        return False
+    return member.provenance.get(
+        f"{trials._sheet_column(skill)}.house"
+    ) == _ROSTER
+
+
+def _tool_is_observed(member: MemberRow, skill: str) -> bool:
+    """True when ``trials._tool_terms`` prices this tool from the roster's OWN read.
+
+    Deliberately stricter than the provenance tag alone: a named tool with a BLANK
+    enhancement cell is tagged "roster" and yet is priced at
+    ``config.TOOL_ENHANCE_WHEN_UNKNOWN`` — a guess, and one that understates
+    against an observed mode of +5. Such a member+skill therefore keeps its
+    ``augment`` uncertainty, because the enhancement level really is unknown; only
+    the checkbox flip is retired, since the item name is known regardless.
+    Measured on the live tabs the case does not arise at all (zero blank
+    enhancements attached to a named tool on either guild), but the shipped rule
+    must be right rather than merely currently vacuous.
+    """
+    if not config.ROSTER_USE_TOOLS:
+        return False
+    item, enhance = trials._resolve_tool(member, skill)
+    if item is None or config.TOOL_STATS.get(item) is None:
+        return False
+    if not config.ROSTER_USE_TOOL_ENHANCEMENT:
+        return False   # the observed TIER is kept but +7 is re-imposed: a guess again
+    return enhance is not None
+
+
+def _perturbed_tool_terms(
+    member: MemberRow,
+    skill: str,
+    tool_checkbox: bool,
+    src: Sources,
+    enh: Callable[[int], int],
+) -> tuple[float, float]:
+    """Mirror of ``trials._tool_terms``, with the enhancement level perturbed.
+
+    The same four-step precedence, in the same order, so the golden identity
+    (:func:`selftest`) holds with every source off — including the roster path,
+    which prices eighty catalogue items through ``trials.tool_bonus`` rather than
+    the two shipped ``TOOL_SPEED_*_PLUS7`` constants. Calling the shipped function
+    rather than re-deriving its arithmetic is the point: the tool tier is now DATA
+    and the campaign must not fork it.
+
+    ``enh`` is the caller's per-slot enhancement draw. It is applied to the
+    OBSERVED level for a roster-backed tool (so "+/-3 enhancement levels" means
+    what it says: around what the member actually holds, not around an assumed +7)
+    and skipped entirely under ``respect_provenance``.
+    """
+    if config.ROSTER_USE_TOOLS:
+        item, enhance = trials._resolve_tool(member, skill)
+        if item is not None and config.TOOL_STATS.get(item) is not None:
+            if not config.ROSTER_USE_TOOL_ENHANCEMENT:
+                enhance = config.ENHANCEMENT_ASSUMED_LEVEL
+            observed = enhance is not None
+            level = enhance if observed else config.TOOL_ENHANCE_WHEN_UNKNOWN
+            if not (observed and src.respect_provenance):
+                level = enh(level)
+            bonus = trials.tool_bonus(skill, item, level)
+            if bonus is not None:
+                return bonus
+    # The manual tab's checkbox, at the assumed +7 — today's behaviour, and the
+    # only path a gear-hider or a roster-less member ever takes.
+    if skill == "Enhancing":
+        return 0.0, _stat(
+            TOOL_SUCCESS_CELESTIAL if tool_checkbox else TOOL_SUCCESS_HOLY,
+            enh(ASSUMED_GEAR),
+        )
+    return _stat(
+        TOOL_SPEED_CELESTIAL if tool_checkbox else TOOL_SPEED_HOLY,
+        enh(ASSUMED_GEAR),
+    ), 0.0
+
+
 def _prepare_perturbed(
     seat: Seat,
     src: Sources,
@@ -391,16 +521,26 @@ def _prepare_perturbed(
     #                    the posterior predictive given no information — and which
     #                    also removes the flat default's BIAS for free (LI's filled
     #                    cells average ~3.1 against a default of 4).
-    if house is None and src.house_blank and pool:
+    #
+    #   ROSTER cell   -> neither. The roster reads the game's own building map, so
+    #                    there is no transcription to slip and no blank to guess
+    #                    at; see Sources.respect_provenance.
+    observed_house = src.respect_provenance and _house_is_observed(member, skill)
+    if house is None and src.house_blank and pool and not observed_house:
         house_level = pool[rng.randrange(len(pool))]
     else:
         house_level = trials._house_level(house)
-        if src.house and house is not None:
+        if src.house and house is not None and not observed_house:
             house_level += rng.randint(-src.house, src.house)
     house_level = max(0, min(config.HOUSE_MAX_LEVEL, house_level))
 
     # --- tool checkbox ------------------------------------------------------
-    if src.tool_flip and rng.random() < src.tool_flip:
+    # Retired outright for a roster-backed tool: once the roster names the item,
+    # _perturbed_tool_terms never reads the checkbox, so a mis-tick cannot reach
+    # the rate. Gated explicitly rather than left to be inert, so the intent is on
+    # the record and a future fallback cannot quietly resurrect it.
+    tool_observed = src.respect_provenance and _tool_is_observed(member, skill)
+    if src.tool_flip and not tool_observed and rng.random() < src.tool_flip:
         tool = not tool
 
     # --- enhancement levels, drawn INDEPENDENTLY per slot -------------------
@@ -414,21 +554,23 @@ def _prepare_perturbed(
     efficiency = 0.0
     success_bonus = 0.0
 
+    # The tool, by trials._tool_terms's own precedence: the roster's actual item at
+    # its actual enhancement level where the roster has one, the manual checkbox at
+    # the assumed +7 otherwise. Resolved HERE, before the family branch, so the
+    # draw order is unchanged (cape, tool, then the rest).
+    tool_speed, tool_success = _perturbed_tool_terms(member, skill, tool, src, enh)
+
     # Common-mode buff shifts, drawn ONCE per replicate by the caller and applied
     # identically to every member — which is exactly why they do not average down.
     buff_gathering, buff_production, buff_enhancing = buffs
 
     if skill == "Enhancing":
-        success_bonus += _stat(
-            TOOL_SUCCESS_CELESTIAL if tool else TOOL_SUCCESS_HOLY, enh(ASSUMED_GEAR)
-        )
+        success_bonus += tool_success
         speed += _stat(GLOVES_ENHANCING_SPEED, enh(ASSUMED_GEAR))
         speed += config.COMMUNITY_ENHANCING_SPEED_BUFF + buff_enhancing
         speed += config.HOUSE_ENHANCING_SPEED_PER_LEVEL * house_level
     else:
-        speed += _stat(
-            TOOL_SPEED_CELESTIAL if tool else TOOL_SPEED_HOLY, enh(ASSUMED_GEAR)
-        )
+        speed += tool_speed
         efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
         efficiency += config.HOUSE_EFFICIENCY_PER_LEVEL * house_level
         if skill not in config.GATHERING_SKILLS:
@@ -483,20 +625,26 @@ def _prepare_perturbed(
     if trials.double_chance(skill) > 0:
         double = max(1.0, double + gather_bonus + buff_gathering)
 
-    # GUILD SHRINE BUFFS (Force -> efficiency, Tempo -> action speed), applied inside
-    # trials since the 2026-08-11 patch. Added here for one hard reason: this function
-    # is a MIRROR of trials._prepare_member, and the selftest below asserts the two
-    # agree to within 1e-9 with every uncertainty switched off. Omitting them would
-    # break that golden equality, not merely bias a variance estimate.
+    # SHRINE BUFFS (Force -> efficiency, Tempo -> action speed), applied inside trials
+    # since the 2026-08-11 patch. Added here for one hard reason: this function is a
+    # MIRROR of trials._prepare_member, and the selftest below asserts the two agree
+    # to within 1e-9 with every uncertainty switched off. Omitting them would break
+    # that golden equality, not merely bias a variance estimate.
     #
-    # NOT perturbed, and that is deliberate rather than an oversight. A shrine level is
-    # a known integer read from the guild's own building map, not an unobserved gear
-    # slot — there is nothing to be uncertain about at a given level. What IS uncertain
-    # is whether the shrine level or the separately-bought BUFF level drives the
-    # multiplier (research/guild-shrines.md §6), and that is a discrete either/or worth
-    # a scenario, not a Gaussian smeared into sigma — the same argument this module
-    # already makes for the community buffs.
-    shrine_speed, shrine_efficiency = trials.guild_shrine_bonuses()
+    # PER MEMBER since the roster flip, and resolved through trials._resolve_shrine so
+    # the switch (config.ROSTER_USE_SHRINES) is read at exactly one place. THE GUILD'S
+    # SHRINE LEVEL IS A CAP, NOT A GRANT: what multiplies a member's stats is the level
+    # that member bought, which the roster reports per member. Reading the guild-wide
+    # map here — as this line did until R6 — would hand every member the modelled
+    # level 1 while the real mean is 2.99 (SC) / 2.30 (LI), and would break the golden
+    # identity above the moment the merge started supplying real levels.
+    #
+    # STILL NOT perturbed, and now for a stronger reason than before: the level is an
+    # integer read per member out of the game's own data, so there is nothing left to
+    # be uncertain about. The old open question — shrine level or separately-bought
+    # BUFF level? — is answered (§2.2 of the plan: the shrine level is the guild's cap,
+    # the purchase is what reaches the rate), so it is no longer even a scenario.
+    shrine_speed, shrine_efficiency = trials._resolve_shrine(member)
 
     return (
         level,
@@ -904,8 +1052,75 @@ def report_tier_profile(cal: TrialCalibration) -> None:
               f"{fit:>7.3f}")
 
 
+def _run_all(
+    parties: list[list[Seat]],
+    pools: Optional[list[Optional[list[int]]]],
+    src: Sources,
+    reps: int,
+    seed: int,
+) -> list[TrialCalibration]:
+    """``run_trial`` over every party, each with its own guild-wide house pool."""
+    if pools is None:
+        pools = [None] * len(parties)
+    return [
+        run_trial(p, src, reps, seed, pool)
+        for p, pool in zip(parties, pools)
+    ]
+
+
+def report_systematic(
+    parties: list[list[Seat]], cals: list[TrialCalibration]
+) -> list[tuple[str, int, float, float, float]]:
+    """The constant this whole module exists to set, and its derivation.
+
+    ``config.RISK_SIGMA_SYSTEMATIC`` is NOT the campaign's sigma. The shipped
+    bridge (``trials.clear_probability``) adds two terms in quadrature: the
+    ALEATORIC one, derived per party and per tier from the Wald first-passage
+    formula by ``trials.clear_sigma``, and the SYSTEMATIC remainder, which is the
+    constant. The campaign's DEFAULT runs with ``stochastic=True``, so its sigma is
+    the TOTAL and the constant is what is left after the dice are taken back out:
+
+        systematic = sqrt( sigma_campaign^2 - sigma_aleatoric^2 )
+
+    at each trial's marginal tier — the same derivation the config comment records
+    for the 0.0131 this replaces (0.0231 total against 0.0190 aleatoric).
+
+    Clamped at zero, and a clamp is REPORTED rather than hidden: a campaign sigma
+    below the aleatoric floor means the two estimators disagree, which is a finding
+    about the harness and not a licence to publish 0.
+    """
+    print("\n=== RISK_SIGMA_SYSTEMATIC: total, aleatoric floor, remainder ===")
+    print(f"{'trial':<12} {'tier':>5} {'sigma_tot':>10} {'aleatoric':>10} "
+          f"{'systematic':>11}")
+    rows = []
+    for seats, cal in zip(parties, cals):
+        tier = cal.model_tier
+        total = cal.sigma.get(tier)
+        alea = trials.clear_sigma([s.member for s in seats], cal.skill, tier)
+        if total is None or alea is None:
+            print(f"{cal.skill:<12} {tier:>5} {'—':>10} {'—':>10} {'—':>11}")
+            continue
+        gap = total ** 2 - alea ** 2
+        systematic = math.sqrt(gap) if gap > 0 else 0.0
+        flag = "" if gap > 0 else "   <- CLAMPED: campaign sigma below the floor"
+        print(f"{cal.skill:<12} {tier:>5} {total:>10.4f} {alea:>10.4f} "
+              f"{systematic:>11.4f}{flag}")
+        rows.append((cal.skill, tier, total, alea, systematic))
+    if rows:
+        worst = max(rows, key=lambda r: r[4])
+        print(f"\n  largest systematic remainder: {worst[4]:.4f} "
+              f"({worst[0]}, tier {worst[1]})")
+        print(f"  currently shipped RISK_SIGMA_SYSTEMATIC = "
+              f"{config.RISK_SIGMA_SYSTEMATIC}")
+    return rows
+
+
 def ablation(
-    parties: list[list[Seat]], reps: int, seed: int
+    parties: list[list[Seat]],
+    reps: int,
+    seed: int,
+    pools: Optional[list[Optional[list[int]]]] = None,
+    src: Sources = DEFAULT,
 ) -> list[tuple[str, Sources, list[TrialCalibration]]]:
     """One source at a time: the variance budget.
 
@@ -914,26 +1129,47 @@ def ablation(
     not, the sources are interacting (the SUCCESS_FLOOR clamp and the
     ``floor(work_power)`` truncation are both non-linear, so some interaction is
     expected and worth seeing).
+
+    Every row inherits ``src.respect_provenance`` — the CAMPAIGN'S treatment, not
+    ``DEFAULT``'s — so a row means "this source, priced the way this run prices it".
+    That inheritance is the whole point of the paired table: run the CLI twice, once
+    plain and once with ``--ignore-provenance``, and the two ``augment`` / ``tool
+    checkbox`` / ``house`` rows are the before and after of R6. Reading ``DEFAULT``
+    here instead (as a first draft did) makes the two tables identical and the
+    control column a forgery.
+
+    The three UNMODELLED-GEAR sources are rows in their own right since R6: they
+    are the largest surviving term once the observed quantities stop being priced,
+    and a budget that leaves its largest term out of the table cannot be read.
     """
     d = DEFAULT
+    rp = src.respect_provenance
     single = [
-        ("level (common drift)", Sources(level_common=d.level_common)),
-        ("level (independent)", Sources(level_indep=d.level_indep)),
-        ("house", Sources(house=d.house)),
-        ("augment", Sources(augment=d.augment)),
-        ("tool checkbox", Sources(tool_flip=d.tool_flip)),
-        ("turnout", Sources(q_signed=d.q_signed, q_filled=d.q_filled)),
-        ("model form (target)", Sources(target_cv=d.target_cv)),
-        ("STOCHASTIC (per-action)", Sources(stochastic=True)),
+        ("level (common drift)", Sources(level_common=d.level_common, respect_provenance=rp)),
+        ("level (independent)", Sources(level_indep=d.level_indep, respect_provenance=rp)),
+        ("house", Sources(house=d.house, house_blank=d.house_blank, respect_provenance=rp)),
+        ("augment", Sources(augment=d.augment, respect_provenance=rp)),
+        ("tool checkbox", Sources(tool_flip=d.tool_flip, respect_provenance=rp)),
+        ("gear: neck speed", Sources(gear_speed=d.gear_speed, respect_provenance=rp)),
+        ("gear: neck efficiency", Sources(gear_efficiency=d.gear_efficiency, respect_provenance=rp)),
+        ("gear: ring/earring", Sources(gear_gathering=d.gear_gathering, respect_provenance=rp)),
+        ("turnout", Sources(q_signed=d.q_signed, q_filled=d.q_filled, respect_provenance=rp)),
+        ("model form (target)", Sources(target_cv=d.target_cv, respect_provenance=rp)),
+        ("STOCHASTIC (per-action)", Sources(stochastic=True, respect_provenance=rp)),
     ]
     out = []
     for name, s in single:
-        cals = [run_trial(p, s, reps, seed) for p in parties]
-        out.append((name, s, cals))
+        out.append((name, s, _run_all(parties, pools, s, reps, seed)))
     return out
 
 
-def scenario_buffs_lapsed(parties: list[list[Seat]], reps: int, seed: int):
+def scenario_buffs_lapsed(
+    parties: list[list[Seat]],
+    reps: int,
+    seed: int,
+    pools: Optional[list[Optional[list[int]]]] = None,
+    src: Sources = DEFAULT,
+):
     """The community gathering buff lapsing: a REGIME, not a Gaussian.
 
     ``DOUBLE_CHANCE`` is 0.20 community + 0.05 gear, so a lapse takes the
@@ -948,34 +1184,43 @@ def scenario_buffs_lapsed(parties: list[list[Seat]], reps: int, seed: int):
     try:
         config.DOUBLE_CHANCE = config.GEAR_DOUBLE_CHANCE
         config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = 0.0
-        return [run_trial(p, DEFAULT, reps, seed) for p in parties]
+        return _run_all(parties, pools, src, reps, seed)
     finally:
         config.DOUBLE_CHANCE = original
         config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = original_prod
 
 
-def scenario_shrines_off(parties: list[list[Seat]], reps: int, seed: int):
+def scenario_shrines_off(
+    parties: list[list[Seat]],
+    reps: int,
+    seed: int,
+    pools: Optional[list[Optional[list[int]]]] = None,
+    src: Sources = DEFAULT,
+):
     """The guild shrine buffs NOT applying inside trials: a discrete either/or.
 
     The patch says "Shrine buffs now apply inside guild Trials", and Force (efficiency)
-    and Tempo (action speed) are modelled accordingly. Two things about that are
-    unconfirmed, and both are REGIMES rather than Gaussians, so they belong here beside
-    the buff-lapse scenario rather than smeared into sigma:
+    and Tempo (action speed) are modelled accordingly. ONE thing about that is still
+    unconfirmed, and it is a REGIME rather than a Gaussian, so it belongs here beside
+    the buff-lapse scenario rather than smeared into sigma: whether the buffs really do
+    reach a skilling trial (the note says so, but no capture yet shows the resolved
+    figure).
 
-      * whether the buffs really do reach a skilling trial (the note says so, but no
-        capture yet shows the resolved figure), and
-      * whether the multiplier follows the SHRINE level — which the guild's building map
-        records — or the separately-purchased BUFF level, which no capture holds at all
-        (research/guild-shrines.md §6).
+    The SECOND question this scenario used to carry — shrine level or separately-bought
+    BUFF level? — is ANSWERED, and the answer is both, in series: the guild's shrine
+    level is a CAP and the member's own purchase is what multiplies their stats. The
+    roster reports that purchase per member, so it is data now and not a scenario. See
+    plan §2.2 and trials.member_shrine_bonuses.
 
-    Switching them off takes the conservative end of both questions at once. At the live
-    levels the effect is small (Force 1 + Tempo 1 is +0.005 on each channel), so a large
-    movement in this line would itself be the finding.
+    Switching the buffs off is therefore the conservative end of the one question that
+    remains. It is no longer small: the modelled levels were Force 1 + Tempo 1 (+0.005
+    on each channel) but the measured per-member means are 2.99 / 3.13 (SC) and
+    2.30 / 2.31 (LI), so this line now prices roughly three times what it used to.
     """
     original = config.SHRINE_BUFFS_APPLY_IN_TRIALS
     try:
         config.SHRINE_BUFFS_APPLY_IN_TRIALS = False
-        return [run_trial(p, DEFAULT, reps, seed) for p in parties]
+        return _run_all(parties, pools, src, reps, seed)
     finally:
         config.SHRINE_BUFFS_APPLY_IN_TRIALS = original
 
@@ -1088,6 +1333,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--no-ablation", action="store_true")
     ap.add_argument("--no-direct", action="store_true",
                     help="skip the action-level validation of the aleatoric term")
+    ap.add_argument("--ignore-provenance", action="store_true",
+                    help="price the roster-OBSERVED tool, enhancement and house as "
+                         "unknown anyway (Sources.respect_provenance = False). The "
+                         "pre-roster treatment, on the post-roster lineup: the "
+                         "control column of the R6 table.")
+    ap.add_argument("--no-roster", action="store_true",
+                    help="skip the roster merge and calibrate the manual tab's rows, "
+                         "whatever config.ROSTER_SOURCE_ENABLED says")
     args = ap.parse_args(argv)
 
     root = os.path.dirname(os.path.dirname(__file__))
@@ -1101,7 +1354,40 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"roster: {data.member_count} members ({config.TABS[args.guild]}), "
           f"fetched {data.fetched_at}")
 
-    parties = load_seats(signup_path, data.members)
+    # --- THE SAME ROWS THE BUILD RACES -----------------------------------------
+    # Closed 2026-08-31 (R6). Until this phase the campaign raced the MANUAL tab's
+    # rows while the shipped site raced the merged ones, so it was calibrating a
+    # model nobody publishes: stale levels, checkbox tools at an assumed +7, and
+    # every member held at shrine level 1. Worse, it made Sources.respect_provenance
+    # inert by construction — there was no provenance on the rows to respect — so
+    # the recalibration would have re-measured the old uncertainty and reported it
+    # as the new one, which is worse than not measuring at all.
+    #
+    # Gated exactly as build._fetch_guild gates it, and by the same switch, so the
+    # campaign and the site cannot disagree about what a member is.
+    members = data.members
+    if config.ROSTER_SOURCE_ENABLED and not args.no_roster:
+        rows = roster_model.scrape_roster_tab(config.ROSTER_TABS[args.guild])
+        report_join = roster_model.join(members, rows)
+        members, prov = roster_model.merge(members, report_join, args.guild)
+        # Strips the items config.TOOL_STATS does not model, exactly as the build
+        # does, so the campaign prices what the build prices. RAISES on a tool in
+        # the wrong slot: a shifted header row, not a new item.
+        prov.tools = trials.audit_roster_tools(members)
+        print(f"roster tab: {len(rows)} rows, {prov.roster_backed} joined, "
+              f"{prov.admitted} admitted, {prov.manual_backed} manual-only, "
+              f"captured {prov.captured_at or 'n/a'}"
+              + (f" — REFUSED: {prov.refused}" if prov.refused else ""))
+    else:
+        print("roster tab: NOT read (manual tab only)")
+
+    parties = load_seats(signup_path, members)
+    # One resample pool per party, drawn from the WHOLE guild for that party's
+    # skill (house_pool's docstring says why the guild and not the party). Passed
+    # since R6: main never passed it before, so DEFAULT's house_blank=True was
+    # inert from the CLI and a blank H cell contributed no uncertainty at all. The
+    # 0.0131 this phase replaces was measured with that gap open.
+    pools = [house_pool(members, p[0].skill) for p in parties]
 
     print("\ngolden test (sigma -> 0 must reproduce simulate_race):")
     for p in parties:
@@ -1114,13 +1400,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             top = ref.tier_reached
             report_direct_check(p, range(max(1, top - 2), top + 2))
 
-    cals = [run_trial(p, DEFAULT, args.reps, args.seed) for p in parties]
-    report(cals, DEFAULT)
+    src = replace(DEFAULT, respect_provenance=False) if args.ignore_provenance \
+        else DEFAULT
+    cals = _run_all(parties, pools, src, args.reps, args.seed)
+    report(cals, src)
 
     det = sum(trials.points_for_tier(c.model_tier) for c in cals)
     exp = sum(expected_points(c) for c in cals)
     print(f"\n  deterministic total {det}   E[points] {exp:.1f}   "
           f"bias {exp - det:+.1f}")
+
+    report_systematic(parties, cals)
 
     for c in cals:
         report_tier_profile(c)
@@ -1128,7 +1418,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not args.no_ablation:
         print("\n=== variance budget (one source at a time) ===")
         print(f"{'source':<22} " + " ".join(f"{c.skill:>10}" for c in cals))
-        for name, _s, acals in ablation(parties, max(1000, args.reps // 4), args.seed):
+        for name, _s, acals in ablation(
+                parties, max(1000, args.reps // 4), args.seed, pools, src):
             row = " ".join(
                 f"{a.sigma.get(a.model_tier, float('nan')):>10.4f}" for a in acals
             )
@@ -1138,16 +1429,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         print(f"{'ALL (combined)':<22} {combined}")
 
-    print("\n=== scenario: community buffs lapsed (regime, not sigma) ===")
-    shrines = scenario_shrines_off(parties, max(1000, args.reps // 4), args.seed)
-    print(
-        "\n=== scenario: guild shrine buffs NOT applying in trials ==="
-    )
+    # Both scenarios inherit THIS run's provenance treatment, so a paired
+    # --ignore-provenance run compares like with like. The two headers used to sit
+    # one scenario apart from the block each described (the lapse header above the
+    # shrine numbers), which mislabelled every figure transcribed out of this report.
+    print("\n=== scenario: guild shrine buffs NOT applying in trials ===")
+    shrines = scenario_shrines_off(
+        parties, max(1000, args.reps // 4), args.seed, pools, src)
     print(f"   tiers {[c.model_tier for c in shrines]}"
           f"   E[points] {sum(expected_points(c) for c in shrines):.1f}")
 
-    lapsed = scenario_buffs_lapsed(parties, max(1000, args.reps // 4), args.seed)
-    report(lapsed, DEFAULT)
+    print("\n=== scenario: community buffs lapsed (regime, not sigma) ===")
+    lapsed = scenario_buffs_lapsed(
+        parties, max(1000, args.reps // 4), args.seed, pools, src)
+    report(lapsed, src)
     print(f"  deterministic total under lapse "
           f"{sum(trials.points_for_tier(c.model_tier) for c in lapsed)}"
           f"   E[points] {sum(expected_points(c) for c in lapsed):.1f}")

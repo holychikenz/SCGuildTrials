@@ -238,3 +238,255 @@ Tailoring. Both halves of the pair §5.6 feared was one renamed person are on th
 field, as two people, which is the outcome the characterId argument predicted.
 
 Admission alone is worth **+11.0 expected points** to LI.
+
+## 3. R6 — recalibrating `RISK_SIGMA_SYSTEMATIC`
+
+### 3.0 The prediction, recorded BEFORE the campaign was run
+
+Written 2026-09-01, with `RISK_SIGMA_SYSTEMATIC = 0.0131` still shipped and no
+post-merge campaign yet run:
+
+> **Sigma shrinks but does not vanish.** `calibrate.py` prices `augment=±3 per
+> slot`, `tool_flip=0.03` and `house`/`house_blank` as uncertainty; all three are
+> now *observed* per member for a roster-backed member+skill, so retiring them
+> must cut the systematic remainder. It cannot cut it to zero, because the
+> unmodelled neck / ring / earring gear (`gear_speed=0.03`,
+> `gear_efficiency=0.10`, `gear_gathering=0.05`) is untouched — the roster does
+> not carry those slots unless the upstream `stableGear` toggle is switched on
+> (plan §11.2) — and that term is **not** the small one.
+>
+> **A sigma at or near zero would be a bug, not a triumph.** It would mean
+> provenance was being respected for uncertainties that remain genuinely
+> unknown, and the published `P(holds)` would become over-confident on exactly
+> the thin trials the risk bridge exists to flag.
+
+The ablation table in §3.2 is what settles it, and §3.3 records whether the
+prediction held.
+
+### 3.1 The prerequisite the plan omitted
+
+`calibrate.main` fetched the manual tab and **never merged the roster**. It raced
+rows nobody publishes: stale levels, checkbox tools at an assumed +7, and every
+member held at shrine level 1 while the roster reports a mean of 2.99 (SC). Worse,
+it made `Sources.respect_provenance` inert *by construction* — there was no
+provenance on those rows to respect — so R6 as written would have re-measured the
+old uncertainty and reported it as the new one, which is worse than not measuring.
+
+Fixed first: `main` now joins and merges exactly as `build._fetch_guild` does,
+gated on the same `config.ROSTER_SOURCE_ENABLED`, and runs `audit_roster_tools` on
+the result so the campaign prices what the build prices. Three further gaps in the
+same function fell out of doing it:
+
+- **`house_pool` was never passed.** `DEFAULT.house_blank=True` was therefore
+  inert from the CLI, and a blank H cell contributed no uncertainty at all. The
+  0.0131 being replaced was measured with that gap open.
+- **`Sources.label()` filtered `v not in (0, 0.0, 1.0)`**, and `True == 1` in
+  Python, so every boolean switch — `house_blank`, `stochastic`,
+  `respect_provenance` — was dropped from the label of the very run it governed,
+  and `house=1` with them. Every figure transcribed out of this report is
+  identified by that string.
+- **`ablation()` read `DEFAULT.respect_provenance`** rather than the campaign's
+  own. Caught by running the campaign twice and noticing the two tables agreed to
+  the last digit on every row: the "before" column was a forgery. It now inherits
+  the run's treatment, which is what makes §3.2 a paired table.
+
+The shrine read in `_prepare_perturbed` also moved from `guild_shrine_bonuses()`
+to `trials._resolve_shrine(member)`. That was not optional: the harness's golden
+identity (`selftest`: with every source off it must BE `simulate_race`) breaks the
+moment the merge supplies real per-member levels and the mirror keeps reading the
+guild map. It reports `max relative deviation 0.00e+00` on all eight live parties.
+
+### 3.2 The ablation — the full table, both treatments
+
+Live, post-merge, on the **shipped sign-up plan** for each guild (not the
+unconstrained optimum: the plan is what actually runs). 20 000 reps, seed
+20260901, `--reps 20000` for the headline and `reps/4 = 5000` per ablation row.
+"ON" is the shipped campaign (`respect_provenance=True`); "OFF" is
+`--ignore-provenance` — *the same post-merge lineup with the observed quantities
+priced as unknown anyway*, which is the honest control. Note it is not "revert to
+the checkbox": OFF draws ±3 enhancement levels around the member's **observed**
+level, not around an assumed +7.
+
+Every figure is `sd(ln tau)` at that trial's marginal tier.
+
+**SC** — parties 28 / 23 / 28 / 28, step total 4900
+
+| source | C.Smithing | Milking | Enhancing | Tailoring | |
+|---|---|---|---|---|---|
+| level (common drift) | 0.0000 | 0.0000 | 0.0000 | 0.0000 | off by design |
+| level (independent) | 0.0000 | 0.0000 | 0.0000 | 0.0000 | off by design |
+| house | 0.0020 → **0.0000** | 0.0021 → **0.0000** | 0.0011 → **0.0000** | 0.0018 → **0.0000** | OFF → ON |
+| augment | 0.0064 → **0.0022** | 0.0057 → **0.0028** | 0.0023 → **0.0020** | 0.0054 → **0.0024** | OFF → ON |
+| tool checkbox | 0.0008 → 0.0008 | 0.0008 → 0.0008 | 0.0002 → 0.0002 | 0.0009 → 0.0009 | unchanged |
+| gear: neck speed | 0.0015 | 0.0018 | 0.0022 | 0.0016 | **untouched** |
+| gear: neck efficiency | 0.0081 | **0.0103** | **0.0106** | 0.0085 | **untouched** |
+| gear: ring/earring | 0.0000 | 0.0055 | 0.0000 | 0.0000 | **untouched** |
+| turnout | 0.0000 | 0.0000 | 0.0000 | 0.0000 | off by design |
+| model form (target) | 0.0000 | 0.0000 | 0.0000 | 0.0000 | off by design |
+| STOCHASTIC (per-action) | 0.0163 | 0.0185 | 0.0118 | 0.0156 | the aleatoric floor |
+| **ALL (combined), ON** | 0.0183 | **0.0221** | 0.0160 | 0.0179 | |
+| **ALL (combined), OFF** | 0.0192 | **0.0232** | 0.0162 | 0.0187 | |
+
+**LI** — parties 26 / 26 / 26 / 26, step total 4500
+
+| source | C.Smithing | Milking | Enhancing | Tailoring | |
+|---|---|---|---|---|---|
+| house | 0.0020 → **0.0000** | 0.0021 → **0.0003** | 0.0011 → **0.0000** | 0.0018 → **0.0000** | OFF → ON |
+| augment | 0.0064 → **0.0023** | 0.0057 → **0.0028** | 0.0023 → **0.0019** | 0.0054 → **0.0028** | OFF → ON |
+| tool checkbox | 0.0008 → 0.0008 | 0.0011 → 0.0011 | 0.0000 → 0.0000 | 0.0011 → 0.0012 | unchanged |
+| gear: neck speed | 0.0016 | 0.0016 | 0.0023 | 0.0016 | **untouched** |
+| gear: neck efficiency | 0.0087 | **0.0095** | **0.0110** | 0.0084 | **untouched** |
+| gear: ring/earring | 0.0000 | 0.0046 | 0.0000 | 0.0000 | **untouched** |
+| STOCHASTIC (per-action) | 0.0150 | 0.0168 | 0.0115 | 0.0138 | the aleatoric floor |
+| **ALL (combined), ON** | 0.0176 | 0.0205 | 0.0164 | 0.0168 | |
+| **ALL (combined), OFF** | 0.0187 | 0.0212 | 0.0165 | 0.0176 | |
+
+**Three readings of this table, in order of how much they matter.**
+
+1. **`house` goes to exactly zero and `augment` falls by two thirds.** Those are
+   the two sources the roster turned into observations, and the ablation is where
+   you can see it happen. `augment` does not vanish because only the TOOL slot is
+   observed: the cape, the family piece and the skilling top/bottom are still
+   assumed +7/+3 and still drawn, because no source this repo reads carries them.
+   LI Milking's residual `house` 0.0003 is the six manual-only LI members.
+2. **`tool checkbox` does not move at all**, and that is not a bug. Once the
+   roster names the item, `trials._tool_terms`'s precedence never consults the
+   checkbox, so the flip was *already* dead for a roster-backed member in both
+   treatments — it only ever moved the gear-hiders, and it still does. Gating it
+   under `respect_provenance` states the intent; it does not change a number.
+   Pinned by `test_a_named_roster_tool_makes_the_checkbox_flip_inert_either_way`.
+3. **The largest surviving systematic row is the unrecorded neck slot**, at
+   0.0081–0.0110, and this change does not touch it. That single row is larger than
+   everything R6 retired, put together and in quadrature.
+
+### 3.3 The new constant, and whether the prediction held
+
+`systematic = sqrt(sigma_campaign^2 - sigma_aleatoric^2)` at each trial's marginal
+tier — the same derivation the config comment records for the 0.0131 it replaces.
+`sigma_aleatoric` is `trials.clear_sigma`, i.e. the shipped Wald first-passage
+formula, so the remainder is exactly what the constant is defined to be.
+
+| guild | trial | tier | sigma_total | aleatoric | systematic ON | systematic OFF |
+|---|---|---|---|---|---|---|
+| SC | C.Smithing | 12 | 0.0183 | 0.0162 | 0.0085 | 0.0102 |
+| SC | **Milking** | **12** | **0.0221** | **0.0183** | **0.0123** | **0.0141** |
+| SC | Enhancing | 10 | 0.0160 | 0.0116 | 0.0109 | 0.0113 |
+| SC | Tailoring | 11 | 0.0179 | 0.0154 | 0.0092 | 0.0106 |
+| LI | C.Smithing | 11 | 0.0178 | 0.0149 | 0.0098 | 0.0112 |
+| LI | Milking | 11 | 0.0203 | 0.0170 | 0.0112 | 0.0127 |
+| LI | Enhancing | 9 | 0.0164 | 0.0115 | 0.0117 | 0.0119 |
+| LI | Tailoring | 10 | 0.0168 | 0.0140 | 0.0094 | 0.0107 |
+
+**Shipped: `RISK_SIGMA_SYSTEMATIC = 0.0123`**, the bold row — the largest of the
+eight, because one constant serves both guilds and the seven others are then
+over-covered, which is the direction this constant is documented as erring in. The
+maximum lands on the *same row* in both treatments, so the before/after is a
+comparison of one row and not of two different ones.
+
+Seed stability, same row, 20 000 reps: **0.0123** (seed 20260901), **0.0120**
+(20260801), **0.0121** (777). Spread ±0.0002; the maximum is quoted, not the mean.
+A first pass at the plan's default `--reps 4000` put this row at 0.0110 and the
+maximum on a different trial — the eight remainders were then separated by less
+than their own error bars, because `d(systematic)/d(sigma_total)` is
+`sigma_total/systematic ≈ 1.8`, so the remainder amplifies the campaign's noise.
+**4000 reps is not enough to rank these eight rows; 20 000 is.** That is a
+correction to the plan's stated default, not a shortcut taken against it.
+
+**THE PREDICTION HELD.** Sigma shrank — 0.0131 → 0.0123 against the shipped
+constant, and 0.0141 → 0.0123 against the control, which is the recalibration
+proper — and it did not come close to vanishing. §3.2's third reading is why: the
+unrecorded neck slot survives in full at 0.0081–0.0110 and is not the small term.
+
+### 3.4 R6.4 — the compounding trap, checked
+
+R5 made the parties faster and R6 makes the risk discount smaller, so both push
+`expected_points` the **same** way. A bug in either would look confirmatory.
+
+**The plan's stated invariant is too strong, and this is the correction.** Plan
+§7 R6.4 asks that `credit_points` "must not move at all between the R5 and R6
+manifests". It can, legitimately: `config.OPT_OBJECTIVE = "expected"` means the
+**optimizer** maximises `expected_credit_points`, which reads
+`RISK_SIGMA_SYSTEMATIC` — so a new sigma can re-seat the parties and carry
+`credit_points` with them. (`expected_credit_points`'s own docstring still claims
+it "never enters `src.optimizer.AssignmentScorer`"; `optimizer._objective_value`
+calls it. The docstring is stale.) The invariant that actually detects a leak is
+the one about a **fixed** lineup:
+
+> Score a FIXED assignment at two sigmas. `tier_reached`, `partial_fraction`,
+> `credit_points`, `points` and both totals must be **identical** — they are
+> `+ - * / floor` over rates the risk model does not enter. If they move, the
+> recalibration has leaked into the rate model.
+
+Checked two ways. Offline and permanently, by
+`tests/test_calibrate.py::test_the_deterministic_score_does_not_depend_on_risk_sigma_systematic`.
+And live, on **frozen inputs** — one fetch, one merge, both sigmas scored off the
+same member list — because a live rebuild against §2.2's manifest could not have
+made the claim: the LI manual tab has gained five rows since R5 shipped (106
+manual + 5 admitted = 111 merged, against R5's 101 + 5 = 106), so a same-day
+comparison of two builds would be measuring an officer's edits as well as sigma.
+
+**The live check, on frozen inputs.** Both guilds' **shipped sign-up plans** (the
+parties that actually run, read out of `_site/signup.json` as
+`calibrate.load_seats` reads them — no optimiser search, so no search noise),
+scored at 0.0131 and at 0.0123 off one fetch:
+
+| | SC | LI |
+|---|---|---|
+| members merged | 107 | 111 |
+| seats | 28+23+28+28 = 107 | 26+26+26+26 = 104 |
+| step points | 4900 → **4900** | 4500 → **4500** |
+| credit points | 4924.496681581572 → **4924.496681581572** | 4585.709227696125 → **4585.709227696125** |
+| tiers | 12/12/10/11, unchanged | 11/11/9/10, unchanged |
+| partial fractions | unchanged, to the last digit | unchanged, to the last digit |
+| E[points] | 4923.0269 → 4923.2341 (**+0.2072**) | 4585.7921 → 4585.7875 (**−0.0046**) |
+| P(holds) moved | 2 of 4 | 0 of 4 |
+
+**`credit_points` is identical to the last digit on both guilds. No leak.**
+
+Two features of that table are worth reading rather than skimming:
+
+- **SC's E rises and LI's falls**, by very different amounts, and both are
+  correct. Where `E < credit` — SC's C.Smithing at P = 0.982 and Tailoring at
+  0.987 — the expectation is being docked for risk, so cutting sigma returns some
+  of it. Where `E > credit` — every LI trial, all four saturated at P = 1.0000 —
+  the expectation is *above* the deterministic score because the upside (running
+  further into the next tier than the point estimate) outweighs a downside that no
+  longer exists, and a narrower shock distribution takes some of that upside away.
+  A recalibration that moved every trial the same way would be the suspicious
+  result, not this one.
+- **Two of SC's four P(holds) do not move at all, and none of LI's do**, because
+  they are already exactly 1.0. LI's whole plan has left the region where sigma
+  can reach it — which is R5's safety gain, showing up in R6's arithmetic.
+
+The R5→R6 manifest comparison the plan also asks for is **not** available as a
+same-day pair of live builds, and this is the reason: the LI manual tab gained
+five rows between R5 shipping and R6 running (101+5 = 106 merged then, 106+5 = 111
+now), so the difference between two builds would carry an officer's edits as well
+as the constant. The frozen-input pair above is the stronger claim, not a weaker
+substitute for it — it varies one thing where a rebuild would have varied two.
+
+**The one thing this pair does NOT settle** is whether the optimiser re-seats. It
+may, legitimately: `OPT_OBJECTIVE = "expected"` is the search's objective, so a new
+sigma is a new objective and a different assignment is a consequence rather than a
+leak. Measuring it means four full searches, and a full search now costs far more
+than the ~85 s per guild recorded in `build.py`'s 2026-08-14 timing table — that
+table predates `OPT_OBJECTIVE = "expected"`, which calls `clear_sigma` and
+`_cumulative_tier_times` inside every objective evaluation. **The build is
+therefore slower than its own documented figures**, which is a finding in its own
+right and one nobody had noticed, because the only thing that ever runs a full
+search is CI.
+
+### 3.5 One thing R6 broke, which was worth breaking
+
+`tests/test_roster.py::test_roster_disabled_reproduces_the_golden_week` failed on
+the new constant, on `Milking.clear_probability`. It was right to fail and the test
+was wrong: **that golden pins the RATE MODEL, and two of the fields it compares are
+built from the RISK constant** (`clear_probability` and `expected_points`). Nothing
+had made the distinction because `RISK_SIGMA_SYSTEMATIC` had never moved before, so
+a test whose subject is *which parties the search chose and what they scored* was
+quietly also pinning a number measured by `src/calibrate.py`.
+
+Fixed by pinning the constant inside the test, by name, at the value the golden was
+generated under — not by regenerating the golden and not by loosening a tolerance.
+The constant's own movement is checked where it belongs, in
+`tests/test_calibrate.py`.
