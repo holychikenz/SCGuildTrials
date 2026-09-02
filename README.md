@@ -579,33 +579,38 @@ the clock instead of queueing.
 
 `build` runs the independent optimiser units concurrently in separate processes — one
 per guild as shipped, two per guild with the counterfactual switched back on; see the
-long note above `build._GuildInputs`. Measured per unit on live rosters, 2026-08-14:
+long note above `build._GuildInputs`.
 
-| | `run_week` L1 | buff ladder (×20) | `signup.plan` | `run_week` L20 *(off)* |
-|---|---|---|---|---|
-| SC | 84.8s | 0.20s | 18.6s | 90.8s |
-| LI | 56.2s | 0.20s | ~18.0s | 95.1s |
+**Re-measured 2026-09-02** (Apple Silicon, four restarts, `OPT_OBJECTIVE =
+"expected"`), replacing a table taken on 2026-08-14 that had gone badly stale:
 
-The whole twenty-rung ladder costs **0.20s** because it is `score_assignment` alone —
-no search — against ~90s for the one re-*optimised* rung it replaced. With the
-counterfactual off the critical path is `L1 + signup` for the slower guild, ~103s;
-with it on, `max(L1 + signup, L20)`, and note it is the *dearer* run, since at
-level-20 buffs the parties reach higher tiers and every `simulate_race` in the hot
-loop runs longer.
+| | measured | the 2026-08-14 table said |
+|---|---|---|
+| one `choose_assignment`, SC | **424–454s** (five runs) | 84.8s |
+| one `choose_assignment`, LI | **381–386s** (three runs) | 56.2s |
+| **the whole `python -m src.build`** | **503.6s** (8m 24s) | ~103s critical path |
+| the full test suite | **482–485s** (8m 2s) | not measured |
+| σ campaign, 20 000 reps with ablation | **~130s per guild** | not measured |
+
+**A 5–7× regression, and it was `OPT_OBJECTIVE = "expected"`** — exactly as the
+previous version of this section suspected but could not confirm. The expected
+objective calls `trials.clear_sigma` and `_cumulative_tier_times` inside *every*
+objective evaluation, of which the search makes ~87 000. Nobody had noticed because
+the only thing that ever runs a full search is CI, where the cost shows up as
+nothing but a slower green tick.
+
+Two honest caveats on that table. The per-search figures are `trials.choose_assignment`
+called directly, so they exclude the fetch (~1s) and the scoring pass (which is
+cheap — `score_assignment` alone, no search). And **`signup.plan` and the buff
+ladder were not separately re-instrumented**: the build's 503.6s minus SC's ~440s
+search leaves ~60s for the sign-up plan, the ladder and all rendering, which is
+consistent with the old 18.6s + 0.20s having grown by a similar factor, but that is
+an inference and not a measurement. The claim that the counterfactual is the
+*dearer* run is unaffected, since both runs got slower together.
 
 The output is byte-identical either way: every seed is fixed and no unit reads
 another's state. `config.BUILD_PARALLEL = False` runs the same units serially in one
 process when a traceback needs reading in peace.
-
-> **The table above is STALE, and by a lot.** It was measured on 2026-08-14;
-> `OPT_OBJECTIVE = "expected"` landed after it, and the expected objective calls
-> `trials.clear_sigma` and `_cumulative_tier_times` inside *every* objective
-> evaluation, of which the search makes ~87 000. Four full searches run locally on
-> 2026-09-01 took **over an hour** between them, against the ~4m50s these figures
-> predict. Nobody had noticed because the only thing that ever runs a full search
-> is CI, where the cost shows up as nothing but a slower green tick. The figures
-> need re-measuring; the note two sections up about the counterfactual being the
-> dearer run is unaffected, since both runs got slower together.
 
 ### One-time manual step
 

@@ -3947,11 +3947,24 @@ def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSit
 # WHY THIS IS NOT ONE SERIAL PASS ANY MORE (2026-08-14).
 #
 # The build had grown from 5m25s to 16m35s on the runner, and every second of it
-# was spent one after another. Measured per phase on live rosters:
+# was spent one after another. Measured per phase on live rosters, 2026-08-14:
 #
 #              run_week L1   run_week L20   signup.plan   total
 #   SC              84.8s          90.8s        18.6s    194.6s
 #   LI              56.2s          95.1s       ~18.0s   ~170.0s
+#
+# THOSE FIGURES ARE HISTORY, NOT CURRENT, and are kept only because the argument
+# for the fan-out is built on their RATIOS, which still hold. Re-measured
+# 2026-09-02, one `trials.choose_assignment` on the live rosters takes 424-454s
+# (SC, five runs) and 381-386s (LI, three runs) -- a 5-7x regression -- and the
+# whole `python -m src.build` takes 503.6s. The cause is OPT_OBJECTIVE =
+# "expected", which landed after the table above and calls trials.clear_sigma and
+# _cumulative_tier_times inside EVERY one of the search's ~87 000 objective
+# evaluations. Nobody noticed because the only thing that runs a full search is
+# CI, where the cost shows up as nothing but a slower green tick.
+#
+# See README.md "Where the run time goes" for the current table and for what was
+# NOT re-instrumented (signup.plan and the ladder).
 #
 # Two things had landed: the 2026-08-11 partial-credit patch (which cost little)
 # and the level-20 counterfactual page (which very nearly DOUBLED the work, because

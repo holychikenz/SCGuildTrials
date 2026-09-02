@@ -318,6 +318,20 @@ ROSTER_UNKNOWN_TOOL_FATAL = False
 # cannot flatter the answer (see calibrate.DEFAULT's level_common comment). Counted
 # and printed every build; if it exceeds 5% of matched member-skills on either guild
 # it must be resolved before the R5 flip rather than after.
+#
+# CLOSED 2026-09-02, and with something better than "no counter-examples". The
+# handover's standing complaint was that this constant "is still never exercised on
+# live data (zero named-tool-with-blank-enhancement observations on either guild),
+# so it remains untested against reality rather than merely provisional". The
+# gearSeen union is an INDEPENDENT view of the same fact — the userscript harvests
+# every equipped item with its enhancement level, by a different code path from the
+# tool columns — and it agrees on 2,020 of 2,020 observations across both guilds:
+# same item, same level, no blanks, no mismatches (research/per-item-gear.md §3.4).
+#
+# So this branch is not merely unobserved, it is CONFIRMED unreachable on today's
+# data by two sources that do not share a line of code. It stays, because a future
+# upstream change could reintroduce a blank, and because a constant that costs
+# nothing to keep should not be removed to make a point.
 TOOL_ENHANCE_WHEN_UNKNOWN = 0
 
 # --- Per-item gear from the `gearSeen` union: the switch ladder --------------
