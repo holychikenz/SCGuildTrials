@@ -24,6 +24,16 @@ import time
 from src import build, config, draw as draw_model, gear, roster, trials
 from src.scraper import scrape_member_tab
 
+# NOTE ON READING THE PER-SLICE ROWS. Each names the ONE slice priced per item;
+# the other three are switched off and therefore fall back to their PRE-GEAR
+# CONSTANTS (gear._pre_gear_terms), so a slice row is "this slice measured, the
+# rest as they were" and is comparable with the baseline directly.
+#
+# An earlier draft of gear.resolve dropped a disabled slot instead of restoring
+# its constant, which made these rows read "this slice measured, the rest ABSENT"
+# -- and they duly showed -200 to -400 points for every slice including the ones
+# that raise the rate. If a slice row ever looks like that again, suspect the
+# rollback path before suspecting the slice.
 SLICES = [
     ("cape", ["GEAR_USE_CAPE"]),
     ("family piece", ["GEAR_USE_FAMILY_PIECE"]),
@@ -63,9 +73,17 @@ def summarise(result) -> dict:
     }
 
 
+def _f(value, places: int = 4) -> str:
+    """Format a number that may be None -- a trial that banked no tier reports
+    no margin at all, which is data and not an error."""
+    return "  n/a" if value is None else f"{value:.{places}f}"
+
+
 def row(label: str, base: dict, got: dict) -> None:
-    thin_base = min(t[3] for t in base["trials"])
-    thin_got = min(t[3] for t in got["trials"])
+    probs_base = [t[3] for t in base["trials"] if t[3] is not None]
+    probs_got = [t[3] for t in got["trials"] if t[3] is not None]
+    thin_base = min(probs_base) if probs_base else float("nan")
+    thin_got = min(probs_got) if probs_got else float("nan")
     print(f"  {label:14s} points {got['points']:>7} ({got['points'] - base['points']:+})"
           f"   credit {got['credit']:9.2f} ({got['credit'] - base['credit']:+8.2f})"
           f"   E {got['expected']:9.2f} ({got['expected'] - base['expected']:+8.2f})"
@@ -96,7 +114,8 @@ def main() -> None:
         print(f"  {'baseline':14s} points {base['points']:>7}      "
               f"   credit {base['credit']:9.2f}            "
               f"   E {base['expected']:9.2f}            "
-              f"   thinnest P {min(t[3] for t in base['trials']):.4f}")
+              f"   thinnest P "
+              f"{min(t[3] for t in base['trials'] if t[3] is not None):.4f}")
 
         # --- each slice, on the SAME lineup ---------------------------------
         config.GEAR_SOURCE_ENABLED = True
@@ -128,9 +147,10 @@ def main() -> None:
         row("RE-OPTIMISED", base, got)
         print("  per trial (baseline -> re-optimised):")
         for b, g in zip(base["trials"], got["trials"]):
-            print(f"    {b[0]:14s} tier {b[1]}->{g[1]}   margin "
-                  f"{b[2]:.4f}->{g[2]:.4f}   P {b[3]:.4f}->{g[3]:.4f}   "
-                  f"E {b[4]:.2f}->{g[4]:.2f}")
+            print(f"    {b[0]:14s} tier {b[1]}->{g[1]}   "
+                  f"margin {_f(b[2])}->{_f(g[2])}   "
+                  f"P {_f(b[3])}->{_f(g[3])}   "
+                  f"E {_f(b[4], 2)}->{_f(g[4], 2)}")
         print()
         config.GEAR_SOURCE_ENABLED = False
 

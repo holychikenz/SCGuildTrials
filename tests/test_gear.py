@@ -651,3 +651,79 @@ def test_measure_keeps_the_pools_behind_the_means():
     assert stats.family_level["/items/collectors_boots"] == pytest.approx(5.5)
     # ... and they stay out of the page's JSON, which reports statistics not samples.
     assert "family_pool" not in stats.to_dict()
+
+
+def test_every_slice_switched_off_reproduces_the_pre_gear_constants(monkeypatch):
+    """THE DEFINITION of the per-slice switches being a rollback.
+
+    `config`'s note says each False "restores that slice's constant", and an
+    earlier draft of :func:`gear.resolve` simply SKIPPED a disabled slot instead —
+    handing the member no cape and no family piece, a rollback that left the model
+    worse than either state it can be rolled between. Nothing caught it, because
+    every other test exercises the switches ON.
+
+    So this asserts the whole assembly, on every skill: with all four slices off,
+    a fully-kitted member must be priced at exactly the pre-gear constants —
+    cape +3, one family piece +7 (as SPEED on Enhancing, where the piece is the
+    Enchanted Gloves), and +7 for each ticked garment. Compared to within 1e-12,
+    not approximately.
+    """
+    for switch in ("GEAR_USE_CAPE", "GEAR_USE_FAMILY_PIECE",
+                   "GEAR_USE_GARMENTS", "GEAR_USE_ACCESSORIES"):
+        monkeypatch.setattr(config, switch, False)
+
+    m = _member(dict(_WARDROBE), top=True, bot=True)
+    resolved = gear.resolve(m, _STATS)
+    for skill in config.SKILLS:
+        speed, efficiency, success, gathering = resolved[skill]
+        if skill == "Enhancing":
+            want_speed = config.CAPE_SPEED_PLUS3 + config.GLOVES_ENHANCING_SPEED_PLUS7
+            want_eff = 2 * config.ARMOUR_EFFICIENCY_PLUS7          # top + bot
+        else:
+            want_speed = config.CAPE_SPEED_PLUS3
+            want_eff = 3 * config.ARMOUR_EFFICIENCY_PLUS7          # family + top + bot
+        assert speed == pytest.approx(want_speed, abs=1e-12), skill
+        assert efficiency == pytest.approx(want_eff, abs=1e-12), skill
+        assert success == 0.0 and gathering == 0.0, skill
+
+
+def test_a_disabled_accessory_slice_restores_the_OMISSION_not_a_constant():
+    """The accessories had no pre-gear constant to restore.
+
+    The old model did not grant them; it did not model them, and their absence was
+    carried in RISK_SIGMA_SYSTEMATIC instead. So switching that slice off must
+    give zero AND must still offer the slot to the risk hook — which is the state
+    the old sigma was measured in.
+    """
+    offered = []
+
+    class Watch(gear.Perturbation):
+        def unobserved(self, slot, skill):
+            offered.append(slot)
+            return {}
+
+    was = config.GEAR_USE_ACCESSORIES
+    try:
+        config.GEAR_USE_ACCESSORIES = False
+        m = _member({"/items/philosophers_necklace": 3})
+        got = gear.resolve(m, _STATS, perturb=Watch(), skills=("Milking",))
+        # Observed necklace or not, a disabled slice contributes nothing...
+        assert got == gear.resolve(_member(), _STATS, skills=("Milking",))
+        # ... and the slot is still put to the hook.
+        assert "neck" in offered
+    finally:
+        config.GEAR_USE_ACCESSORIES = was
+
+
+def test_all_stats_within_one_cape_are_equal():
+    """`measure` averages a cape's FIRST stat, so the others must agree.
+
+    Gatherer Cape carries three identical `<skill>Speed` entries and Chance Cape
+    two; taking "the first" is only well-defined because of that. If the game ever
+    ships a cape with differing per-skill values, this fails rather than silently
+    averaging an arbitrary one.
+    """
+    for hrid, (name, slot, stats) in gear.GEAR_STATS.items():
+        if slot != gear.CAPE_SLOT:
+            continue
+        assert len(set(stats.values())) == 1, name

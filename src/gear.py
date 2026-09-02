@@ -711,11 +711,21 @@ def resolve(
     for skill in (skills if skills is not None else config.SKILLS):
         terms = {"speed": 0.0, "efficiency": 0.0, "success": 0.0, "gathering": 0.0}
         for slot, policy in SLOT_POLICY.items():
-            if not _slot_enabled(slot):
-                continue
             candidates = ITEMS_IN_SLOT_FOR_SKILL.get((slot, skill), [])
             if not candidates:
                 continue  # this slot has nothing to offer this skill
+            if not _slot_enabled(slot):
+                # THIS SLICE IS SWITCHED OFF, AND OFF MEANS "AS IT WAS", NOT
+                # "ABSENT". config's per-slice switches are documented as
+                # restoring that slice's pre-gear constant, and simply skipping
+                # the slot would instead hand the member NO cape and NO family
+                # piece — a rollback that leaves the model worse than either
+                # state it can be rolled between. The hook still gets its say,
+                # because a slot the per-item model is not pricing is once again
+                # a slot nobody has read.
+                _add(terms, _pre_gear_terms(slot, skill, member))
+                _add(terms, hook.unobserved(slot, skill))
+                continue
             observed = [h for h in candidates if h in cell]
             if observed:
                 hrid = _best_in_slot(observed, skill, cell)
@@ -740,6 +750,44 @@ def resolve(
             terms["speed"], terms["efficiency"], terms["success"], terms["gathering"]
         )
     return out
+
+
+def _pre_gear_terms(slot: str, skill: str, member) -> dict[str, float]:
+    """What ``trials.member_bonuses`` granted for this slot BEFORE the per-item
+    model, so a switched-off slice restores exactly that and not silence.
+
+    Reproduces the pre-gear assembly slot by slot, and it can do so exactly
+    because the covering items TILE the ten skills: one of feet/head/off_hand/
+    hands covers any given skill and the other three are silent on it, which is
+    what made a single unconditional ``ARMOUR_EFFICIENCY_PLUS7`` equivalent to
+    "the family piece" in the first place (pinned by
+    test_the_four_family_pieces_tile_the_ten_skills).
+
+    The ACCESSORIES return nothing, and that is right: the pre-gear model did not
+    grant them, it simply did not model them, and their absence was carried in
+    ``config.RISK_SIGMA_SYSTEMATIC`` instead. Switching that slice off restores
+    the omission, not a constant — which is why config's note for
+    ``GEAR_USE_ACCESSORIES`` says so in those words.
+    """
+    if slot == CAPE_SLOT:
+        return {"speed": config.CAPE_SPEED_PLUS3}
+    if slot in FAMILY_SLOTS:
+        # The enhancing family piece (Enchanted Gloves) granted SPEED; every
+        # other one granted efficiency.
+        if skill == "Enhancing":
+            return {"speed": config.GLOVES_ENHANCING_SPEED_PLUS7}
+        return {"efficiency": config.ARMOUR_EFFICIENCY_PLUS7}
+    if slot in GARMENT_SLOTS:
+        entry = member.skills.get(skill)
+        if entry is None or not getattr(entry, _TICK_ATTR[slot], False):
+            return {}
+        # NB the pre-gear model routed EVERY garment through efficiency, including
+        # the Enhancer's pieces, and said so ("the Phase 1 model deliberately
+        # treats top/bot as efficiency uniformly"). Restoring the slice restores
+        # that too, deliberately: a rollback must reproduce the old answer, not a
+        # better one.
+        return {"efficiency": config.ARMOUR_EFFICIENCY_PLUS7}
+    return {}
 
 
 def _slot_enabled(slot: str) -> bool:
