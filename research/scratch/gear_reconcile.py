@@ -47,6 +47,20 @@ ALL_SWITCHES = ["GEAR_USE_CAPE", "GEAR_USE_FAMILY_PIECE",
 
 
 def load(guild: str):
+    """Fetch and merge one guild, WITH THE GEAR COLUMN PARSED.
+
+    THE SWITCH MUST BE ON HERE AND IT IS A TRAP THAT IT MATTERS. `roster.parse`
+    gates the gearSeen parse on `config.GEAR_SOURCE_ENABLED`, and `_gear_cell`
+    gates the merge on it too -- deliberately, because gating at the PARSE is what
+    makes the rollback cover a broken upstream writer as well as a bad model. The
+    consequence for a harness is that loading with the switch off yields rows and
+    members whose `gear` is None, every imputation statistic is then refused for
+    want of data, and every slice silently falls back to the very constants it was
+    meant to replace. The first run of this script did exactly that and reported
+    +0.00 for the cape and the family piece -- which is a perfectly correct answer
+    to a question nobody asked.
+    """
+    config.GEAR_SOURCE_ENABLED = True
     rows = roster.scrape_roster_tab(config.ROSTER_TABS[guild])
     members = scrape_member_tab(config.TABS[guild]).members
     merged, _ = roster.merge(members, roster.join(members, rows), guild)
@@ -66,7 +80,13 @@ def summarise(result) -> dict:
         "credit": d.get("total_credit_points"),
         "expected": d.get("total_expected_points"),
         "trials": [
-            (t["skill"], t["tier_reached"], t.get("time_slack_fraction"),
+            # partial_fraction, not the time margin: WeekResult.to_dict does not
+            # serialise time_slack_fraction, and the partial fraction is the more
+            # useful figure anyway -- it is progress into the first UNCLEARED tier
+            # and therefore exactly what a rate change moves before it moves a
+            # whole tier. On a week where no tier boundary is crossed it is the
+            # only place the change shows up at all.
+            (t["skill"], t["tier_reached"], t.get("partial_fraction"),
              t.get("clear_probability"), t.get("expected_points"))
             for t in d["trials"]
         ],
@@ -95,11 +115,22 @@ def main() -> None:
     print(f"draw: {', '.join(week.skills)}   seed {config.TRIAL_OPTIMIZER_SEED}\n")
 
     for guild in config.ROSTER_TABS:
-        members, rows = load(guild)
+        members, rows = load(guild)      # parsed WITH the switch on -- see load()
         cap = config.party_cap(guild)
         stats_all = None
+        visible = sum(1 for m in members if m.gear)
+        print(f"=== {guild.upper()}   {visible}/{len(members)} members carry a "
+              f"parsed gear union")
+        if not visible:
+            raise SystemExit(
+                "no member carries a gear union: the column was not parsed, and "
+                "every slice below would silently measure the pre-gear constants"
+            )
 
         # --- baseline: the shipped build, gear off --------------------------
+        # Only the CONSUMER is switched off. trials._resolve_gear reads the switch
+        # at call time, so the members keep their parsed wardrobes and the
+        # baseline still prices them from the five flat constants.
         config.GEAR_SOURCE_ENABLED = False
         set_slices(ALL_SWITCHES)
         t0 = time.time()
@@ -110,7 +141,7 @@ def main() -> None:
             assignment, members, list(week.skills),
             seed=config.TRIAL_OPTIMIZER_SEED, cap=cap,
         ))
-        print(f"=== {guild.upper()}   baseline search {time.time() - t0:.0f}s")
+        print(f"  baseline search {time.time() - t0:.0f}s")
         print(f"  {'baseline':14s} points {base['points']:>7}      "
               f"   credit {base['credit']:9.2f}            "
               f"   E {base['expected']:9.2f}            "
@@ -148,7 +179,7 @@ def main() -> None:
         print("  per trial (baseline -> re-optimised):")
         for b, g in zip(base["trials"], got["trials"]):
             print(f"    {b[0]:14s} tier {b[1]}->{g[1]}   "
-                  f"margin {_f(b[2])}->{_f(g[2])}   "
+                  f"partial {_f(b[2])}->{_f(g[2])}   "
                   f"P {_f(b[3])}->{_f(g[3])}   "
                   f"E {_f(b[4], 2)}->{_f(g[4], 2)}")
         print()

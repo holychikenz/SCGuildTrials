@@ -219,10 +219,35 @@ fields nothing on any page reads. `gear_bonuses` is a cache of `gear` plus the
 catalogue; `gear` waits for the per-member badge that will use it, at which point
 deleting one line in `reader._NEVER_SERIALISED` is the whole change.
 
-**And one measurement note for whoever runs G6 again.** Buffer your output:
-`research/scratch/gear_reconcile.py` writes nothing to a redirected file until it
-exits, so a forty-minute run looks indistinguishable from a hung one. Run it with
-`python -u`.
+### 5b.1 Three traps this phase actually fell into
+
+Recorded because each cost a thirty-minute measurement run, and each would cost
+the next person the same.
+
+**Gating at the parse is a trap for a harness.** `roster.parse` and
+`roster._gear_cell` both gate on `GEAR_SOURCE_ENABLED`, deliberately — §5 argues
+that gating at the *parse* is what makes the rollback cover a broken upstream
+writer and not merely a bad model. The consequence is that a script which loads
+its members and *then* flips the switch gets rows whose `gear` is None, every
+imputation statistic refused for want of data, and every slice silently falling
+back to the constants it was meant to replace. The first corrected run reported
+`+0.00` for the cape and the family piece: a perfectly correct answer to a question
+nobody asked. `gear_reconcile.py` now parses with the switch on, turns only the
+*consumer* off for the baseline (`trials._resolve_gear` reads it at call time), and
+**refuses to run at all** if no member carries a union.
+
+**A rollback path needs its own test.** Two of the three defects were in
+`_pre_gear_terms` — the switched-off path — because every test exercised the
+switches on. The lesson generalises past this change: a switch documented as
+"restores X" is a claim, and an untested claim about a rollback is worse than no
+switch, because it will be reached for in a hurry.
+
+**`pgrep -f <script>` matches the watcher.** A wait loop of the form
+`until ! pgrep -f gear_reconcile; do …; done` never terminates: its own command
+line contains the pattern. Wait on a PID.
+
+**And buffer your output.** A redirected run writes nothing until it exits, so a
+forty-minute job looks exactly like a hung one. Use `python -u`.
 
 ## 6. What could go wrong, and what it would look like
 
