@@ -406,6 +406,12 @@ class Provenance:
     # which items exist and which channel each feeds is MODEL knowledge, and this
     # module is a parser. Typed loosely so roster.py need not import trials.
     tools: object = None
+    # gear.GearAudit, attached by build after the merge — the per-item gear's twin
+    # of ``tools`` above, and loosely typed for the same reason: which slot each
+    # item fills and which channel it feeds is MODEL knowledge. (``gear.py`` is
+    # imported here for its parser, but the AUDIT is assembled by the caller that
+    # also runs the resolver, so that both happen exactly once per guild.)
+    gear: object = None
 
     def to_dict(self) -> dict:
         return {
@@ -425,6 +431,7 @@ class Provenance:
             "ambiguous": list(self.ambiguous),
             "refused": self.refused,
             "tools": self.tools.to_dict() if self.tools is not None else None,
+            "gear": self.gear.to_dict() if self.gear is not None else None,
         }
 
 

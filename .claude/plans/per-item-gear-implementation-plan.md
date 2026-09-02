@@ -171,6 +171,12 @@ GEAR_MIN_IMPUTE_N       = 10     # below this, an imputation statistic is refuse
                                  #   and the shipped constant is used instead.
 ```
 
+There is deliberately **no** `GEAR_UNKNOWN_ITEM_FATAL`, unlike the roster's
+`ROSTER_UNKNOWN_TOOL_FATAL`. The asymmetry is argued where the switch would have
+gone, in `config.py`: a tool column is a *named slot* so an unrecognised item
+there is a new tier or a shifted header, whereas the gear union is a flat list and
+the only catalogue this repo carries has no combat items in it at all.
+
 **Rollback procedure.** `GEAR_SOURCE_ENABLED = False` restores the pre-change
 build bit-for-bit, pinned by two tests, and — as with the roster — the gating is
 at the **parse**, so the rollback also covers the case where the upstream
@@ -187,6 +193,6 @@ R6 recorded 0.0131.
 | The family-piece imputation is wrong (ResearchPack §3.1) | half the guild over-credited 0.1182 efficiency; parties that hold on paper and fail in fact | `GEAR_IMPUTE_FAMILY_PIECE = False`; re-run survey §4 in a few weeks and watch the "0 of four" column |
 | The union has not converged, so absences are artefacts | accessories under-credited for members who own them | accessories are never imputed *by decision*; the error is one-sided and conservative |
 | `skillingEfficiency` does not in fact reach enhancing | enhancing over-credited for 117 members | isolable: it is one row of `GEAR_STATS`; a capture of an enhancing trial's `efficiency` field settles it |
-| A new game item appears | unknown hrid in the union | counted and ignored, never guessed — `audit_roster_tools`' rule, and `GEAR_UNKNOWN_ITEM_FATAL` for the strict reading |
+| A new race-relevant game item appears | it hides among the ~60 combat hrids the union carries and is silently unpriced | counted as `unmodelled_items`, never guessed. **There is deliberately no fatal switch** — `item-stats.json` holds only the 188 items *with* non-combat stats, so an "is this known?" test would flag every Chaotic Flail. The real mitigation is a fresh catalogue dump compared by `test_gear_table_matches_item_stats_json`; see config.py's note where the switch would have gone. |
 | Statistics computed from too few observations | a garment mean built on n=1 | `GEAR_MIN_IMPUTE_N`, and §6.7's pooling |
 | Bit-exactness lost in the hot loop | search reshuffles every party for no gain | terms precomputed once (§2); golden test on `==` for everything but the two `erf`/`log` fields |

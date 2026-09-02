@@ -85,6 +85,21 @@ class MemberBonuses:
     # :func:`_prepare_member` adds them at the point of use.
     shrine_speed: float = 0.0
     shrine_efficiency: float = 0.0
+    # The member's own gatheringQuantity, from :mod:`src.gear` — the rings and
+    # earrings they actually wear, in place of the flat config.GEAR_DOUBLE_CHANCE.
+    #
+    # None means "no per-item gear for this member+skill", which is the whole
+    # build while config.GEAR_SOURCE_ENABLED is off, and :func:`double_chance`
+    # then evaluates config.DOUBLE_CHANCE exactly as it always did. A FLOAT, even
+    # 0.0, means the gear model spoke: 0.0 is a member observed wearing neither a
+    # gathering ring nor gathering earrings, which is roughly half of both guilds
+    # and is a real measurement rather than an absence. The two must not collapse.
+    #
+    # Separate from ``efficiency`` for the reason ``shrine_efficiency`` is
+    # separate from it: this enters the rate through a DIFFERENT term of the
+    # lab-sim formula — the ``(1 + doubleChance)`` factor, not ``workPower`` — so
+    # folding it in would be a mispricing rather than a simplification.
+    gathering: Optional[float] = None
 
 
 def _is_enhancing(skill: str) -> bool:
@@ -100,15 +115,38 @@ def _is_gathering(skill: str) -> bool:
     return skill in config.GATHERING_SKILLS
 
 
-def double_chance(skill: str) -> float:
+def double_chance(skill: str, gear_gathering: Optional[float] = None) -> float:
     """Labyrinth-style doubleProgressChance for a member on ``skill``.
 
     While the community gathering buff is live, gathering skills carry the buff
-    plus ~+5% gear (config.DOUBLE_CHANCE); every other family carries 0. Scales
-    work rate by ``(1 + double_chance)`` in :func:`rate`, per the lab-sim formula
-    (research/trial-messages.md).
+    plus the member's own gatheringQuantity gear; every other family carries 0.
+    Scales work rate by ``(1 + double_chance)`` in :func:`rate`, per the lab-sim
+    formula (research/trial-messages.md).
+
+    ``gear_gathering`` is the member's OWN term, resolved by :mod:`src.gear` from
+    the rings and earrings they actually wear. None — the whole build while
+    ``config.GEAR_SOURCE_ENABLED`` is off — restores the flat composed
+    ``config.DOUBLE_CHANCE``, which carries the ~+5% ``GEAR_DOUBLE_CHANCE``
+    working assumption this argument exists to replace.
+
+    NOTE THE OPEN QUESTION THIS INHERITS AND DOES NOT RESOLVE. The game's
+    ``/buff_types/gathering`` ("increases gathering quantity") is a DIFFERENT buff
+    type from the ``doubleProgressChance`` field the model drives it through — see
+    the note above ``config.COMMUNITY_GATHERING_BUFF_DOUBLE``. Per-item gear makes
+    the question isolable for the first time: ``GEAR_GATHERING_IN_RATE = False``
+    prices every gatheringQuantity item at zero without also removing the
+    community buff, which the flat constant could not do.
     """
-    return config.DOUBLE_CHANCE if _is_gathering(skill) else 0.0
+    if not _is_gathering(skill):
+        return 0.0
+    if gear_gathering is None:
+        # Evaluated as ONE expression, exactly as it always was. Do not decompose
+        # config.DOUBLE_CHANCE into its two addends and re-add them here: it is a
+        # module-level sum, and re-associating it would move the result in the
+        # last bit — which _prepare_member's BIT-EXACTNESS note explains is enough
+        # to send the optimiser down a different path for no gain.
+        return config.DOUBLE_CHANCE
+    return config.COMMUNITY_GATHERING_BUFF_DOUBLE + gear_gathering
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +286,33 @@ def _resolve_tool(
     if entry is None:
         return None, None
     return entry.tool_item, entry.tool_enhance
+
+
+def _resolve_gear(
+    member: MemberRow, skill: str
+) -> Optional[tuple[float, float, float, float]]:
+    """The member's PRECOMPUTED per-item gear terms for this skill, or None.
+
+    ``(speed, efficiency, success, gathering)``, resolved once per guild in the
+    parent process by :func:`src.gear.resolve` and stored on the member. See
+    :mod:`src.gear`'s header for why this is a dict lookup and not a computation:
+    this function is on the path :func:`_prepare_member` calls 22.3 million times
+    per pipeline.
+
+    None means the per-item model has nothing to say, and every caller then falls
+    back to the five flat constants that are today's shipped behaviour. FOUR
+    distinct situations produce it, deliberately indistinguishable here:
+    ``config.GEAR_SOURCE_ENABLED`` is off; the guild's roster tab carries no gear
+    column; the member never joined a roster row; or the build did not run the
+    resolver (a direct library call, or a test constructing MemberRow by hand).
+
+    A SIBLING of :func:`_resolve_tool` and :func:`_resolve_level_and_checks`
+    rather than a widening of either, for the reason ``_resolve_tool``'s docstring
+    gives: ``calibrate.py`` unpacks that 5-tuple positionally.
+    """
+    if not config.GEAR_SOURCE_ENABLED:
+        return None
+    return member.gear_bonuses.get(_sheet_column(skill))
 
 
 def tool_bonus(
@@ -715,15 +780,40 @@ def member_bonuses(
     shrine_speed, shrine_efficiency = shrine
     tool_speed, tool_success = _tool_terms(member, skill, tool)
 
-    speed = config.CAPE_SPEED_PLUS3  # +3 cape speed, everyone, every skill
-    efficiency = 0.0
-    success_bonus = 0.0
+    # --- The equipment terms: per-item where we have the gear, else the flat
+    # --- constants that are today's shipped behaviour ---------------------------
+    # `gear` carries the FIVE terms the per-item model replaces — the cape, the
+    # family piece, the two garments — and the ONE it adds, the neck / ring /
+    # earring slots, which no source this repository read had ever reported. It
+    # does NOT carry the tool, the house or the community buffs, which are
+    # measured elsewhere and are added below either way.
+    #
+    # THE BRANCHES ARE KEPT SEPARATE RATHER THAN UNIFIED, and that is the point.
+    # With gear None every addition below happens in the same order, on the same
+    # values, as it did before this change, so the switched-off build is
+    # bit-for-bit identical — pinned by
+    # tests/test_gear.py::test_gear_disabled_reproduces_the_golden_week.
+    # Folding the two paths into one "start from zero and add whichever applies"
+    # loop would re-associate the sum and, per _prepare_member's BIT-EXACTNESS
+    # note, one ULP in a party rate is enough to send the search elsewhere.
+    gear = _resolve_gear(member, skill)
+    gathering: Optional[float] = None
+
+    if gear is None:
+        speed = config.CAPE_SPEED_PLUS3  # +3 cape speed, everyone, every skill
+        efficiency = 0.0
+        success_bonus = 0.0
+    else:
+        speed, efficiency, success_bonus, gathering = gear
 
     if _is_enhancing(skill):
         # Tool grants SUCCESS, not speed.
         success_bonus += tool_success
-        # Family "gloves" grant enhancing SPEED, not efficiency.
-        speed += config.GLOVES_ENHANCING_SPEED_PLUS7
+        if gear is None:
+            # Family "gloves" grant enhancing SPEED, not efficiency. With gear,
+            # the Enchanted Gloves are priced from the catalogue on the same
+            # channel and at the member's OWN enhancement level.
+            speed += config.GLOVES_ENHANCING_SPEED_PLUS7
         # Community enhancing-speed buff (event): +0.20 speed while live.
         speed += config.COMMUNITY_ENHANCING_SPEED_BUFF
         # Enhancing house (Observatory) grants action-SPEED, not efficiency,
@@ -732,8 +822,9 @@ def member_bonuses(
     else:
         # Tool grants SPEED.
         speed += tool_speed
-        # Family piece grants efficiency.
-        efficiency += config.ARMOUR_EFFICIENCY_PLUS7
+        if gear is None:
+            # Family piece grants efficiency.
+            efficiency += config.ARMOUR_EFFICIENCY_PLUS7
         # Gathering + production house rooms grant efficiency (0.015/level),
         # scaled by the member's real house level.
         efficiency += config.HOUSE_EFFICIENCY_PER_LEVEL * house_level
@@ -744,14 +835,17 @@ def member_bonuses(
         if not _is_gathering(skill):
             efficiency += config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF
 
-    # Skilling top / bottom grant efficiency for every skill (per the Phase 1
-    # model spec). NB: in-game the Enhancer's Top/Bottoms grant enhancingSpeed
-    # rather than efficiency; the Phase 1 model deliberately treats top/bot as
-    # efficiency uniformly — see the trials-page footnotes.
-    if top:
-        efficiency += config.ARMOUR_EFFICIENCY_PLUS7
-    if bot:
-        efficiency += config.ARMOUR_EFFICIENCY_PLUS7
+    if gear is None:
+        # Skilling top / bottom grant efficiency for every skill (per the Phase 1
+        # model spec). NB: in-game the Enhancer's Top/Bottoms grant enhancingSpeed
+        # rather than efficiency; the Phase 1 model deliberately treats top/bot as
+        # efficiency uniformly — see the trials-page footnotes. THE PER-ITEM MODEL
+        # RETIRES THAT SIMPLIFICATION: with gear, each garment is priced on the
+        # channel the catalogue names for it, so the Enhancer's pieces grant speed.
+        if top:
+            efficiency += config.ARMOUR_EFFICIENCY_PLUS7
+        if bot:
+            efficiency += config.ARMOUR_EFFICIENCY_PLUS7
 
     return MemberBonuses(
         level=level,
@@ -764,6 +858,7 @@ def member_bonuses(
         building_levels=building_levels,
         shrine_speed=shrine_speed,
         shrine_efficiency=shrine_efficiency,
+        gathering=gathering,
     )
 
 
@@ -892,7 +987,7 @@ def _prepare_member(
         b.level,
         b.success_bonus,
         b.building_levels,
-        1 + double_chance(skill),
+        1 + double_chance(skill, b.gathering),
         math.floor(work_power(b.level, b.efficiency + b.shrine_efficiency)),
         action_seconds(skill, b.speed + b.shrine_speed),
     )

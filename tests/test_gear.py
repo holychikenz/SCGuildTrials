@@ -393,3 +393,130 @@ def test_the_cape_statistic_averages_bonuses_not_levels():
     stats = gear.measure(cells, "t")
     expected = gear.item_terms("/items/gatherer_cape_refined", "Milking", 3)["speed"]
     assert stats.cape_speed == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# The switch, and the two identity claims that make it a rollback
+# ---------------------------------------------------------------------------
+# These reuse the pre-roster golden fixture rather than storing a second one.
+# What is under test is not the same property the roster golden pins (that a
+# whole week reproduces a stored file) but a sharper one: THE SWITCH, NOT THE
+# DATA, DECIDES. A member carrying fully resolved gear must race identically to
+# one carrying none while GEAR_SOURCE_ENABLED is off — which is what makes the
+# constant a rollback rather than a hope, and which a stored golden could not
+# show, because a golden generated before the fields existed cannot carry them.
+from src import processor, trials                             # noqa: E402
+from tests.golden_fixture import (                            # noqa: E402
+    GOLDEN_CAP, GOLDEN_DRAW, GOLDEN_SEED, GOLDEN_STRATEGY, golden_members,
+)
+
+# A realistic wardrobe: one cape, the four family pieces, a Philosopher's
+# necklace/ring/earrings and a garment, at live-shaped enhancement levels.
+_WARDROBE = {
+    "/items/gatherer_cape_refined": 3,
+    "/items/collectors_boots": 5,
+    "/items/red_culinary_hat": 5,
+    "/items/eye_watch": 6,
+    "/items/enchanted_gloves": 5,
+    "/items/philosophers_necklace": 3,
+    "/items/philosophers_ring": 5,
+    "/items/philosophers_earrings": 2,
+    "/items/foragers_top": 7,
+}
+
+
+def _geared_members():
+    """The golden roster, with every member fully kitted and resolved."""
+    members = golden_members()
+    for member in members:
+        member.gear = dict(_WARDROBE)
+        member.gear_bonuses = gear.resolve(member, _STATS)
+    return members
+
+
+def _week(members):
+    got = trials.run_week(
+        members, skills=list(GOLDEN_DRAW), seed=GOLDEN_SEED,
+        cap=GOLDEN_CAP, strategy=GOLDEN_STRATEGY,
+    ).to_dict()
+    got.pop("generated_at", None)
+    got.pop("week_date", None)
+    return got
+
+
+def test_gear_disabled_reproduces_the_golden_week(monkeypatch):
+    """GEAR_SOURCE_ENABLED = False: resolved gear must not reach the race AT ALL.
+
+    Compared with ``==``, not ``approx``, and every field of it — the parties the
+    search chose, every tier, every step point. ``_prepare_member``'s docstring
+    records a live case where a one-ULP change reshuffled every SC party for no
+    gain, so ULP-exactness IS the property under test, and the reason
+    ``member_bonuses`` keeps the two equipment branches separate rather than
+    unifying them is precisely to make this hold.
+
+    Note this is stronger than comparing against a stored golden: the members here
+    CARRY the gear, fully resolved. Nothing but the switch stands between that
+    data and the rate.
+    """
+    monkeypatch.setattr(config, "GEAR_SOURCE_ENABLED", False)
+    assert _week(_geared_members()) == _week(golden_members())
+
+
+def test_gear_enabled_actually_changes_the_week(monkeypatch):
+    """Guards the test above against passing vacuously.
+
+    If the wiring were broken — ``_resolve_gear`` always None, say, or
+    ``gear_bonuses`` never read — the identity test would pass for the wrong
+    reason and go on passing for ever. This is the control.
+    """
+    monkeypatch.setattr(config, "GEAR_SOURCE_ENABLED", True)
+    geared = _week(_geared_members())
+    monkeypatch.setattr(config, "GEAR_SOURCE_ENABLED", False)
+    assert geared != _week(golden_members())
+
+
+def test_gathering_reaches_the_rate_through_the_doubling_factor(monkeypatch):
+    """And through THAT factor, not through workPower.
+
+    A gatheringQuantity item must move ``(1 + doubleChance)`` and leave
+    ``efficiency`` alone; the two enter the lab-sim formula at different points
+    and folding one into the other would be a mispricing. Pinned on the member
+    bonuses rather than on a whole week, so a failure names the term.
+    """
+    member = _member({"/items/philosophers_ring": 5,
+                      "/items/philosophers_earrings": 5})
+    member.gear_bonuses = gear.resolve(member, _STATS)
+    monkeypatch.setattr(config, "GEAR_SOURCE_ENABLED", True)
+    bonuses = trials.member_bonuses(member, "Milking")
+    assert bonuses.gathering == pytest.approx(
+        2 * gear.item_terms("/items/philosophers_ring", "Milking", 5)["gathering"]
+    )
+    assert trials.double_chance("Milking", bonuses.gathering) == pytest.approx(
+        config.COMMUNITY_GATHERING_BUFF_DOUBLE + bonuses.gathering
+    )
+    # A non-gathering skill carries none of it, whatever the member wears.
+    assert trials.member_bonuses(member, "Cooking").gathering == 0.0
+
+
+def test_double_chance_is_the_flat_constant_while_gear_is_off():
+    """The one expression, unchanged and un-decomposed — see double_chance's note
+    on why re-adding the two addends would move the last bit."""
+    assert trials.double_chance("Milking") == config.DOUBLE_CHANCE
+    assert trials.double_chance("Milking", None) == config.DOUBLE_CHANCE
+
+
+def test_data_json_is_byte_identical_with_gear_off():
+    """The optional gear fields must not emit null keys into data.json."""
+    payload = processor.process([_member()])
+    member = payload["members"][0]
+    assert set(member) == {"name", "main_classes", "flex", "flex_levels", "skills"}
+    assert "gear" not in json.dumps(payload)
+    assert "gear_bonuses" not in json.dumps(payload)
+
+
+def test_serialised_gear_appears_once_it_is_set():
+    m = _member({"/items/philosophers_necklace": 3})
+    m.gear_bonuses = gear.resolve(m, _STATS)
+    d = processor.process([m])["members"][0]
+    assert d["gear"] == {"/items/philosophers_necklace": 3}
+    assert d["gear_bonuses"]["Milking"][0] > 0.0

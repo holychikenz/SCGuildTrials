@@ -403,13 +403,25 @@ GEAR_GATHERING_IN_RATE = True
 # with n=24-51 (research/per-item-gear.md §6.1).
 GEAR_MIN_IMPUTE_N = 10
 
-# An hrid in the union that GEAR_STATS does not model: count it, name it, and
-# ignore it. True stops the build instead. Shipped False for the reason
-# ROSTER_UNKNOWN_TOOL_FATAL is shipped False -- one new game item must not stop a
-# deploy -- and never silent, for the same reason. NB the union legitimately
-# carries some sixty COMBAT items which are not "unknown": they are matched
-# against the catalogue and found to have no race-relevant channel.
-GEAR_UNKNOWN_ITEM_FATAL = False
+# THERE IS DELIBERATELY NO `GEAR_UNKNOWN_ITEM_FATAL`, and the reason is worth
+# recording, because ROSTER_UNKNOWN_TOOL_FATAL above is its obvious twin and a
+# later reader will wonder why the pair is asymmetric.
+#
+# The tool check works because the roster's tool columns are NAMED SLOTS: an item
+# sitting in `tool_milking` must be a milking tool, so an item TOOL_STATS does not
+# know is either a new tier or a shifted header, and both are worth stopping for.
+# The gear union has no such structure -- it is a flat list of whatever the member
+# had equipped -- and the only catalogue this repo carries,
+# research/item-stats.json, holds just the 188 items that HAVE non-combat stats.
+# Combat gear is absent from it altogether, so an "is this item known?" test would
+# flag every Chaotic Flail and Anchorbound Plate in the union: some sixty items
+# per guild, all of them legitimate, none of them actionable.
+#
+# So gear.GearAudit counts hrids GEAR_STATS does not model and calls them
+# UNMODELLED rather than unknown, which is what they are: mostly combat equipment
+# with no race-relevant channel. A genuinely new race-relevant item would hide
+# among them, and the honest mitigation is a fresh catalogue dump compared against
+# GEAR_STATS by tests/test_gear.py -- not a switch that cannot tell the two apart.
 
 # ===========================================================================
 # Guild Trials (Phase 1) — model constants + this week's draw

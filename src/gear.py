@@ -539,7 +539,15 @@ class GearAudit:
     looked_and_none: int = 0    # `{"items":[]}` -- we looked, they wore none
     blank: int = 0              # blank cell -- we did not look, or gear is hidden
     unparseable: list[str] = field(default_factory=list)   # member names
-    unknown_items: dict[str, int] = field(default_factory=dict)
+    # hrid -> how many members wore it, for every hrid GEAR_STATS does not model.
+    # UNMODELLED, not "unknown", and the distinction is the whole reason there is
+    # no fatal switch for it (see config.py, where that switch would have gone):
+    # most of these are COMBAT equipment, which legitimately has no race-relevant
+    # channel, and research/item-stats.json carries only the 188 items that HAVE
+    # non-combat stats, so nothing here can tell a new necklace from a new sword.
+    # Counted so the magnitude is visible; a genuinely new race-relevant item is
+    # caught by re-dumping the catalogue, not by reading this.
+    unmodelled_items: dict[str, int] = field(default_factory=dict)
     observed_by_slot: dict[str, int] = field(default_factory=dict)
     imputed_by_slot: dict[str, int] = field(default_factory=dict)
     # Statistics REFUSED for want of support (config.GEAR_MIN_IMPUTE_N), by name.
@@ -553,12 +561,54 @@ class GearAudit:
             "looked_and_none": self.looked_and_none,
             "blank": self.blank,
             "unparseable": list(self.unparseable),
-            "unknown_items": dict(self.unknown_items),
+            "unmodelled_items": dict(self.unmodelled_items),
             "observed_by_slot": dict(self.observed_by_slot),
             "imputed_by_slot": dict(self.imputed_by_slot),
             "refused_statistics": list(self.refused_statistics),
             "stats": self.stats.to_dict() if self.stats else None,
         }
+
+
+class Perturbation:
+    """How ``src.calibrate``'s campaign disturbs a resolved wardrobe.
+
+    THE HOOK EXISTS SO THAT THE CAMPAIGN DOES NOT FORK THE ARITHMETIC, which is
+    the lesson ``calibrate._perturbed_tool_terms`` records in its own docstring:
+    "Calling the shipped function rather than re-deriving its arithmetic is the
+    point — the tool tier is now DATA and the campaign must not fork it." The gear
+    is data in exactly the same sense, and a mirrored copy of :func:`resolve` in
+    ``calibrate.py`` would drift from this one silently and invalidate every σ it
+    measured afterwards.
+
+    Two methods, because the per-item model creates two DIFFERENT kinds of
+    uncertainty where the pre-gear model had one:
+
+    ``level`` — an enhancement level may be wrong. ``observed=True`` means the
+    union read it off the member's own card, and under
+    ``Sources.respect_provenance`` the campaign then returns it untouched: there
+    is nothing left to be uncertain about. ``observed=False`` means it is an
+    IMPUTED guild mean, and the campaign must price the imputation error — which
+    is a NEW row in the budget that no earlier σ carried, because no earlier model
+    imputed anything.
+
+    ``unobserved`` — a slot may hold something we never saw. This is the term
+    ``RISK_SIGMA_SYSTEMATIC`` has been carrying all along at 0.0081-0.0110 for the
+    neck, and the per-item model retires it only for the members whose slot was
+    actually read. For the 24 with no necklace observed and the 16 who hide their
+    gear it is undiminished, and the campaign still draws the real item set.
+
+    The default is inert on both counts, so ``resolve(member, stats)`` with no
+    perturbation is the shipped path and its arithmetic is untouched.
+    """
+
+    def level(self, level: Optional[int], observed: bool) -> Optional[int]:
+        return level
+
+    def unobserved(self, slot: str, skill: str) -> dict[str, float]:
+        return {}
+
+
+_INERT = Perturbation()
 
 
 def _best_in_slot(hrids: list[str], skill: str, cell: dict) -> str:
@@ -586,6 +636,7 @@ def resolve(
     member,
     stats: ImputationStats,
     audit: Optional[GearAudit] = None,
+    perturb: Optional[Perturbation] = None,
 ) -> dict[str, tuple[float, float, float, float]]:
     """``{skill: (speed, efficiency, success, gathering)}`` for one member.
 
@@ -603,6 +654,7 @@ def resolve(
     in this module, which is the single largest simplification in the design.
     """
     cell = member.gear or {}
+    hook = perturb or _INERT
     out: dict[str, tuple[float, float, float, float]] = {}
 
     for skill in config.SKILLS:
@@ -616,13 +668,21 @@ def resolve(
             observed = [h for h in candidates if h in cell]
             if observed:
                 hrid = _best_in_slot(observed, skill, cell)
-                _add(terms, item_terms(hrid, skill, cell[hrid]))
+                level = hook.level(cell[hrid], observed=True)
+                _add(terms, item_terms(hrid, skill, level))
                 _bump(audit, "observed_by_slot", slot)
                 continue
-            imputed = _impute(slot, policy, skill, candidates, member, stats)
+            imputed = _impute(slot, policy, skill, candidates, member, stats, hook)
             if imputed:
                 _add(terms, imputed)
                 _bump(audit, "imputed_by_slot", slot)
+            else:
+                # NOTHING was credited here: an accessory slot (never imputed), a
+                # garment neither ticked nor seen, or the family imputation
+                # switched off. For the shipped model that is the end of it; for
+                # the campaign it is precisely where the old sigma's largest row
+                # lives, so the hook gets its say.
+                _add(terms, hook.unobserved(slot, skill))
         if not config.GEAR_GATHERING_IN_RATE:
             terms["gathering"] = 0.0
         out[skill] = (
@@ -651,6 +711,7 @@ def _impute(
     candidates: list[str],
     member,
     stats: ImputationStats,
+    hook: Perturbation = _INERT,
 ) -> dict[str, float]:
     """What an UNOBSERVED slot is worth. The SLOT_POLICY table, executed."""
     if policy == "never":
@@ -677,7 +738,7 @@ def _impute(
             # Statistic refused: fall back to the level the pre-gear model
             # assumed, which reproduces ARMOUR_EFFICIENCY_PLUS7 exactly.
             level = float(config.ENHANCEMENT_ASSUMED_LEVEL)
-        return item_terms(hrid, skill, _round_level(level))
+        return item_terms(hrid, skill, hook.level(_round_level(level), False))
 
     if policy == "manual-tick":
         entry = member.skills.get(skill)
@@ -687,7 +748,7 @@ def _impute(
         level = stats.garment_level
         if level is None:
             level = float(config.ENHANCEMENT_ASSUMED_LEVEL)
-        return item_terms(hrid, skill, _round_level(level))
+        return item_terms(hrid, skill, hook.level(_round_level(level), False))
 
     raise ValueError(f"SLOT_POLICY names an unknown policy {policy!r} for {slot!r}")
 

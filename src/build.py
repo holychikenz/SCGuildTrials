@@ -19,6 +19,7 @@ from typing import Optional
 
 from . import config
 from . import draw as draw_model
+from . import gear as gear_model
 from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
@@ -198,6 +199,21 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
         "ambiguous": [],
         "refused": "",
         "unavailable": inputs.roster_unavailable,
+        # --- per-item gear (src/gear.py) -----------------------------------
+        # `gear_enabled` False is the honest description of today's build: the
+        # five flat equipment constants, asserted of everybody, and no neck slot
+        # at all. Every count below is then zero because nothing was read, which
+        # is a different thing from a guild whose members wear nothing.
+        "gear_enabled": bool(config.GEAR_SOURCE_ENABLED),
+        "gear_visible": 0,
+        "gear_looked_and_none": 0,
+        "gear_blank": 0,
+        "gear_unparseable": [],
+        "gear_unmodelled_items": 0,
+        "gear_observed_by_slot": {},
+        "gear_imputed_by_slot": {},
+        "gear_refused_statistics": [],
+        "gear_stats": None,
     }
     if prov is None:
         return out
@@ -223,6 +239,23 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
         out["unknown_tools"] = prov.tools.unknown_count
         out["unknown_tool_items"] = dict(prov.tools.unknown_items)
         out["blank_enhancements"] = prov.tools.blank_enhancements
+    if prov.gear is not None:
+        gear_audit = prov.gear.to_dict()
+        out.update({
+            "gear_visible": gear_audit["visible"],
+            "gear_looked_and_none": gear_audit["looked_and_none"],
+            "gear_blank": gear_audit["blank"],
+            "gear_unparseable": list(gear_audit["unparseable"]),
+            # The COUNT, not the items. Most are combat equipment with no
+            # race-relevant channel and the list runs to ninety-odd hrids per
+            # guild; naming them on the page would bury the two numbers that
+            # matter (see config.py's note on the absent fatal switch).
+            "gear_unmodelled_items": len(gear_audit["unmodelled_items"]),
+            "gear_observed_by_slot": dict(gear_audit["observed_by_slot"]),
+            "gear_imputed_by_slot": dict(gear_audit["imputed_by_slot"]),
+            "gear_refused_statistics": list(gear_audit["refused_statistics"]),
+            "gear_stats": gear_audit["stats"],
+        })
     age = _capture_age_days(prov.captured_at)
     out["age_days"] = age
     out["stale"] = age is not None and age > config.ROSTER_MAX_AGE_DAYS
@@ -385,6 +418,7 @@ def _render_provenance_strip(prov: dict) -> str:
             f"{prov['unknown_tools']} unmodelled tool item(s), "
             f"{prov['blank_enhancements']} tool(s) with no recorded enhancement."
         )
+        bits.append(_gear_sentence(prov))
 
     cls = "prov stale" if prov.get("stale") else "prov"
     caption = ""
@@ -398,6 +432,56 @@ def _render_provenance_strip(prov: dict) -> str:
         f'<div class="{cls}"><span class="prov-label">Member data</span>'
         f'<span class="prov-body">{" ".join(bits)}</span>{caption}</div>'
     )
+
+
+def _gear_sentence(prov: dict) -> str:
+    """One sentence on the provenance strip about the per-item gear.
+
+    WHAT IT HAS TO SAY, and why it is a sentence rather than a badge. Every other
+    line on this strip reports a JOIN — who was matched to what. This one reports
+    an EPISTEMIC RATIO: how much of the equipment behind the week's numbers was
+    seen and how much was assumed. That ratio is the honest headline of the whole
+    per-item change, and it is the one thing no earlier version of this pipeline
+    could state at all, because before the neck slot was read there was nothing to
+    compare an assumption against.
+
+    While ``GEAR_SOURCE_ENABLED`` is off it says so in those terms — five flat
+    constants and no neck slot — rather than reporting zeroes, which would read as
+    "these members own nothing".
+    """
+    if not prov.get("gear_enabled"):
+        return (
+            'Equipment beyond the tool is <em>assumed</em>: a +3 cape, a +7 '
+            'family piece and +7 Top/Bot where ticked, for everybody, and the '
+            'neck / ring / earring slots are not modelled at all.'
+        )
+    observed = sum(prov.get("gear_observed_by_slot", {}).values())
+    imputed = sum(prov.get("gear_imputed_by_slot", {}).values())
+    total = observed + imputed
+    share = f"{observed / total:.0%}" if total else "no"
+    parts = [
+        f"Equipment read per item from the gear union: <strong>{share}</strong> "
+        f"of {total} slot resolutions observed, the rest imputed from this "
+        f"guild's own mean."
+    ]
+    hidden = prov.get("gear_looked_and_none", 0) + prov.get("gear_blank", 0)
+    if hidden:
+        parts.append(
+            f"{hidden} member(s) showed no tracked gear and follow the imputation "
+            f"rules &mdash; which grant no necklace, ring or earrings at all, so "
+            f"they are if anything understated."
+        )
+    if prov.get("gear_unparseable"):
+        parts.append(
+            f'<span class="prov-warn">'
+            f"{len(prov['gear_unparseable'])} gear cell(s) would not parse.</span>"
+        )
+    if prov.get("gear_refused_statistics"):
+        parts.append(
+            f"{len(prov['gear_refused_statistics'])} imputation statistic(s) had "
+            f"too few observations to believe and ran on the old constant."
+        )
+    return " ".join(parts)
 
 
 def _source_mark(source: str) -> str:
@@ -3947,6 +4031,73 @@ class _GuildInputs:
     plan_dict: Optional[dict] = None
 
 
+def _resolve_guild_gear(
+    members: list[MemberRow],
+    rows: list["roster_model.RosterRow"],
+    guild_key: str,
+) -> Optional["gear_model.GearAudit"]:
+    """Measure this guild's imputation statistics, resolve every member, audit it.
+
+    RUNS ONCE PER GUILD, HERE IN THE PARENT, and that is the whole architecture of
+    the per-item gear model rather than an optimisation. See :mod:`src.gear`'s
+    header: ``member_bonuses`` is called ~22 million times per pipeline and in
+    child processes under ``BUILD_PARALLEL``, so resolving there would be
+    expensive, would need the per-guild statistics as module state that
+    ``config.BUILD_PARALLEL``'s note warns against, and would risk the float
+    re-association ``_prepare_member`` documents. Resolved terms are plain tuples
+    on ``MemberRow``, so they pickle to the children with everything else.
+
+    THE STATISTICS COME FROM THE ROSTER ROWS, NOT THE MERGED MEMBERS, and the
+    difference matters on LI: a roster row that joined nobody still observed a real
+    character's gear, and dropping it would shrink the sample that prices everybody
+    else. ``ROSTER_ADMITS_NEW_MEMBERS`` happens to seat those rows today, so the two
+    sets coincide — but the statistic should not silently change if that switch moves.
+
+    Mutates ``members`` in place, which is safe for the reason
+    ``audit_roster_tools`` gives: this is the list ``roster_model.merge`` just
+    returned as a deep copy, and is therefore ours to write on.
+
+    Returns None while ``config.GEAR_SOURCE_ENABLED`` is off, and the provenance
+    block then reports the gear model as disabled rather than as empty.
+    """
+    if not config.GEAR_SOURCE_ENABLED:
+        return None
+
+    stats = gear_model.measure([row.gear for row in rows], guild_key)
+    audit = gear_model.GearAudit(guild_key=guild_key, stats=stats)
+
+    for row in rows:
+        if row.gear_error:
+            audit.unparseable.append(row.name)
+        elif row.gear is None:
+            audit.blank += 1
+        elif not row.gear:
+            audit.looked_and_none += 1
+        else:
+            audit.visible += 1
+            for hrid in row.gear:
+                if hrid not in gear_model.GEAR_STATS:
+                    audit.unmodelled_items[hrid] = (
+                        audit.unmodelled_items.get(hrid, 0) + 1
+                    )
+    # Which of the three statistics had too little support to be believed
+    # (config.GEAR_MIN_IMPUTE_N). Named, because a refusal is not an error but it
+    # does silently restore a shipped constant for that slice, and the page should
+    # say which slice is running on an assumption rather than a measurement.
+    if stats.cape_speed is None:
+        audit.refused_statistics.append("cape mean speed")
+    if stats.garment_level is None:
+        audit.refused_statistics.append("garment mean level")
+    for hrid in sorted(gear_model.GEAR_STATS):
+        if (gear_model.SLOT_OF[hrid] in gear_model.FAMILY_SLOTS
+                and hrid not in stats.family_level):
+            audit.refused_statistics.append(gear_model.NAME_OF[hrid])
+
+    for member in members:
+        member.gear_bonuses = gear_model.resolve(member, stats, audit)
+    return audit
+
+
 def _report_roster_join(
     site: "GuildSite", prov: "roster_model.Provenance"
 ) -> None:
@@ -4033,6 +4184,57 @@ def _report_roster_join(
             + ", ".join(prov.ambiguous),
             file=sys.stderr,
         )
+    _report_gear(site, prov)
+
+
+def _report_gear(site: "GuildSite", prov: "roster_model.Provenance") -> None:
+    """The per-item gear's NOTE/WARNING pair, beside the roster join's.
+
+    Split out rather than inlined because it has a different subject: the join
+    reports WHO was matched, this reports WHAT THEY OWN and, more to the point,
+    how much of the answer is measured rather than imputed. That ratio is the one
+    number an officer needs to judge how far to trust the week, and it is the one
+    thing no earlier version of this pipeline could report at all.
+    """
+    audit = prov.gear
+    if audit is None:
+        return
+
+    observed = sum(audit.observed_by_slot.values())
+    imputed = sum(audit.imputed_by_slot.values())
+    total = observed + imputed
+    share = observed / total if total else 0.0
+    print(
+        f"NOTE ({site.key}): per-item gear — {audit.visible} member(s) visible, "
+        f"{audit.looked_and_none} showed none of the tracked set, "
+        f"{audit.blank} blank cell(s); {observed} of {total} slot resolutions "
+        f"({share:.0%}) OBSERVED, the rest imputed.",
+        file=sys.stderr,
+    )
+    if audit.unparseable:
+        # Deliberately a WARNING and deliberately not fatal. The cell may hold
+        # months of pooled captures that no single machine can rebuild, so the
+        # upstream writer refuses to overwrite one and this refuses to die on one
+        # — but it does not self-heal either: clearing it by hand starts a fresh
+        # union. A non-zero count on a tab nobody has hand-edited is a writer bug.
+        print(
+            f"WARNING ({site.key}): {len(audit.unparseable)} gearSeen cell(s) "
+            f"would not parse and those members fell back to the imputation "
+            f"rules: {', '.join(audit.unparseable)}. On a tab nobody has "
+            f"hand-edited this means a bug in apps-script/profiles/Code.gs — "
+            f"investigate rather than clearing the cells, which discards their "
+            f"accumulated union.",
+            file=sys.stderr,
+        )
+    if audit.refused_statistics:
+        print(
+            f"WARNING ({site.key}): {len(audit.refused_statistics)} gear "
+            f"imputation statistic(s) had fewer than "
+            f"config.GEAR_MIN_IMPUTE_N = {config.GEAR_MIN_IMPUTE_N} observations "
+            f"and were REFUSED, so those slices ran on the pre-gear constant "
+            f"instead: {', '.join(audit.refused_statistics)}.",
+            file=sys.stderr,
+        )
 
 
 def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _GuildInputs:
@@ -4106,6 +4308,15 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             # and RAISES on a tool in the wrong slot — which is not a new item but
             # a shifted header row, and makes every tool column suspect.
             roster_provenance.tools = trials_model.audit_roster_tools(members)
+            # The per-item gear runs AFTER the tool audit, and the order is not
+            # arbitrary: the audit strips items config.TOOL_STATS does not model
+            # from the merged entries, and the gear resolver must see the same
+            # members the race will. Gear and tools are disjoint slots, so nothing
+            # here can undo that stripping — but a later reader should not have to
+            # work that out from the call order alone.
+            roster_provenance.gear = _resolve_guild_gear(
+                members, roster_rows, site.key
+            )
             _report_roster_join(site, roster_provenance)
 
     # --- The sign-up tab, and whether it is talking about THIS week --------------
