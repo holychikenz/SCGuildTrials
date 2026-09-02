@@ -320,6 +320,97 @@ ROSTER_UNKNOWN_TOOL_FATAL = False
 # it must be resolved before the R5 flip rather than after.
 TOOL_ENHANCE_WHEN_UNKNOWN = 0
 
+# --- Per-item gear from the `gearSeen` union: the switch ladder --------------
+# A THIRD per-member source, and the first that reports THINGS OWNED rather than
+# numbers. `apps-script/profiles/Code.gs` writes one column at the tail of each
+# roster tab -- the UNION of every capture of that member's gear, keyed on hrid,
+# keeping the higher enhancement level. src/gear.py turns it into rate terms.
+#
+# WHAT IT REPLACES. Five constants in this file assert the same equipment of every
+# member -- CAPE_SPEED_PLUS3, ARMOUR_EFFICIENCY_PLUS7 three times over (family
+# piece, top, bottom) and GEAR_DOUBLE_CHANCE -- and one term is not modelled at
+# all: the neck slot, which is the LARGEST single row in RISK_SIGMA_SYSTEMATIC's
+# budget at 0.0081-0.0110 of a ~0.0123 total. This is the `stableGear` block the
+# roster plan (§11.2) named "the highest-value remaining work in the whole area".
+#
+# Rules, measurements, and the one judgement call: research/per-item-gear.md.
+#
+# MASTER SWITCH. False restores the pre-gear build BIT-FOR-BIT: the column is not
+# parsed, nothing is resolved, no new data.json keys, no page change. Gated at the
+# PARSE rather than at the consumers, exactly as ROSTER_SOURCE_ENABLED is, so the
+# rollback also covers the case where the upstream userscript or the Apps Script
+# merge is the thing that is broken.
+# Pinned by tests/test_gear.py::test_gear_disabled_reproduces_the_golden_week
+# and ::test_data_json_is_byte_identical_with_gear_off.
+GEAR_SOURCE_ENABLED = False
+
+# The column name, at the TAIL of the roster tab. NOT added to
+# roster.required_columns(): the column is OPTIONAL and must stay so. LI's tab
+# lacked it on the morning of 2026-09-02 and gained it by lunchtime; reverting the
+# userscript would remove it again, and apps-script/profiles/README.md states that
+# a narrower payload leaves the column untouched by design. A missing gearSeen
+# must degrade to the constants above, never fail the header guard.
+ROSTER_GEAR_COLUMN = "gearSeen"
+
+# Per-slice switches, for a PARTIAL rollback: an adverse slice can be reverted
+# without losing the other three. Each False restores that slice's constant.
+GEAR_USE_CAPE = True            # per-item cape over CAPE_SPEED_PLUS3
+GEAR_USE_FAMILY_PIECE = True    # per-item boots/hat/watch/gloves over the flat +7
+GEAR_USE_GARMENTS = True        # per-item top/bottoms over the flat +7
+GEAR_USE_ACCESSORIES = True     # neck/ring/earrings -- previously UNMODELLED, so
+                                # False here is not a rollback to a constant but to
+                                # an omission, and to the sigma row that covered it.
+
+# THE ONE LINE THAT REVERSES THIS CHANGE'S LARGEST JUDGEMENT CALL.
+# True keeps the universal grant of the four family pieces, correcting only the
+# enhancement level from the assumed +7 to each item's observed per-guild mean.
+# False scores them only where the union has actually SEEN them.
+#
+# The measurement says False and the operator chose True, and the disagreement is
+# recorded rather than settled (research/per-item-gear.md §3.1): the four pieces
+# are held ALL-OR-NOTHING -- 48% of visible members show none of them, 37% show all
+# four -- and the obvious objection, that a capture merely caught somebody in
+# combat gear, is answered by 82 members who wear a skilling NECKLACE and show not
+# one of the four. The grant is kept on the judgement that the union has not yet
+# converged and that these pieces are near-universal in practice.
+#
+# If that judgement is wrong, roughly half of both guilds is credited a 0.1182
+# efficiency term it does not own, which would be the single largest mispricing in
+# the model. Re-run research/scratch/gear_survey.py §4 in a few weeks: if the
+# "0 of four" column has not shrunk, the bimodality is real ownership and this
+# switch should move.
+GEAR_IMPUTE_FAMILY_PIECE = True
+
+# Whether gatheringQuantity items (the rings and earrings) reach the rate at all.
+#
+# ISOLATES AN OPEN QUESTION THIS CHANGE DID NOT CREATE. See the note above
+# COMMUNITY_GATHERING_BUFF_DOUBLE: the game's `/buff_types/gathering` ("increases
+# gathering quantity") is a DIFFERENT buff type from the `doubleProgressChance`
+# field this model drives it through. GEAR_DOUBLE_CHANCE was the flat working
+# assumption "pending the per-member gear harvest"; the harvest has arrived, and
+# per-item modelling makes the question isolable for the first time -- False prices
+# every gatheringQuantity item at zero WITHOUT also removing the community buff,
+# which the flat constant could not do.
+GEAR_GATHERING_IN_RATE = True
+
+# Minimum observations before an imputation statistic is believed. Below this the
+# statistic is REFUSED and the shipped constant is used instead.
+#
+# Refusing is the point. Eight of the eleven observed garment items rest on n=1 or
+# n=2, and a mean of one observation is not a mean -- it is worse than the
+# assumption it replaces, because it LOOKS measured. The three statistics gear.py
+# actually ships are pooled or per-item precisely so that each clears this floor
+# with n=24-51 (research/per-item-gear.md §6.1).
+GEAR_MIN_IMPUTE_N = 10
+
+# An hrid in the union that GEAR_STATS does not model: count it, name it, and
+# ignore it. True stops the build instead. Shipped False for the reason
+# ROSTER_UNKNOWN_TOOL_FATAL is shipped False -- one new game item must not stop a
+# deploy -- and never silent, for the same reason. NB the union legitimately
+# carries some sixty COMBAT items which are not "unknown": they are matched
+# against the catalogue and found to have no race-relevant channel.
+GEAR_UNKNOWN_ITEM_FATAL = False
+
 # ===========================================================================
 # Guild Trials (Phase 1) — model constants + this week's draw
 # ===========================================================================

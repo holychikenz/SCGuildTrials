@@ -68,6 +68,22 @@ class MemberRow:
     # levels, real houses and no tools, and the right answer is roster for what it
     # knows and manual for the rest.
     provenance: dict[str, str] = field(default_factory=dict)
+    # --- Gear (src/gear.py); both written only by roster.merge / build ------
+    # The parsed `gearSeen` union: {hrid: enhancement level or None}. THREE
+    # states, and the difference between the last two is why this is Optional
+    # rather than a plain dict (see gear.GearCell): None means the cell was BLANK
+    # -- we did not look, or the member hides their gear -- while {} means we
+    # LOOKED and they wore none of the tracked set. Nothing downstream treats the
+    # two differently, by decision, but gear.GearAudit counts them apart, which is
+    # how an upstream breakage in the writer would be noticed at all.
+    gear: Optional[dict[str, Optional[int]]] = None
+    # The RESOLVED terms, {skill: (speed, efficiency, success, gathering)},
+    # computed ONCE per member in the parent by gear.resolve. trials.member_bonuses
+    # reads this dict instead of walking the item table -- see src/gear.py's header
+    # for why resolving in the hot loop would be wrong three ways.
+    gear_bonuses: dict[str, tuple[float, float, float, float]] = field(
+        default_factory=dict
+    )
 
 
 # Roster-sourced keys, and the value that means "unset" for each. These are
@@ -77,6 +93,8 @@ _UNSET_MEMBER_KEYS = {
     "captured_at": None,
     "shrine_levels": {},
     "provenance": {},
+    "gear": None,
+    "gear_bonuses": {},
 }
 _UNSET_SKILL_KEYS = {"tool_item": None, "tool_enhance": None}
 

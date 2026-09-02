@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import config
+from . import gear as gear_model
 from .reader import MemberRow, SheetStructureError, SkillEntry, norm_name
 from .scraper import fetch_tab_csv
 
@@ -62,6 +63,14 @@ class RosterRow:
     # shrine key (config.GUILD_SHRINE_SKILLING_BUFFS) -> the member's OWN
     # purchased skilling level, or None where the column was blank.
     shrines: dict[str, Optional[int]] = field(default_factory=dict)
+    # The parsed `gearSeen` union: {hrid: level or None}. None here means the
+    # column was BLANK for this member (or is absent from the tab entirely);
+    # ``{}`` means the cell said `{"items":[]}` -- we looked and they wore none of
+    # the tracked set. See gear.GearCell for why those are not the same claim.
+    gear: gear_model.GearCell = None
+    # Non-empty when the cell would not parse: the reason, for the audit. The
+    # member then falls to the unobserved rules rather than taking the build down.
+    gear_error: str = ""
 
 
 def fetch_roster_csv(tab_name: str) -> str:
@@ -205,6 +214,33 @@ def parse(csv_text: str) -> list[RosterRow]:
         for shrine_col, key in config.ROSTER_SHRINE_COLUMNS.items():
             shrines[key] = _to_int_strict(_cell(raw, col(shrine_col)), shrine_col, name)
 
+        # --- The OPTIONAL gear column ---------------------------------------
+        # Absent from `required_columns()` on purpose, and it must stay absent.
+        # LI's tab lacked this column on the morning of 2026-09-02 and gained it
+        # by lunchtime; reverting the userscript would remove it again, and
+        # apps-script/profiles/README.md states that a narrower payload leaves the
+        # column read, written and cleared NEVER. So a tab without it must degrade
+        # to the pre-gear constants, not fail the header guard — which is why this
+        # asks `in index` rather than going through `col`.
+        #
+        # An unparseable cell is NOT a SheetStructureError, which is the one place
+        # this module departs from `_to_int_strict`'s rule that a machine-written
+        # cell failing to parse is a structure problem. The difference is what the
+        # cell holds: a non-numeric level is one member's one field, whereas this
+        # cell may hold months of pooled captures from several machines that no
+        # single machine can rebuild. The upstream writer already refuses to
+        # overwrite one (see `gearSkipped` in Code.gs), and the matching behaviour
+        # here is to leave that member on the unobserved rules and COUNT it. A
+        # non-zero count on a tab nobody has hand-edited means a writer bug.
+        gear_cell: gear_model.GearCell = None
+        gear_error = ""
+        if config.GEAR_SOURCE_ENABLED and config.ROSTER_GEAR_COLUMN in index:
+            raw_gear = _cell(raw, index[config.ROSTER_GEAR_COLUMN])
+            try:
+                gear_cell = gear_model.parse_gear_cell(raw_gear)
+            except gear_model.GearParseError as exc:
+                gear_error = str(exc)
+
         out.append(
             RosterRow(
                 name=name,
@@ -216,6 +252,8 @@ def parse(csv_text: str) -> list[RosterRow]:
                 tools=tools,
                 tool_enh=tool_enh,
                 shrines=shrines,
+                gear=gear_cell,
+                gear_error=gear_error,
             )
         )
 
@@ -482,7 +520,28 @@ def _admitted_member(row: RosterRow, prov: Provenance) -> MemberRow:
         captured_at=row.captured_at or None,
         shrine_levels=_shrine_levels(row),
         provenance=member_provenance,
+        gear=_gear_cell(row),
     )
+
+
+def _gear_cell(row: Optional[RosterRow]) -> "gear_model.GearCell":
+    """The member's parsed ``gearSeen`` union, or None where there is none.
+
+    None for a member the roster never saw, for a guild whose tab carries no gear
+    column, for a blank cell, and while ``config.GEAR_SOURCE_ENABLED`` is off —
+    four different reasons that all mean the same thing to the resolver, which
+    treats an absent union exactly as it treats a member who hid their gear
+    (``gear.resolve``, and research/per-item-gear.md §6.3).
+
+    UNLIKE ``_shrine_levels`` this carries no per-field fallback, because there is
+    nothing to fall back TO: no other source in this repository reports which
+    items a member owns. An absent union means the imputation rules apply, which
+    is the pre-gear behaviour for four of the five terms and silence for the
+    fifth.
+    """
+    if row is None or not config.GEAR_SOURCE_ENABLED:
+        return None
+    return row.gear
 
 
 def _shrine_levels(row: RosterRow) -> dict[str, int]:
@@ -588,6 +647,7 @@ def merge(
                 captured_at=(row.captured_at or None) if row else None,
                 shrine_levels=_shrine_levels(row) if row else {},
                 provenance=member_provenance,
+                gear=_gear_cell(row),
             )
         )
 
