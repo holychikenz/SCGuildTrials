@@ -755,3 +755,43 @@ def test_all_stats_within_one_cape_are_equal():
         if slot != gear.CAPE_SLOT:
             continue
         assert len(set(stats.values())) == 1, name
+
+
+def test_the_control_column_can_price_an_observed_accessory_as_unknown():
+    """`prices_observed_accessories` is what makes a "before" run comparable.
+
+    calibrate's --ignore-provenance means "the same lineup, with the observed
+    quantities priced as unknown anyway". Before this flag the gear observations
+    survived that switch untouched: `augment` leapt from 0.0018 to 0.0075 while
+    every neck row came back IDENTICAL — a control in name only, answering a
+    narrower question than its name promised.
+    """
+    class AsUnknown(gear.Perturbation):
+        prices_observed_accessories = True
+
+        def unobserved(self, slot, skill):
+            return {"speed": 0.5} if slot == "neck" else {}
+
+    worn = _member({"/items/philosophers_necklace": 3})
+    # With the flag, an observed necklace is priced by the hook, not by the item.
+    priced = gear.resolve(worn, _STATS, perturb=AsUnknown(), skills=("Milking",))
+    assert priced["Milking"][0] == pytest.approx(_STATS.cape_speed + 0.5)
+    # Without it, the observed item wins and the hook is never consulted.
+    normal = gear.resolve(worn, _STATS, perturb=AsUnknown.__base__(),
+                          skills=("Milking",))
+    assert normal["Milking"][0] == pytest.approx(
+        _STATS.cape_speed
+        + gear.item_terms("/items/philosophers_necklace", "Milking", 3)["speed"]
+    )
+
+
+def test_ignore_provenance_sets_the_control_flag():
+    """The wiring, so the two cannot drift apart."""
+    from src import calibrate
+    import random
+    respectful = calibrate._GearPerturbation(
+        calibrate.Sources(respect_provenance=True), random.Random(0), _STATS)
+    control = calibrate._GearPerturbation(
+        calibrate.Sources(respect_provenance=False), random.Random(0), _STATS)
+    assert respectful.prices_observed_accessories is False
+    assert control.prices_observed_accessories is True

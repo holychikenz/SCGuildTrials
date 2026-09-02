@@ -224,6 +224,13 @@ class _GearPerturbation(gear_model.Perturbation):
         self._src = src
         self._rng = rng
         self._stats = stats
+        # Under --ignore-provenance the neck / ring / earring slots are priced as
+        # unknown EVEN WHERE THE UNION READ THEM, which is what makes that run a
+        # comparable "before" column rather than a narrower question. Without it
+        # the flag would un-retire the tool and house observations and leave the
+        # gear ones untouched — measured, `augment` leaps 0.0018 -> 0.0075 while
+        # every neck row comes back identical, which is a control in name only.
+        self.prices_observed_accessories = not src.respect_provenance
 
     def level(
         self,

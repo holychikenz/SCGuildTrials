@@ -893,8 +893,63 @@ SLACK_OK = 0.15
 # simulator's own O(dt) grid bias. Coverage across a deadline sweep: mean absolute
 # error 0.014. The published number over-covers by design.
 #
+# RECALIBRATED 2026-09-02 (phase G8), 0.0123 -> 0.0098, after the gearSeen union
+# became a per-item rate model. The neck / ring / earring slots were this
+# constant's LARGEST single row and the thing it was most obviously wrong about:
+# "no source this repo reads has a column for those slots" is no longer true, and
+# 178 of 202 members now have their necklace read off their own card.
+#
+#   NOW      0.0098. The largest of the EIGHT live trials (SC + LI x four drawn
+#            skills) -- SC Milking, tier 12, 20 000 reps -- reproduced at three
+#            seeds: 0.0094 (20260902), 0.0098 (20260801), 0.0094 (777). Spread
+#            +/-0.0002, and the MAX is quoted rather than the mean, as R6 did.
+#            The other seven trials run 0.0034-0.0057, so one constant serving
+#            both guilds over-covers all but this row -- which is the direction
+#            this constant is meant to err in.
+#   CONTROL  0.0135 on the SAME lineup and seed with --ignore-provenance, i.e.
+#            every observed quantity priced as unknown anyway. That 0.0135 ->
+#            0.0098 is the recalibration proper. Note it sits ABOVE the 0.0123
+#            this replaces, exactly as R6's 0.0141 sat above the 0.0131 IT
+#            replaced, and for the same reason: the control un-retires the
+#            ROSTER's tool and house observations too, which 0.0123 had already
+#            banked.
+#   BEFORE   0.0123, from the roster campaign (R6, 2026-09-01).
+#
+# THE CONTROL VALIDATES ITSELF, which is the part worth trusting. Its neck-
+# efficiency ablation row comes back at 0.0083 / 0.0103 / 0.0111 / 0.0087 across
+# the four SC trials, against 0.0084 / 0.0101 / 0.0111 / 0.0089 measured on the
+# PRE-GEAR model, on a different lineup and at a tenth of the replicates. Two
+# independent routes to the same four numbers is what makes the 0.0135 a "before"
+# rather than an artefact. With provenance respected that row falls to 0.0025 /
+# 0.0079 / 0.0031 / 0.0044 -- a real cut, and a PARTIAL one by design.
+#
+# IT SHRANK BY A FIFTH AND NOT BY THE WHOLE NECK ROW, and the reasons are all
+# stated rather than hoped for:
+#   * 24 of 202 members show no necklace at all and 16 hide their gear entirely.
+#     research/per-item-gear.md §6.2 declines to impute an accessory onto anybody
+#     -- the Philosopher's pieces are the rarest items in the game -- so those
+#     members keep the old uncertainty in FULL.
+#   * The cape and the four family pieces are IMPUTED at this guild's own mean,
+#     which is a NEW uncertainty no earlier sigma carried, priced by resampling
+#     from the guild's observed spread (Sources.gear_impute_resample).
+#   * Milking carries the largest remainder on BOTH guilds because it is the one
+#     gathering trial in this week's draw, so it alone still pays for the ring and
+#     earrings of the members who wear neither.
+# A sigma near zero here would have been a BUG, not a triumph, for exactly the
+# reason R6 gave: it would mean provenance was being respected for uncertainties
+# that remain genuinely unknown, and every published P(holds) would be
+# over-confident on the thin trials the risk bridge exists to flag.
+#
+# The GOLDEN TEST reports 0.00e+00 on all eight trials: with every source off, the
+# perturbed mirror reproduces simulate_race EXACTLY with the gear path live. That
+# is the hook design vindicated -- had calibrate.py carried a MIRROR of
+# gear.resolve instead of a hook into it, that zero would be a small non-zero
+# number and every sigma above would be quietly wrong.
+#
+# Full campaign output: research/gear-sigma-campaign-2026-09-02.txt.
+#
 # Set to 0.0 to publish the aleatoric floor alone (a one-line change).
-RISK_SIGMA_SYSTEMATIC = 0.0123
+RISK_SIGMA_SYSTEMATIC = 0.0098
 
 # --- E[points]: the number officers should actually plan against --------------
 # WHY THIS BECAME NECESSARY on 2026-08-11, having been deferred for weeks as

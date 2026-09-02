@@ -639,6 +639,18 @@ class Perturbation:
         """
         return level
 
+    #: When True, :func:`resolve` offers an accessory slot to :meth:`unobserved`
+    #: EVEN WHERE THE UNION READ IT, so the campaign can price a slot it can see
+    #: as though it could not.
+    #:
+    #: THIS IS WHAT MAKES A CONTROL COLUMN COMPARABLE. ``calibrate``'s
+    #: ``--ignore-provenance`` means "the same lineup, with the observed
+    #: quantities priced as unknown anyway" — it is the column that isolates a
+    #: recalibration from every other difference between two runs. Without this
+    #: flag the gear observations would survive that switch untouched, and the
+    #: control would silently answer a narrower question than its name promises.
+    prices_observed_accessories: bool = False
+
     def cape_speed(self, speed: float) -> float:
         """The IMPUTED cape bonus, which is a bonus and not a level.
 
@@ -728,6 +740,14 @@ def resolve(
                 continue
             observed = [h for h in candidates if h in cell]
             if observed:
+                if (slot in ACCESSORY_SLOTS
+                        and hook.prices_observed_accessories):
+                    # The control column: price this slot as though the union had
+                    # never read it, so a "before" run differs from an "after" run
+                    # in the observation and in NOTHING else.
+                    _add(terms, hook.unobserved(slot, skill))
+                    _bump(audit, "observed_by_slot", slot)
+                    continue
                 hrid = _best_in_slot(observed, skill, cell)
                 level = hook.level(cell[hrid], observed=True)
                 _add(terms, item_terms(hrid, skill, level))
