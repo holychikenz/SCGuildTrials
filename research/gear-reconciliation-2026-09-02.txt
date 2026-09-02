@@ -1,0 +1,34 @@
+draw: C.Smithing, Milking, Enhancing, Tailoring   seed 1234
+
+=== SC   98/107 members carry a parsed gear union
+  baseline search 428s
+  baseline       points    4900         credit   4932.88               E   4932.23               thinnest P 0.9908
+  cape           points    4900 (+0)   credit   4934.45 (   +1.57)   E   4934.13 (   +1.89)   thinnest P 0.9947 (+0.0038)
+  family piece   points    4900 (+0)   credit   4932.38 (   -0.50)   E   4931.44 (   -0.79)   thinnest P 0.9889 (-0.0019)
+  garments       points    4900 (+0)   credit   4931.69 (   -1.19)   E   4930.13 (   -2.11)   thinnest P 0.9807 (-0.0101)
+  accessories    points    4900 (+0)   credit   4943.28 (  +10.40)   E   4943.35 (  +11.12)   thinnest P 1.0000 (+0.0092)
+  ALL SLICES     points    4900 (+0)   credit   4943.02 (  +10.14)   E   4943.09 (  +10.86)   thinnest P 1.0000 (+0.0092)
+  --- fresh search with every slice on (424s)
+  RE-OPTIMISED   points    4900 (+0)   credit   4946.52 (  +13.64)   E   4946.24 (  +14.01)   thinnest P 0.9945 (+0.0037)
+  per trial (baseline -> re-optimised):
+    C.Smithing     tier 12->12   partial 0.0760->0.0834   P 0.9908->0.9945   E 1303.41->1303.90
+    Milking        tier 12->12   partial 0.3977->0.4445   P 1.0000->1.0000   E 1319.91->1322.25
+    Enhancing      tier 10->10   partial 0.0805->0.0963   P 0.9933->0.9989   E 1103.75->1104.77
+    Tailoring      tier 11->11   partial 0.1034->0.3061   P 0.9994->1.0000   E 1205.16->1215.32
+
+=== LI   104/111 members carry a parsed gear union
+  baseline search 383s
+  baseline       points    4600         credit   4661.21               E   4660.51               thinnest P 0.9854
+  cape           points    4600 (+0)   credit   4662.44 (   +1.23)   E   4661.95 (   +1.44)   thinnest P 0.9898 (+0.0044)
+  family piece   points    4600 (+0)   credit   4659.49 (   -1.72)   E   4658.51 (   -2.00)   thinnest P 0.9767 (-0.0087)
+  garments       points    4600 (+0)   credit   4661.16 (   -0.06)   E   4660.45 (   -0.06)   thinnest P 0.9845 (-0.0009)
+  accessories    points    4600 (+0)   credit   4671.66 (  +10.45)   E   4671.74 (  +11.23)   thinnest P 1.0000 (+0.0146)
+  ALL SLICES     points    4600 (+0)   credit   4671.00 (   +9.79)   E   4671.08 (  +10.57)   thinnest P 1.0000 (+0.0146)
+  --- fresh search with every slice on (386s)
+  RE-OPTIMISED   points    4600 (+0)   credit   4673.27 (  +12.06)   E   4673.06 (  +12.55)   thinnest P 0.9938 (+0.0084)
+  per trial (baseline -> re-optimised):
+    C.Smithing     tier 11->11   partial 0.1605->0.1524   P 1.0000->1.0000   E 1208.04->1207.64
+    Milking        tier 11->11   partial 0.6742->0.7309   P 1.0000->1.0000   E 1233.73->1236.57
+    Enhancing      tier 9->9   partial 0.3294->0.5116   P 1.0000->1.0000   E 1016.49->1025.60
+    Tailoring      tier 11->11   partial 0.0602->0.0706   P 0.9854->0.9938   E 1202.25->1203.26
+

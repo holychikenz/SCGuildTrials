@@ -283,6 +283,52 @@ cape introduce a *new* uncertainty the previous σ did not carry — the imputat
 error itself. A σ near zero here would be a bug, exactly as it would have been in
 the roster change.
 
+### 7.1 MEASURED, phase G6 (2026-09-02)
+
+Full output: `research/gear-reconciliation-2026-09-02.txt`; harness:
+`research/scratch/gear_reconcile.py`. Each slice is priced by RE-SCORING the
+baseline lineup, so the repricing is isolated from the search's response to it;
+the last row runs a fresh search, which is what the flip actually publishes.
+This week's live draw (C.Smithing, Milking, Enhancing, Tailoring), seed 1234.
+
+| slice | predicted | SC Δcredit | SC ΔE | LI Δcredit | LI ΔE |
+|---|---|---|---|---|---|
+| cape | **up** | +1.57 | +1.89 | +1.23 | +1.44 |
+| family piece | **down** | −0.50 | −0.79 | −1.72 | −2.00 |
+| garments | **down** | −1.19 | −2.11 | −0.06 | −0.06 |
+| accessories | **up**, dominant | **+10.40** | **+11.12** | **+10.45** | **+11.23** |
+| all four, frozen lineup | net up | +10.14 | +10.86 | +9.79 | +10.57 |
+| **re-optimised** | | **+13.64** | **+14.01** | **+12.06** | **+12.55** |
+
+**Every slice moved in its predicted direction on both guilds.** Three further
+things the table says that §7's per-term reasoning could not:
+
+- **The accessories carry the whole change, and the two guilds agree to within
+  0.05** (+10.40 against +10.45) — two rosters of different size, level and wealth
+  putting almost exactly the same value on reading the neck slot. That agreement is
+  what makes the term credible as a property of the game rather than of one guild's
+  data.
+- **Re-optimising gains a further ~3 points beyond the repricing** (+13.64 against
+  +10.14 on the frozen lineup). Better information does not merely re-score the
+  same plan; the search finds a better one. Every trial's progress into its next
+  tier rises — Tailoring's from 0.1034 to 0.3061 on SC, Enhancing's from 0.3294 to
+  0.5116 on LI.
+- **STEP POINTS DO NOT MOVE**: 4900 and 4600, before and after, on both guilds. The
+  gain is entirely in partial credit and in safety. The thinnest trial goes from
+  P = 0.9908 to 1.0000 on SC (0.9854 → 1.0000 on LI) when the lineup is frozen, and
+  settles at 0.9945 / 0.9938 once the search is allowed to spend a sliver of
+  certainty for expected points — which is `OPT_OBJECTIVE = "expected"` behaving as
+  designed, and still above both baselines.
+
+**A WARNING FOR ANYONE RE-RUNNING THIS.** The first three attempts at this table
+were WRONG, and one of them was wrong with a plausible-looking answer of the
+opposite sign (−5 rather than +11). The causes are recorded in the plan's §5b.1;
+the short version is that two were defects in the *switched-off* path and one was
+a harness that loaded its members before enabling the parse, so it measured a
+guild wearing nothing. If a slice row ever reads exactly `+0.00`, or if three
+slices of visibly different size report the same number, suspect the harness
+before believing the result.
+
 ## 8. What this does not do
 
 - **Combat gear is ignored.** The union carries it (Chaotic Flail, Anchorbound

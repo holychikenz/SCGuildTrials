@@ -342,7 +342,29 @@ TOOL_ENHANCE_WHEN_UNKNOWN = 0
 # merge is the thing that is broken.
 # Pinned by tests/test_gear.py::test_gear_disabled_reproduces_the_golden_week
 # and ::test_data_json_is_byte_identical_with_gear_off.
-GEAR_SOURCE_ENABLED = False
+#
+# FLIPPED TRUE 2026-09-02 (phase G7), after each of the four slices was reconciled
+# against the direction research/per-item-gear.md §7 predicted for it, on BOTH
+# guilds independently (§7.1, and research/gear-reconciliation-2026-09-02.txt):
+#
+#   cape          +1.57 / +1.23 credit   (predicted up)
+#   family piece  -0.50 / -1.72          (predicted down)
+#   garments      -1.19 / -0.06          (predicted down)
+#   accessories  +10.40 / +10.45         (predicted up, and dominant)
+#   RE-OPTIMISED +13.64 / +12.06 credit, +14.01 / +12.55 E[points]
+#
+# STEP POINTS DID NOT MOVE -- 4900 and 4600, before and after, on both guilds --
+# and that is the honest headline. The gain is in partial credit, in safety (the
+# thinnest trial goes from P = 0.9908 to 1.0000 on SC before the search spends any
+# of it back), and above all in what the model can DEFEND: 53% of SC's slot
+# resolutions and 51% of LI's are now measured rather than assumed.
+#
+# The two guilds agreeing to within 0.05 on the accessories (+10.40 against
+# +10.45) is the single most reassuring number in the whole change: two rosters of
+# different size, level and wealth put almost exactly the same value on reading the
+# neck slot, which is what makes the term a property of the game rather than of one
+# guild's data.
+GEAR_SOURCE_ENABLED = True
 
 # The column name, at the TAIL of the roster tab. NOT added to
 # roster.required_columns(): the column is OPTIONAL and must stay so. LI's tab
