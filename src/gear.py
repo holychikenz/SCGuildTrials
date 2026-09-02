@@ -445,6 +445,23 @@ class ImputationStats:
     # n=1 reason above.
     garment_level: Optional[float] = None
     garment_n: int = 0
+    # --- and the OBSERVED SPREAD behind each mean, for the risk campaign -----
+    # The means above are what the shipped model imputes. These are what
+    # ``src.calibrate`` resamples from to price the IMPUTATION ERROR — a term no
+    # earlier sigma carried, because no earlier model imputed anything.
+    #
+    # RESAMPLED, NOT PERTURBED BY A HALF-WIDTH, and the difference is the whole
+    # reason these lists exist. Asserting "this member holds the guild mean" when
+    # the truth is one draw from the guild's own distribution is exactly the
+    # situation ``calibrate.Sources.house_blank`` already handles for a blank H
+    # cell: it "resamples from the SAME guild's own distribution of filled cells,
+    # which is the posterior predictive given no information — and which also
+    # removes the flat default's BIAS for free". A half-width would have to be
+    # invented, would be symmetric about a mean that is itself the estimate, and
+    # would get the shape wrong; these get it right by construction.
+    cape_pool: list[float] = field(default_factory=list)
+    family_pool: dict[str, list[int]] = field(default_factory=dict)
+    garment_pool: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -455,6 +472,8 @@ class ImputationStats:
             "family_n": dict(self.family_n),
             "garment_level": self.garment_level,
             "garment_n": self.garment_n,
+            # The POOLS are deliberately absent: they are the campaign's input,
+            # not the page's, and `*_n` already reports their size.
         }
 
 
@@ -492,6 +511,10 @@ def measure(cells: list[GearCell], guild_key: str = "") -> ImputationStats:
                 family_levels.setdefault(hrid, []).append(level)
             elif slot in GARMENT_SLOTS:
                 garment_levels.append(level)
+
+    stats.cape_pool = cape_bonuses
+    stats.family_pool = family_levels
+    stats.garment_pool = garment_levels
 
     floor = config.GEAR_MIN_IMPUTE_N
     stats.cape_n = len(cape_bonuses)
@@ -601,8 +624,30 @@ class Perturbation:
     perturbation is the shipped path and its arithmetic is untouched.
     """
 
-    def level(self, level: Optional[int], observed: bool) -> Optional[int]:
+    def level(
+        self,
+        level: Optional[int],
+        observed: bool,
+        pool: Optional[list[int]] = None,
+    ) -> Optional[int]:
+        """``pool`` is the observed spread an IMPUTED mean was computed from.
+
+        Passed in rather than looked up, because this method alone cannot tell a
+        family piece's level from a garment's and the two are pooled differently
+        (per item against pooled-over-all, for the n=1 reason in §6.7). None for
+        an observed level, which has no pool and needs none.
+        """
         return level
+
+    def cape_speed(self, speed: float) -> float:
+        """The IMPUTED cape bonus, which is a bonus and not a level.
+
+        Its own method because the cape statistic is a pooled mean of EFFECTIVE
+        SPEEDS, not of levels — pooling levels would need a base to apply them to
+        and the plain/★ split makes that choice arbitrary. So there is no level
+        for :meth:`level` to disturb, and the campaign resamples the bonus itself.
+        """
+        return speed
 
     def unobserved(self, slot: str, skill: str) -> dict[str, float]:
         return {}
@@ -637,6 +682,7 @@ def resolve(
     stats: ImputationStats,
     audit: Optional[GearAudit] = None,
     perturb: Optional[Perturbation] = None,
+    skills: Optional[tuple[str, ...]] = None,
 ) -> dict[str, tuple[float, float, float, float]]:
     """``{skill: (speed, efficiency, success, gathering)}`` for one member.
 
@@ -648,6 +694,11 @@ def resolve(
     ``_prepare_member`` returns one: the caller unpacks it in the hottest loop in
     the project, where attribute lookups are measurable.
 
+    ``skills`` narrows the work to the named skills instead of all ten. The build
+    wants all ten and passes None; ``src.calibrate`` re-resolves ONE skill inside
+    a 20,000-replicate loop and would otherwise do ten times the work and discard
+    nine tenths of it.
+
     ``member.gear`` None (a blank cell) and ``{}`` (looked, wore none) behave
     identically here, by decision: a gear-hidden member is NOT a special case and
     follows the unobserved rules exactly. There is no ``hidden`` branch anywhere
@@ -657,7 +708,7 @@ def resolve(
     hook = perturb or _INERT
     out: dict[str, tuple[float, float, float, float]] = {}
 
-    for skill in config.SKILLS:
+    for skill in (skills if skills is not None else config.SKILLS):
         terms = {"speed": 0.0, "efficiency": 0.0, "success": 0.0, "gathering": 0.0}
         for slot, policy in SLOT_POLICY.items():
             if not _slot_enabled(slot):
@@ -724,7 +775,7 @@ def _impute(
         speed = stats.cape_speed
         if speed is None:
             speed = config.CAPE_SPEED_PLUS3
-        return {"speed": speed}
+        return {"speed": hook.cape_speed(speed)}
 
     if policy == "impute-item":
         if not config.GEAR_IMPUTE_FAMILY_PIECE:
@@ -738,7 +789,10 @@ def _impute(
             # Statistic refused: fall back to the level the pre-gear model
             # assumed, which reproduces ARMOUR_EFFICIENCY_PLUS7 exactly.
             level = float(config.ENHANCEMENT_ASSUMED_LEVEL)
-        return item_terms(hrid, skill, hook.level(_round_level(level), False))
+        return item_terms(
+            hrid, skill,
+            hook.level(_round_level(level), False, stats.family_pool.get(hrid, [])),
+        )
 
     if policy == "manual-tick":
         entry = member.skills.get(skill)
@@ -748,7 +802,10 @@ def _impute(
         level = stats.garment_level
         if level is None:
             level = float(config.ENHANCEMENT_ASSUMED_LEVEL)
-        return item_terms(hrid, skill, hook.level(_round_level(level), False))
+        return item_terms(
+            hrid, skill,
+            hook.level(_round_level(level), False, stats.garment_pool),
+        )
 
     raise ValueError(f"SLOT_POLICY names an unknown policy {policy!r} for {slot!r}")
 

@@ -95,7 +95,7 @@ import statistics
 from dataclasses import dataclass, fields, replace
 from typing import Callable, Iterable, Optional
 
-from . import config, roster as roster_model, trials
+from . import config, gear as gear_model, roster as roster_model, trials
 from .reader import MemberRow
 from .roster import ROSTER as _ROSTER
 
@@ -176,6 +176,149 @@ GATHER_SLOTS = 2
 GATHER_OPTIONS = [0.0, 0.02 + MULT[7] * 0.002]
 
 
+# --- The guild's per-item gear statistics, for the campaign's own re-resolve -
+# MODULE-LEVEL, which src/gear.py's header explicitly warns against doing in
+# trials.py — so the difference is worth stating. That warning is about
+# config.BUILD_PARALLEL: build.py runs its four optimiser units as PROCESSES
+# because trials.community_buff_level rebinds globals on trials, and a second
+# rebinding target there would invite exactly the bug that arrangement avoids.
+# This module is a single-process CLI campaign over ONE guild, set once in main
+# beside `pools`, and read only by _prepare_perturbed. There is no fan-out to
+# disagree with it.
+#
+# Left None whenever no gear-related source is active, in which case
+# _prepare_perturbed reads the ALREADY-RESOLVED terms off the member exactly as
+# trials._resolve_gear does — which is what keeps the golden identity
+# (:func:`selftest`) exact rather than merely close.
+GEAR_STATS: "Optional[gear_model.ImputationStats]" = None
+
+
+class _GearPerturbation(gear_model.Perturbation):
+    """``gear.Perturbation`` for the campaign: disturb the guess, not the reading.
+
+    THE PER-ITEM MODEL SPLITS ONE OLD UNCERTAINTY INTO TWO, and this class is
+    where that split is priced.
+
+    The OLD row is ``gear_speed`` / ``gear_efficiency`` / ``gear_gathering``: the
+    neck, ring and earring slots that no source read, worth 0.0081-0.0110 of a
+    ~0.0123 budget and its largest single line. The per-item model retires it for
+    the members whose slot the union actually read — 178 of 202 for the neck — and
+    leaves it UNTOUCHED for the rest, who are exactly the members
+    ``research/per-item-gear.md`` §6.2 declines to impute onto. ``unobserved``
+    below is that surviving remainder, drawn from the real item set
+    (:data:`NECK_OPTIONS`) so slot exclusivity is respected.
+
+    The NEW row is ``gear_impute``: where the model assumes a cape or a family
+    piece at this guild's MEAN enhancement level, that mean is not the member's
+    own level and the error is real. No earlier σ carried this term because no
+    earlier model imputed anything, and a recalibration that dropped the old row
+    without adding this one would be measuring optimism rather than uncertainty.
+
+    ``respect_provenance`` governs only the first: an OBSERVED level is a reading
+    off the member's own card and there is nothing left to draw. An imputed one is
+    always drawn, provenance or no, because the imputation is ours and not theirs.
+    """
+
+    def __init__(self, src: "Sources", rng: random.Random,
+                 stats: "gear_model.ImputationStats") -> None:
+        self._src = src
+        self._rng = rng
+        self._stats = stats
+
+    def level(
+        self,
+        level: "Optional[int]",
+        observed: bool,
+        pool: "Optional[list[int]]" = None,
+    ) -> "Optional[int]":
+        if observed:
+            # A reading off the member's own card. Under respect_provenance there
+            # is nothing left to be uncertain about; otherwise `augment` still
+            # applies, around the OBSERVED level rather than around an assumed +7.
+            if self._src.respect_provenance or not self._src.augment:
+                return level
+            if level is None:
+                return level
+            return max(0, min(MAX_ENHANCE,
+                              level + self._rng.randint(-self._src.augment,
+                                                        self._src.augment)))
+        # An IMPUTED guild mean. Resampled from the very pool that mean was
+        # computed from, which gear.resolve passes in because this method alone
+        # cannot tell a family piece's level from a garment's.
+        if not self._src.gear_impute_resample or not pool:
+            return level
+        return pool[self._rng.randrange(len(pool))]
+
+    def cape_speed(self, speed: float) -> float:
+        """Resample the imputed cape bonus from the guild's observed capes.
+
+        A bonus rather than a level, because the cape statistic pools EFFECTIVE
+        SPEEDS: the plain/★ split (0.05 against 0.058, at 73% refined) means a
+        pooled level would have no unambiguous base to apply itself to.
+        """
+        pool = self._stats.cape_pool
+        if not self._src.gear_impute_resample or not pool:
+            return speed
+        return pool[self._rng.randrange(len(pool))]
+
+    def unobserved(self, slot: str, skill: str) -> dict[str, float]:
+        """What a slot the union never read might still be holding.
+
+        Only the ACCESSORIES, and deliberately. A garment neither ticked nor seen
+        is a garment the officers' tab says they do not own, and §3.3's
+        cross-tabulation earned that claim: four cases in 1,900 where the union
+        saw a garment nobody ticked. A family piece the switch declines to impute
+        is likewise a decision, not an unknown.
+        """
+        if slot not in gear_model.ACCESSORY_SLOTS:
+            return {}
+        if self._src.gear_slots:
+            if slot == "neck":
+                speed, eff = NECK_OPTIONS[self._rng.randrange(len(NECK_OPTIONS))]
+                return {"speed": speed, "efficiency": eff}
+            if skill in config.GATHERING_SKILLS:
+                return {"gathering":
+                        GATHER_OPTIONS[self._rng.randrange(len(GATHER_OPTIONS))]}
+            return {}
+        if slot == "neck":
+            return {"speed": _one_sided(self._src.gear_speed, self._src, self._rng),
+                    "efficiency": _one_sided(self._src.gear_efficiency, self._src,
+                                             self._rng)}
+        if skill in config.GATHERING_SKILLS:
+            # Half, because the flat half-width names the RING AND EARRINGS
+            # together and this hook is called once per slot.
+            return {"gathering": _one_sided(self._src.gear_gathering / 2,
+                                            self._src, self._rng)}
+        return {}
+
+
+def _one_sided(half: float, src: "Sources", rng: random.Random) -> float:
+    """The ``_gear`` draw of :func:`_prepare_perturbed`, shared with the hook.
+
+    Gear a member does not own cannot SUBTRACT from their rate, so the truthful
+    shape is one-sided and non-negative — which makes the model pessimistic and
+    every published probability a floor. See the sidedness note in
+    :func:`_prepare_perturbed`.
+    """
+    if not half:
+        return 0.0
+    return rng.uniform(0.0, half) if src.gear_one_sided else rng.uniform(-half, half)
+
+
+def gear_sources_active(src: "Sources") -> bool:
+    """Whether any source can disturb a resolved wardrobe.
+
+    When nothing can, :func:`_prepare_perturbed` must not re-resolve at all: it
+    reads the terms the build already computed, which is what makes the golden
+    identity exact. Note ``augment`` counts here even under
+    ``respect_provenance``, because it still reaches an IMPUTED level.
+    """
+    return bool(
+        src.gear_impute_resample or src.gear_slots or src.gear_speed
+        or src.gear_efficiency or src.gear_gathering or src.augment
+    )
+
+
 # ---------------------------------------------------------------------------
 # Uncertainty sources
 # ---------------------------------------------------------------------------
@@ -214,6 +357,24 @@ class Sources:
                                    # in _prepare_perturbed
     gear_slots: bool = False       # ignore the three half-widths and draw the
                                    # ACTUAL item set from research/item-stats.json
+    # --- IMPUTED GEAR: a NEW row, and the per-item model's own cost ----------
+    # Where the per-item model assumes a cape or a family piece at this guild's
+    # MEAN rather than reading it off the member's card, that mean is not the
+    # member's own gear and the error is real. NO EARLIER SIGMA CARRIED SUCH A
+    # TERM, because no earlier model imputed anything: it assumed +7 for everybody
+    # and paid for that through `augment`. Dropping `augment` for observed gear
+    # WITHOUT adding this for imputed gear would measure optimism, not uncertainty.
+    #
+    # RESAMPLED FROM THE GUILD'S OWN OBSERVED SPREAD, not drawn from a half-width,
+    # and for exactly the reason `house_blank` above resamples a blank H cell: the
+    # posterior predictive given no information is the guild's own distribution,
+    # which gets the shape and the bias right where an invented symmetric
+    # half-width about an estimated mean would get both wrong. The pools come from
+    # gear.ImputationStats (cape_pool, family_pool, garment_pool).
+    #
+    # Applied regardless of `respect_provenance`: the imputation is OURS, not the
+    # member's, so no amount of provenance about them retires it.
+    gear_impute_resample: bool = False
     # --- COMMUNITY BUFF MAGNITUDES ------------------------------------------
     # The three live event buffs, at config.COMMUNITY_BUFF_LEVEL on their 1..20
     # ladders (magnitudes CONFIRMED from the client dump; the LEVEL is assumed):
@@ -303,6 +464,23 @@ DEFAULT = Sources(
                             # true unmodelled envelope at 0.0382 (one neck slot);
                             # see NECK_OPTIONS and the gear_slots cross-check
     gear_gathering=0.05,    # unrecorded ring/earring gathering quantity
+                        # NB ALL THREE gear_* half-widths above are now applied
+                        # PER SLOT AND ONLY WHERE THE SLOT WAS NOT READ, once
+                        # config.GEAR_SOURCE_ENABLED is on. With the per-item gear
+                        # off they price the neck/ring/earrings for everybody, as
+                        # they always have; with it on they price only the members
+                        # the union never saw — 24 of 202 for the neck — and the
+                        # remaining 178 stop paying for an uncertainty that has
+                        # been resolved. That retirement is most of what the
+                        # recalibration measures.
+    gear_impute_resample=True,
+                        # ... and this is the other half, which no earlier
+                        # campaign carried. Where the per-item model asserts the
+                        # guild MEAN cape or family piece, resample it from the
+                        # guild's own observed spread. Inert while
+                        # GEAR_SOURCE_ENABLED is off, since nothing is imputed
+                        # then. Turning the old rows down without turning this one
+                        # up would measure optimism rather than uncertainty.
 
     augment=3,          # gear is assumed +7 for all; reality varies
     tool_flip=0.03,     # a few mis-ticked celestial boxes
@@ -550,9 +728,35 @@ def _prepare_perturbed(
         return max(0, min(MAX_ENHANCE,
                           assumed + rng.randint(-src.augment, src.augment)))
 
-    speed = _stat(CAPE_SPEED, enh(ASSUMED_CAPE))
-    efficiency = 0.0
-    success_bonus = 0.0
+    # --- the per-item gear, re-resolved only if a source can disturb it ------
+    # MIRRORS trials.member_bonuses' own branch, and reads the ALREADY-RESOLVED
+    # terms off the member whenever nothing can disturb them. That is what keeps
+    # the golden identity (:func:`selftest`) EXACT rather than merely close: with
+    # every source off this function must reproduce trials._prepare_member to 1e-9,
+    # and re-deriving a wardrobe — even from the same table, even in the same order
+    # — would put the two on different floats.
+    gear_terms = trials._resolve_gear(member, skill)
+    if gear_terms is not None and gear_sources_active(src):
+        if GEAR_STATS is None:
+            raise RuntimeError(
+                "a gear-related uncertainty source is active but "
+                "calibrate.GEAR_STATS was never set, so the campaign cannot "
+                "re-resolve an imputed wardrobe. main() sets it beside `pools`; "
+                "a direct library caller must set it too."
+            )
+        column = trials._sheet_column(skill)
+        gear_terms = gear_model.resolve(
+            member, GEAR_STATS,
+            perturb=_GearPerturbation(src, rng, GEAR_STATS),
+            skills=(column,),
+        )[column]
+
+    if gear_terms is None:
+        speed = _stat(CAPE_SPEED, enh(ASSUMED_CAPE))
+        efficiency = 0.0
+        success_bonus = 0.0
+    else:
+        speed, efficiency, success_bonus, gear_gathering = gear_terms
 
     # The tool, by trials._tool_terms's own precedence: the roster's actual item at
     # its actual enhancement level where the roster has one, the manual checkbox at
@@ -566,22 +770,25 @@ def _prepare_perturbed(
 
     if skill == "Enhancing":
         success_bonus += tool_success
-        speed += _stat(GLOVES_ENHANCING_SPEED, enh(ASSUMED_GEAR))
+        if gear_terms is None:
+            speed += _stat(GLOVES_ENHANCING_SPEED, enh(ASSUMED_GEAR))
         speed += config.COMMUNITY_ENHANCING_SPEED_BUFF + buff_enhancing
         speed += config.HOUSE_ENHANCING_SPEED_PER_LEVEL * house_level
     else:
         speed += tool_speed
-        efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
+        if gear_terms is None:
+            efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
         efficiency += config.HOUSE_EFFICIENCY_PER_LEVEL * house_level
         if skill not in config.GATHERING_SKILLS:
             efficiency += (
                 config.COMMUNITY_PRODUCTION_EFFICIENCY_BUFF + buff_production
             )
 
-    if top:
-        efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
-    if bot:
-        efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
+    if gear_terms is None:
+        if top:
+            efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
+        if bot:
+            efficiency += _stat(ARMOUR_EFFICIENCY, enh(ASSUMED_GEAR))
 
     # --- unmodelled gear: the neck, ring and earring slots -------------------
     # The sheet has no column for these, so the shipped model assumes every
@@ -607,8 +814,17 @@ def _prepare_perturbed(
             return 0.0
         return rng.uniform(0.0, half) if src.gear_one_sided else rng.uniform(-half, half)
 
+    # WHOSE JOB THIS IS NOW DEPENDS ON THE SWITCH, and the split is the point of
+    # the whole recalibration. Without per-item gear these three slots are
+    # UNREAD for everybody and the half-widths below price all of them. With it,
+    # the slots the union actually read are retired — 178 of 202 members for the
+    # neck — and only the remainder is still unknown; _GearPerturbation.unobserved
+    # draws that remainder, from the same NECK_OPTIONS, inside gear.resolve above.
+    # So this block is the pre-gear path and nothing else.
     gather_bonus = 0.0
-    if src.gear_slots:
+    if gear_terms is not None:
+        pass   # the member's own term goes through double_chance below, not here
+    elif src.gear_slots:
         neck_speed, neck_eff = NECK_OPTIONS[rng.randrange(len(NECK_OPTIONS))]
         speed += neck_speed
         efficiency += neck_eff
@@ -619,11 +835,23 @@ def _prepare_perturbed(
         efficiency += _gear(src.gear_efficiency)
         gather_bonus = _gear(src.gear_gathering)
 
-    double = 1 + trials.double_chance(skill)
-    # gatheringQuantity is a GATHERING-family mechanic; production and enhancing
-    # parties carry no doubling term at all, so there is nothing for it to move.
-    if trials.double_chance(skill) > 0:
-        double = max(1.0, double + gather_bonus + buff_gathering)
+    # THE MEMBER'S OWN GATHERING TERM IS NOT AN ADD-ON when the gear model spoke:
+    # it IS the doubling gear, so it goes through double_chance's own argument
+    # exactly as trials._prepare_member passes it, rather than being added to a
+    # flat config.DOUBLE_CHANCE that already contains GEAR_DOUBLE_CHANCE. Adding
+    # it on top would count the rings twice.
+    if gear_terms is not None:
+        base_double = trials.double_chance(skill, gear_gathering)
+        double = 1 + base_double
+        if base_double > 0:
+            double = max(1.0, double + buff_gathering)
+    else:
+        double = 1 + trials.double_chance(skill)
+        # gatheringQuantity is a GATHERING-family mechanic; production and
+        # enhancing parties carry no doubling term at all, so there is nothing
+        # for it to move.
+        if trials.double_chance(skill) > 0:
+            double = max(1.0, double + gather_bonus + buff_gathering)
 
     # SHRINE BUFFS (Force -> efficiency, Tempo -> action speed), applied inside trials
     # since the 2026-08-11 patch. Added here for one hard reason: this function is a
@@ -1380,6 +1608,28 @@ def main(argv: Optional[list[str]] = None) -> int:
               + (f" — REFUSED: {prov.refused}" if prov.refused else ""))
     else:
         print("roster tab: NOT read (manual tab only)")
+
+    # --- the per-item gear, resolved exactly as build._resolve_guild_gear does --
+    # Set BEFORE load_seats so every seat's member already carries its wardrobe,
+    # and set from the ROSTER ROWS rather than the merged members for the reason
+    # build gives: a row that joined nobody still observed a real character's
+    # gear, and dropping it would shrink the sample that prices everybody else.
+    global GEAR_STATS
+    GEAR_STATS = None
+    if config.GEAR_SOURCE_ENABLED and config.ROSTER_SOURCE_ENABLED \
+            and not args.no_roster:
+        GEAR_STATS = gear_model.measure(
+            [row.gear for row in rows], args.guild
+        )
+        for member in members:
+            member.gear_bonuses = gear_model.resolve(member, GEAR_STATS)
+        observed = sum(1 for m in members if m.gear)
+        print(f"gear union: {observed}/{len(members)} members visible, "
+              f"cape mean {GEAR_STATS.cape_speed!r} (n={GEAR_STATS.cape_n}), "
+              f"garment mean level {GEAR_STATS.garment_level!r} "
+              f"(n={GEAR_STATS.garment_n})")
+    else:
+        print("gear union: NOT read (the five flat equipment constants)")
 
     parties = load_seats(signup_path, members)
     # One resample pool per party, drawn from the WHOLE guild for that party's

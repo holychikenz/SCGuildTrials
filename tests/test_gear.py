@@ -520,3 +520,125 @@ def test_serialised_gear_appears_once_it_is_set():
     d = processor.process([m])["members"][0]
     assert d["gear"] == {"/items/philosophers_necklace": 3}
     assert d["gear_bonuses"]["Milking"][0] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# The perturbation hook (the risk campaign's only way in)
+# ---------------------------------------------------------------------------
+# What these pin is that the campaign cannot fork the resolver's arithmetic, and
+# that the split of one old uncertainty into two is actually implemented:
+# an OBSERVED slot stops paying under respect_provenance, while an IMPUTED one
+# starts paying a term no earlier sigma carried.
+
+
+def test_the_inert_hook_changes_nothing():
+    """gear.Perturbation's own default must be exactly transparent.
+
+    Load-bearing for calibrate.selftest, which asserts that _prepare_perturbed
+    with every source off reproduces trials._prepare_member to 1e-9. If the base
+    hook shifted anything, that golden identity would be broken by the mere
+    presence of the campaign.
+    """
+    m = _member({"/items/philosophers_necklace": 3, "/items/collectors_boots": 5})
+    assert gear.resolve(m, _STATS, perturb=gear.Perturbation()) == \
+        gear.resolve(m, _STATS)
+
+
+def test_the_hook_is_told_which_pool_an_imputed_mean_came_from():
+    """A family piece is pooled per item and a garment over all of them, so the
+    hook cannot be left to guess (§6.7's n=1 argument)."""
+    seen = []
+
+    class Recorder(gear.Perturbation):
+        def level(self, level, observed, pool=None):
+            seen.append((observed, None if pool is None else len(pool)))
+            return level
+
+    stats = gear.measure(
+        [{"/items/collectors_boots": 5, "/items/foragers_top": 6}] * 20, "t"
+    )
+    gear.resolve(_member(top=True), stats, perturb=Recorder(), skills=("Foraging",))
+    # Boots and the Forager's Top are both imputed here, each with its own pool.
+    assert (False, 20) in seen
+
+
+def test_an_observed_level_is_distinguished_from_an_imputed_one():
+    """Exactly which of the two the hook is told, slot by slot.
+
+    On Milking the back slot is imputed (through ``cape_speed``, not ``level``,
+    since the cape statistic is a bonus), the feet slot is the only one carrying a
+    level at all, and neck/ring/earrings are never imputed. So the observed
+    member yields precisely one ``observed=True`` call and the bare member
+    precisely one ``observed=False`` — which is the whole distinction the
+    recalibration turns on, asserted exactly rather than by membership.
+    """
+    def record(member):
+        calls = []
+
+        class Recorder(gear.Perturbation):
+            def level(self, level, observed, pool=None):
+                calls.append(observed)
+                return level
+
+        gear.resolve(member, _STATS, perturb=Recorder(), skills=("Milking",))
+        return calls
+
+    assert record(_member({"/items/collectors_boots": 5})) == [True]
+    assert record(_member()) == [False]
+
+
+def test_the_hook_prices_only_unread_accessory_slots():
+    """The surviving half of the old sigma row.
+
+    A member with a necklace observed must not also be charged for an unknown
+    neck slot; a member without one must be. That asymmetry is the entire
+    justification for recalibrating rather than merely re-measuring.
+    """
+    class Neck(gear.Perturbation):
+        def unobserved(self, slot, skill):
+            return {"speed": 1.0} if slot == "neck" else {}
+
+    seen = gear.resolve(_member({"/items/philosophers_necklace": 3}), _STATS,
+                        perturb=Neck(), skills=("Milking",))["Milking"]
+    unseen = gear.resolve(_member(), _STATS, perturb=Neck(),
+                          skills=("Milking",))["Milking"]
+    assert unseen[0] - seen[0] == pytest.approx(
+        1.0 - gear.item_terms("/items/philosophers_necklace", "Milking", 3)["speed"]
+    )
+
+
+def test_a_garment_neither_ticked_nor_seen_is_not_an_unknown():
+    """It is a claim of NON-ownership, earned by §3.3's cross-tabulation: four
+    cases in 1,900 where the union saw a garment nobody ticked. So the hook is
+    not offered the body or legs slots to price."""
+    offered = []
+
+    class Watch(gear.Perturbation):
+        def unobserved(self, slot, skill):
+            offered.append(slot)
+            return {}
+
+    gear.resolve(_member(), _STATS, perturb=Watch(), skills=("Foraging",))
+    assert "neck" in offered and "ring" in offered and "earrings" in offered
+    assert "body" in offered and "legs" in offered   # offered...
+    # ... and calibrate's own hook declines them, which is where the decision
+    # lives; see calibrate._GearPerturbation.unobserved.
+    from src import calibrate
+    import random
+    hook = calibrate._GearPerturbation(
+        calibrate.Sources(gear_speed=0.03, gear_slots=False), random.Random(0),
+        _STATS,
+    )
+    assert hook.unobserved("body", "Foraging") == {}
+    assert hook.unobserved("legs", "Foraging") == {}
+    assert hook.unobserved("neck", "Foraging") != {}
+
+
+def test_measure_keeps_the_pools_behind_the_means():
+    """The campaign resamples from these; a mean alone cannot express a shape."""
+    cells = [{"/items/collectors_boots": lv} for lv in range(12)]
+    stats = gear.measure(cells, "t")
+    assert stats.family_pool["/items/collectors_boots"] == list(range(12))
+    assert stats.family_level["/items/collectors_boots"] == pytest.approx(5.5)
+    # ... and they stay out of the page's JSON, which reports statistics not samples.
+    assert "family_pool" not in stats.to_dict()
