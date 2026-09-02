@@ -682,18 +682,25 @@ def test_every_slice_switched_off_reproduces_the_pre_gear_constants(monkeypatch)
         else:
             want_speed = config.CAPE_SPEED_PLUS3
             want_eff = 3 * config.ARMOUR_EFFICIENCY_PLUS7          # family + top + bot
+        # The doubling chance was a real pre-gear constant on the gathering
+        # family and nowhere else, so the rollback restores it there and only
+        # there. See gear._pre_gear_terms on why the accessories are two cases.
+        want_gather = (config.GEAR_DOUBLE_CHANCE
+                       if skill in config.GATHERING_SKILLS else 0.0)
         assert speed == pytest.approx(want_speed, abs=1e-12), skill
         assert efficiency == pytest.approx(want_eff, abs=1e-12), skill
-        assert success == 0.0 and gathering == 0.0, skill
+        assert success == 0.0, skill
+        assert gathering == pytest.approx(want_gather, abs=1e-12), skill
 
 
-def test_a_disabled_accessory_slice_restores_the_OMISSION_not_a_constant():
-    """The accessories had no pre-gear constant to restore.
+def test_the_accessory_rollback_is_TWO_cases_not_one(monkeypatch):
+    """The neck was unmodelled; the ring and earrings were a flat constant.
 
-    The old model did not grant them; it did not model them, and their absence was
-    carried in RISK_SIGMA_SYSTEMATIC instead. So switching that slice off must
-    give zero AND must still offer the slot to the risk hook — which is the state
-    the old sigma was measured in.
+    An earlier draft treated the whole slice as an omission, so the rollback
+    silently dropped config.GEAR_DOUBLE_CHANCE — and the G6 reconciliation duly
+    reported every slice ~4 points light for a reason unrelated to the slice being
+    measured. The neck restores nothing (and stays with the risk hook, which is
+    the state the old sigma was measured in); the doubling chance comes back.
     """
     offered = []
 
@@ -702,17 +709,38 @@ def test_a_disabled_accessory_slice_restores_the_OMISSION_not_a_constant():
             offered.append(slot)
             return {}
 
-    was = config.GEAR_USE_ACCESSORIES
-    try:
-        config.GEAR_USE_ACCESSORIES = False
-        m = _member({"/items/philosophers_necklace": 3})
-        got = gear.resolve(m, _STATS, perturb=Watch(), skills=("Milking",))
-        # Observed necklace or not, a disabled slice contributes nothing...
-        assert got == gear.resolve(_member(), _STATS, skills=("Milking",))
-        # ... and the slot is still put to the hook.
-        assert "neck" in offered
-    finally:
-        config.GEAR_USE_ACCESSORIES = was
+    monkeypatch.setattr(config, "GEAR_USE_ACCESSORIES", False)
+    m = _member({"/items/philosophers_necklace": 3, "/items/philosophers_ring": 5})
+    speed, eff, _, gathering = gear.resolve(
+        m, _STATS, perturb=Watch(), skills=("Milking",)
+    )["Milking"]
+    # The observed necklace and ring are both ignored: the slice is off.
+    assert speed == pytest.approx(_STATS.cape_speed)
+    # The neck contributed nothing ...
+    assert "neck" in offered
+    # ... but the flat doubling chance is restored, once, not halved.
+    assert gathering == pytest.approx(config.GEAR_DOUBLE_CHANCE)
+
+
+def test_the_rollback_restores_the_doubling_chance_through_double_chance(monkeypatch):
+    """End to end: with every slice off, the doubling factor must be what it was.
+
+    This is the assertion that would have caught the conflation. The gathering
+    CHANNEL is not enough on its own — what reaches the race is
+    trials.double_chance, and the pre-gear value of it is config.DOUBLE_CHANCE.
+    """
+    from src import trials
+    for switch in ("GEAR_USE_CAPE", "GEAR_USE_FAMILY_PIECE",
+                   "GEAR_USE_GARMENTS", "GEAR_USE_ACCESSORIES"):
+        monkeypatch.setattr(config, switch, False)
+    monkeypatch.setattr(config, "GEAR_SOURCE_ENABLED", True)
+
+    m = _member(dict(_WARDROBE), top=True, bot=True)
+    m.gear_bonuses = gear.resolve(m, _STATS)
+    bonuses = trials.member_bonuses(m, "Milking")
+    assert trials.double_chance("Milking", bonuses.gathering) == pytest.approx(
+        config.DOUBLE_CHANCE
+    )
 
 
 def test_all_stats_within_one_cape_are_equal():

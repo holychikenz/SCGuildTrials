@@ -357,9 +357,14 @@ ROSTER_GEAR_COLUMN = "gearSeen"
 GEAR_USE_CAPE = True            # per-item cape over CAPE_SPEED_PLUS3
 GEAR_USE_FAMILY_PIECE = True    # per-item boots/hat/watch/gloves over the flat +7
 GEAR_USE_GARMENTS = True        # per-item top/bottoms over the flat +7
-GEAR_USE_ACCESSORIES = True     # neck/ring/earrings -- previously UNMODELLED, so
-                                # False here is not a rollback to a constant but to
-                                # an omission, and to the sigma row that covered it.
+GEAR_USE_ACCESSORIES = True     # neck/ring/earrings. NOTE THE TWO CASES: the NECK
+                                # was genuinely unmodelled, so False restores an
+                                # OMISSION there (and the sigma row that covered
+                                # it), while the ring and earrings were modelled as
+                                # the flat GEAR_DOUBLE_CHANCE below, which False
+                                # restores as a constant like any other. An earlier
+                                # draft conflated the two and the rollback silently
+                                # dropped the doubling chance.
 
 # THE ONE LINE THAT REVERSES THIS CHANGE'S LARGEST JUDGEMENT CALL.
 # True keeps the universal grant of the four family pieces, correcting only the

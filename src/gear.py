@@ -763,11 +763,23 @@ def _pre_gear_terms(slot: str, skill: str, member) -> dict[str, float]:
     "the family piece" in the first place (pinned by
     test_the_four_family_pieces_tile_the_ten_skills).
 
-    The ACCESSORIES return nothing, and that is right: the pre-gear model did not
-    grant them, it simply did not model them, and their absence was carried in
-    ``config.RISK_SIGMA_SYSTEMATIC`` instead. Switching that slice off restores
-    the omission, not a constant — which is why config's note for
-    ``GEAR_USE_ACCESSORIES`` says so in those words.
+    THE ACCESSORIES ARE TWO DIFFERENT CASES AND AN EARLIER DRAFT CONFLATED THEM,
+    which the G6 reconciliation caught: the rollback silently dropped the doubling
+    chance and every slice row came back ~4 points light for a reason that had
+    nothing to do with the slice being measured.
+
+      * The NECK slot was genuinely unmodelled. The pre-gear model did not grant
+        it, it did not model it, and its absence was carried in
+        ``config.RISK_SIGMA_SYSTEMATIC`` instead. Rolling that back restores an
+        omission, so this returns nothing for it.
+      * The RING and EARRINGS were modelled, as the flat
+        ``config.GEAR_DOUBLE_CHANCE`` — "~+5% doubling chance carried naturally on
+        gear, pending the per-member gear harvest". That is a constant like any
+        other and the rollback must restore it.
+
+    Granted ONCE, on the ring, rather than halved across the two slots: the flat
+    constant was a single lump for the pair and never distinguished them, so
+    splitting it would invent a precision the old model did not have.
     """
     if slot == CAPE_SLOT:
         return {"speed": config.CAPE_SPEED_PLUS3}
@@ -777,6 +789,8 @@ def _pre_gear_terms(slot: str, skill: str, member) -> dict[str, float]:
         if skill == "Enhancing":
             return {"speed": config.GLOVES_ENHANCING_SPEED_PLUS7}
         return {"efficiency": config.ARMOUR_EFFICIENCY_PLUS7}
+    if slot == "ring":
+        return {"gathering": config.GEAR_DOUBLE_CHANCE}
     if slot in GARMENT_SLOTS:
         entry = member.skills.get(skill)
         if entry is None or not getattr(entry, _TICK_ATTR[slot], False):
