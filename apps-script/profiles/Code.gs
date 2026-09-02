@@ -45,6 +45,31 @@
  * happened not to look at this session. `mode:"replace"` exists for a
  * deliberate full refresh.
  *
+ * ── ONE COLUMN IS MERGED, NOT OVERWRITTEN: `gearSeen` ──────────────────────
+ * Upsert replaces a matched row wholesale, which is right for every column that
+ * is a snapshot. `gearSeen` is not a snapshot: it is the UNION of every capture
+ * of that member's gear, accumulated over months and across machines. Combat
+ * slots rotate with whatever is being trained, so one profile card shows a
+ * fraction of what somebody owns; we merge by hrid and keep the higher
+ * enhancement level. See GEAR_COLUMN and mergeGear_ for the rule and its
+ * reasoning, and the "gear union" section of README.md for operation.
+ *
+ * Three consequences worth knowing before editing this file:
+ *
+ *   1. THIS SCRIPT NOW TAKES A LOCK. Two machines writing at once used to be
+ *      harmless — both overwrote a row with the same data. With a merge, both
+ *      read the cell, both union their own view, and the second write discards
+ *      the first's contribution permanently. LockService serialises the
+ *      read-modify-write; a refusal is answered with a retryable `busy:`.
+ *   2. `mode:"replace"` IS GUARDED. It clears out to getLastColumn(), so it
+ *      reaches this column even from a narrower payload — and no single machine
+ *      can rebuild the union. A replace over a populated gear column is refused
+ *      unless the payload carries `discardGearHistory:true`.
+ *   3. A HEADER MAY NOW GROW AT THE TAIL. headerMismatch_ tolerates a payload
+ *      column whose sheet cell is blank, because the old remedy for a refusal
+ *      was `mode:"replace"` — which would have destroyed the union. A SHIFT is
+ *      still refused.
+ *
  * We key on the numeric character id, never the name: names change (the game
  * carries a `previousName` field), and a renamed member would otherwise be
  * appended a second time instead of updated.
@@ -69,7 +94,10 @@
  * or the live /exec URL keeps serving the old code.
  *
  * Tests: `node --test apps-script/profiles/Code.test.js` — stubs SpreadsheetApp
- * so the upsert logic can be checked without touching the live sheet.
+ * and LockService so the upsert and the gear merge can be checked without
+ * touching the live sheet. NOTE the vm context there provides only Array,
+ * String, Object, JSON, Math and Error: code in this file must not reach for
+ * Number, isFinite, parseInt or Date without extending that stub.
  * ---------------------------------------------------------------------------
  */
 
@@ -108,6 +136,39 @@ var KEY_COLUMN = 'characterId';
 // A profile block is wide; these bound an obviously-wrong payload.
 var MAX_COLS = 300;
 var MIN_COLS = 5;
+
+// ── THE ONE COLUMN THAT IS MERGED, NOT OVERWRITTEN ─────────────────────────
+// Every other cell on a row is a snapshot, and last-write-wins is correct for
+// it. This one is an accumulated UNION across months and machines.
+//
+// Combat weapon and armour slots rotate with whatever the member is training
+// this hour, so any single profile card shows a fraction of their gear. The
+// userscript sends what THIS capture saw; we union it into what the cell
+// already held, keyed on hrid, keeping the higher enhancement level. Over many
+// captures the picture converges. Overwriting instead would throw away every
+// capture but the newest, which is the entire problem this column solves.
+//
+// MAX-OVER-TIME IS THE HONEST RULE HERE because the guild plays ironman with no
+// marketplace: items are not sold, and de-levelling is rare enough to ignore.
+// In a trading economy this would over-report and a last-seen rule would be
+// wanted instead.
+//
+// THE MERGE IS WHY THIS SCRIPT NOW TAKES A LOCK. Until this column existed, two
+// machines writing at once merely overwrote a row with identical data and cost
+// nothing. A merge makes the read-modify-write genuinely racy: both read the
+// cell, both union their own view, and the second write silently discards the
+// first's contribution — permanently. See LockService in doPost.
+var GEAR_COLUMN = 'gearSeen';
+
+// The catalogue yields 200 tracked items; these are slack to bound a runaway
+// (a restructured catalogue, or a bug adding untracked hrids) rather than
+// letting a cell grow into the ~50,000-character Sheets limit mid-write.
+var GEAR_MAX_ITEMS = 400;
+var GEAR_MAX_CHARS = 45000;
+
+// Long enough to outlast another machine's write, short enough that a stuck
+// lock surfaces as a retryable error rather than a six-minute timeout.
+var LOCK_WAIT_MS = 30000;
 
 function doPost(e) {
   try {
@@ -171,6 +232,27 @@ function doPost(e) {
       return json_({ ok: false, error: 'mode must be "upsert" or "replace"' });
     }
 
+    // --- Serialise the read-modify-write ------------------------------------
+    // Everything above is pure validation and needs no lock. Everything below
+    // reads the block, mutates it in memory and writes it back — and with a
+    // MERGE column that is no longer safe to do concurrently. Two machines
+    // harvesting at once would both read the same cell, both union their own
+    // view into it, and the second write would silently discard the first's
+    // contribution for good.
+    //
+    // tryLock rather than waitLock: a refusal is a clean, retryable answer, and
+    // the union is monotone, so a skipped write costs only a delay — the same
+    // gear is seen again the next time that member's card is opened.
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(LOCK_WAIT_MS)) {
+      return json_({ ok: false,
+        error: 'busy: another write holds the lock; retry in a moment' });
+    }
+    // NB: the body below is deliberately NOT re-indented into this try. The
+    // wrapper exists only to guarantee releaseLock(); re-indenting sixty lines
+    // would bury the actual change in whitespace.
+    try {
+
     // --- Open sheet (do NOT create — the tab must already exist) ------------
     var ssId = String(body.spreadsheetId || SPREADSHEET_ID);
     var ss = SpreadsheetApp.openById(ssId);
@@ -187,8 +269,27 @@ function doPost(e) {
 
     var out = [];
     var updated = 0, appended = 0, replaced = false;
+    var gearIdx = gearColumnIndex_(header, nCols);
+    var gearMerged = 0, gearSkipped = 0;
 
     var lastRow = sh.getLastRow();
+
+    // `replace` clears the block wholesale — and note it clears out to
+    // getLastColumn(), so it reaches the gear column even when the payload is
+    // narrower than the tab. That column is the ONE thing here that cannot be
+    // rebuilt from any single machine's archive: it is months of captures from
+    // several of them, and guild-profile-store holds only what THIS browser
+    // saw. So a replace over a populated gear column is refused unless the
+    // caller states, in the payload, that it means it. The userscript never
+    // sends that flag, so it can only be set deliberately by hand.
+    if (mode === 'replace' && !body.discardGearHistory &&
+        gearHistoryPresent_(sh, lastRow)) {
+      return json_({ ok: false, error: 'refusing replace: the "' + GEAR_COLUMN +
+        '" column holds accumulated gear history, which replace would destroy ' +
+        'and which cannot be rebuilt from one machine. Export it first, then ' +
+        're-send with discardGearHistory:true if you really mean it.' });
+    }
+
     var existingHeader = lastRow >= 1 ? sh.getRange(1, 1, 1, nCols).getValues()[0] : [];
 
     if (mode === 'replace' || lastRow < 1 || isBlankRow_(existingHeader)) {
@@ -199,7 +300,17 @@ function doPost(e) {
         sh.getRange(1, 1, Math.max(lastRow, 1), clearCols).clearContent();
         replaced = true;
       }
-      for (var r0 = 0; r0 < rows.length; r0++) out.push(normaliseRow_(rows[r0], nCols));
+      for (var r0 = 0; r0 < rows.length; r0++) {
+        var fresh = normaliseRow_(rows[r0], nCols);
+        // Nothing to merge into on a fresh row, but a malformed payload must
+        // still never be written through: it would poison every later merge on
+        // that member, since an unparseable cell is left untouched by design.
+        if (gearIdx !== -1 && parseGear_(fresh[gearIdx]) === null) {
+          fresh[gearIdx] = '';
+          gearSkipped++;
+        }
+        out.push(fresh);
+      }
       appended = out.length;
     } else {
       // Upsert. The existing header must agree, or column meanings shift
@@ -230,9 +341,22 @@ function doPost(e) {
         var row = normaliseRow_(rows[r], nCols);
         var key = String(row[keyIdx]);
         if (Object.prototype.hasOwnProperty.call(index, key)) {
+          // The one column that accumulates instead of being replaced. On the
+          // very first write of a new column the sheet's cell is '', which
+          // parseGear_ maps to [], so this is a clean insert with no special
+          // case.
+          if (gearIdx !== -1) {
+            var m = mergeGear_(out[index[key]][gearIdx], row[gearIdx]);
+            row[gearIdx] = m.text;
+            if (m.ok) { gearMerged++; } else { gearSkipped++; }
+          }
           out[index[key]] = row;
           updated++;
         } else {
+          if (gearIdx !== -1 && parseGear_(row[gearIdx]) === null) {
+            row[gearIdx] = '';
+            gearSkipped++;
+          }
           index[key] = out.length;
           out.push(row);
           appended++;
@@ -260,8 +384,14 @@ function doPost(e) {
       appended: appended,
       replaced: replaced,
       totalRows: out.length,
-      columns: nCols
+      columns: nCols,
+      gearMerged: gearMerged,
+      gearSkipped: gearSkipped
     });
+
+    } finally {
+      lock.releaseLock();
+    }
   } catch (err) {
     return json_({ ok: false, error: String(err) });
   }
@@ -292,6 +422,96 @@ function normaliseRow_(src, nCols) {
   return line;
 }
 
+// '' → [] — a NON-CONTRIBUTION, which is what a hidden member sends and what a
+// reverted userscript leaves behind. A valid payload → array of {hrid, level}.
+// Anything else → null, meaning "unparseable", which the caller must treat as
+// DO-NOT-TOUCH.
+//
+// Note the absence of isFinite/Number: Code.test.js runs this file in a vm
+// context carrying only Array, String, Object, JSON, Math and Error. Hence
+// self-inequality for NaN and an explicit bound for Infinity.
+function parseGear_(cell) {
+  var s = String(cell === null || cell === undefined ? '' : cell);
+  if (s === '') return [];
+  var obj;
+  try { obj = JSON.parse(s); } catch (e) { return null; }
+  if (!obj || typeof obj !== 'object' || !Array.isArray(obj.items)) return null;
+  var out = [];
+  for (var i = 0; i < obj.items.length; i++) {
+    var it = obj.items[i];
+    if (!it || typeof it !== 'object') return null;
+    var hrid = String(it.hrid === null || it.hrid === undefined ? '' : it.hrid);
+    if (hrid === '' || hrid.length > 120) return null;
+    var lvl = it.level;
+    if (typeof lvl !== 'number' || lvl !== lvl || lvl < 0 || lvl > 1000) return null;
+    out.push({ hrid: hrid, level: lvl });
+  }
+  return out;
+}
+
+// Union by hrid, keeping the HIGHER enhancement level.
+//
+// ok:false means the merge was ABANDONED and `text` is the existing cell
+// verbatim. Abandoning is non-destructive by construction, and deliberately so:
+// a cell that will not parse may have been hand-edited in the spreadsheet, or
+// may reveal a bug in OUR writer, and either way it can hold months of captures
+// that no single machine could rebuild. Silently replacing it would destroy
+// exactly the data this column exists to accumulate. The trade-off is that such
+// a cell never self-heals — the response reports the count so it is visible
+// rather than silent, and clearing the cell by hand starts a fresh union.
+function mergeGear_(existing, incoming) {
+  var keep = String(existing === null || existing === undefined ? '' : existing);
+  var ex = parseGear_(existing);
+  if (ex === null) return { text: keep, ok: false, reason: 'unparseable-cell' };
+  var inc = parseGear_(incoming);
+  if (inc === null) return { text: keep, ok: false, reason: 'unparseable-payload' };
+
+  var byHrid = {}, i, h;
+  for (i = 0; i < ex.length; i++) byHrid[ex[i].hrid] = ex[i].level;
+  for (i = 0; i < inc.length; i++) {
+    h = inc[i].hrid;
+    byHrid[h] = Object.prototype.hasOwnProperty.call(byHrid, h)
+      ? Math.max(byHrid[h], inc[i].level)
+      : inc[i].level;
+  }
+
+  var hrids = Object.keys(byHrid).sort();
+  if (hrids.length > GEAR_MAX_ITEMS) {
+    return { text: keep, ok: false, reason: 'too-many-items' };
+  }
+  var items = [];
+  for (i = 0; i < hrids.length; i++) items.push({ hrid: hrids[i], level: byHrid[hrids[i]] });
+  var text = JSON.stringify({ items: items });
+  if (text.length > GEAR_MAX_CHARS) return { text: keep, ok: false, reason: 'too-large' };
+  return { text: text, ok: true };
+}
+
+function gearColumnIndex_(header, nCols) {
+  for (var i = 0; i < nCols; i++) if (String(header[i]) === GEAR_COLUMN) return i;
+  return -1;
+}
+
+// Does the TAB already hold accumulated gear history? Read against the sheet's
+// OWN header across its full width, never the payload's: the sheet may be wider
+// than the payload (a reverted userscript sends fewer columns), and the column
+// we must protect could sit beyond nCols.
+function gearHistoryPresent_(sh, lastRow) {
+  if (lastRow < 2) return false;
+  var width = sh.getLastColumn();
+  if (width < 1) return false;
+  var head = sh.getRange(1, 1, 1, width).getValues()[0];
+  var col = -1;
+  for (var i = 0; i < width; i++) {
+    if (String(head[i]) === GEAR_COLUMN) { col = i + 1; break; }
+  }
+  if (col === -1) return false;
+  var vals = sh.getRange(2, col, lastRow - 1, 1).getValues();
+  for (var r = 0; r < vals.length; r++) {
+    if (String(vals[r][0] === undefined ? '' : vals[r][0]) !== '') return true;
+  }
+  return false;
+}
+
 function isBlankRow_(arr) {
   for (var i = 0; i < arr.length; i++) {
     if (String(arr[i] === undefined ? '' : arr[i]) !== '') return false;
@@ -300,11 +520,21 @@ function isBlankRow_(arr) {
 }
 
 // Returns null when the headers agree, else the first disagreement.
+//
+// A payload column whose SHEET cell is BLANK is a new column, not drift: the
+// userscript gained one and this tab has not seen it yet. Tolerating that is
+// what lets a column be ADDED without mode:"replace" — and replace would
+// destroy the accumulated gear union, so refusing here would push the operator
+// straight into the one action that loses data.
+//
+// A SHIFT is still refused. Both cells non-empty and different means the column
+// meanings have moved, which silently writes levels into XP cells; that is the
+// failure the check was built for and it is untouched.
 function headerMismatch_(sheetHeader, payloadHeader) {
   for (var i = 0; i < payloadHeader.length; i++) {
     var a = String(sheetHeader[i] === undefined ? '' : sheetHeader[i]);
     var b = String(payloadHeader[i]);
-    if (a !== b) return { at: i, sheet: a, payload: b };
+    if (a !== '' && a !== b) return { at: i, sheet: a, payload: b };
   }
   return null;
 }

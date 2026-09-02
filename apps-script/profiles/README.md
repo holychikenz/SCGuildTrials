@@ -130,12 +130,77 @@ the sign-up script's, so re-deploying it leaves sign-ups alone entirely.
 
 ## Header drift
 
-A write whose header disagrees with the tab's existing header is **refused**,
-naming the offending column — because a shifted column would write (say) levels
-into XP cells for every row already on the tab. Toggling a column block in the
-module's settings (exact XP, stable gear, ability levels, per-achievement
-columns) changes the header, so after such a change either restore the previous
-settings or re-send once with `mode:"replace"`.
+A write whose header **shifts** relative to the tab's existing header is
+**refused**, naming the offending column — because a shifted column would write
+(say) levels into XP cells for every row already on the tab. Toggling a column
+block in the module's settings (exact XP, stable gear, ability levels,
+per-achievement columns) shifts the header, so after such a change either
+restore the previous settings or re-send once with `mode:"replace"`.
+
+A header that merely **grows at the tail** is accepted: a payload column whose
+sheet cell is still blank is a new column, not drift. This matters because the
+remedy for a refusal is `mode:"replace"`, and replace destroys the accumulated
+`gearSeen` union — so refusing a harmless column addition would push you
+straight into the one action that loses data.
+
+Note that a **narrower** payload is also harmless. `doPost` only ever addresses
+the first *n* columns, where *n* comes from the payload, so reverting the
+userscript to a build that does not send `gearSeen` leaves that column
+completely untouched — read, written and cleared never. The union survives a
+rollback with no export and no ritual. This is why `gearSeen` is the **last**
+column and why no setting toggles it.
+
+## The gear union (`gearSeen`)
+
+Every other cell on a row is a snapshot, and the newest write wins. `gearSeen`
+is the exception: it is the **union of every capture**, accumulated over months
+and across machines.
+
+Combat slots rotate with whatever a member is training, so one profile card
+shows a fraction of their gear. The userscript sends what *this* capture saw of
+a curated 200-item set — top-tier combat gear, every cape, every pouch, every
+tool, and all skilling utility wherever it hides — as a JSON string:
+
+```json
+{"items":[{"hrid":"/items/chaotic_flail","level":3}]}
+```
+
+The endpoint merges it into whatever the cell already held, keyed on `hrid`,
+**keeping the higher `level`**. Over many captures the picture converges. Max is
+the honest rule here only because the guild plays ironman with no marketplace:
+items are not sold, and de-levelling is rare enough to ignore.
+
+The item set is generated from the game's own catalogue rather than written
+down, so a new tier is picked up automatically. The consumer is
+`guild/` Python, not a human reading the cell.
+
+### Operating notes
+
+- **Merging is why this script takes a lock.** Two machines writing at once used
+  to be harmless. With a merge, both read the cell, both union their own view,
+  and the second write discards the first's contribution — permanently. A write
+  that cannot get the lock is answered `ok:false` with a `busy:` error; just
+  retry. Nothing is lost by a skipped write, because the same gear is seen again
+  the next time that card is opened.
+- **`mode:"replace"` is refused** while the column holds anything, since no
+  single machine can rebuild the union. Export the column first, then re-send
+  with `discardGearHistory:true` if you genuinely mean to discard it. The
+  userscript never sends that flag.
+- **A cell that will not parse is left exactly as it is** and counted in the
+  response's `gearSkipped`. That is deliberate: it may have been hand-edited, or
+  it may reveal a bug in the writer, and either way it can hold months of
+  captures. The trade-off is that such a cell never self-heals — **clear it by
+  hand** and the next write starts a fresh union.
+- **Blank is not empty.** A member with `hideWearableItems` set sends a blank
+  cell, which contributes nothing and erases nothing. `{"items":[]}` means "we
+  looked and they wore none of it", which is a different and weaker claim.
+- **Refined and base items both persist.** Refining consumes the base item, so a
+  member who has refined will show both hrids for ever — truthfully, "owned the
+  base, now refined". `itemDetailMap[hrid].baseItemHrids` (38 pairs in the
+  catalogue) lets the consumer collapse the pair; do not count them as two.
+- **The response reports `gearMerged` and `gearSkipped`** alongside
+  `updated`/`appended`. A non-zero `gearSkipped` on a tab nobody has hand-edited
+  means a writer bug — investigate rather than ignore.
 
 ## Safety notes
 
@@ -145,6 +210,10 @@ settings or re-send once with `mode:"replace"`.
 - **Shared secret.** The `/exec` URL is world-reachable. Treat the secret like a
   password; rotate by changing it in both places and re-deploying. Keep it
   distinct from the sign-up script's so one leak does not expose both.
+- **The gear union is the one irreplaceable thing on the tab.** Every other
+  column can be rebuilt by re-sending from `guild-profile-store`, which keeps
+  each profile verbatim. The union cannot: it is the pooled history of several
+  machines. Guard `mode:"replace"` accordingly.
 - **Blanks vs zeros.** `null` becomes an empty cell, never `0` — a withheld tool
   (a member with `hideWearableItems` set) or an absent `famePoints` must not read
   as a real score. A genuine `0`, such as an unpurchased shrine, is written as a

@@ -95,9 +95,22 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
     };
 }
 
-function load(sheetsByName) {
+// `lock` lets a test simulate contention: { granted: false } makes tryLock fail
+// the way a concurrent write from another machine would.
+function load(sheetsByName, { lock = {} } = {}) {
+    const { granted = true } = lock;
+    const lockCalls = { tried: 0, released: 0 };
     const ctx = {
         SpreadsheetApp: { openById: () => ({ getSheetByName: (n) => sheetsByName[n] || null }) },
+        // The gear column is MERGED rather than overwritten, which makes the
+        // read-modify-write racy for the first time; Code.gs takes a script lock
+        // around it. Without this stub the vm context throws ReferenceError.
+        LockService: {
+            getScriptLock: () => ({
+                tryLock: () => { lockCalls.tried++; return granted; },
+                releaseLock: () => { lockCalls.released++; },
+            }),
+        },
         ContentService: {
             MimeType: { JSON: "json" },
             createTextOutput: (s) => ({ _text: s, setMimeType() { return this; } }),
@@ -107,6 +120,7 @@ function load(sheetsByName) {
     vm.createContext(ctx);
     vm.runInContext(CODE, ctx);
     ctx.SHARED_SECRET = SECRET;
+    ctx._lockCalls = lockCalls;
     return ctx;
 }
 
@@ -379,4 +393,364 @@ test("each guild's roster tab is written independently", (t) => {
     assert.strictEqual(sc._grid[1][0], "Patbowl",
         "writing one guild's roster disturbed another's tab");
     assert.strictEqual(sc._grid.length, 2);
+});
+
+// =============================================================================
+// The gear union — the one column that MERGES instead of overwriting
+// -----------------------------------------------------------------------------
+// Combat slots rotate with whatever a member is training, so a profile card
+// shows a fraction of their gear. The userscript sends what THIS capture saw and
+// we union it into the cell, keyed on hrid, keeping the higher enhancement
+// level. What each test below earns its place for:
+//
+//   7)  The union itself: two captures of different gear must both survive.
+//   8)  MAX on level, in both arrival orders. A +8 flail seen once must not be
+//       demoted by a later capture that happens to show a fresh +3.
+//   9)  A BLANK incoming cell must not wipe an accumulated one. This is what a
+//       member hiding their gear sends, and what a REVERTED userscript sends —
+//       and treating it as "they own nothing" would erase months of captures.
+//   10) {"items":[]} likewise: a visible member wearing nothing tracked.
+//   11) An unparseable EXISTING cell is left byte-identical. It may have been
+//       hand-edited, or reveal a bug in our writer; either way it can hold data
+//       no single machine could rebuild, so we never overwrite it blind.
+//   12) An unparseable INCOMING cell never lands raw, or it would poison every
+//       later merge on that member (see 11 — we would then refuse to touch it).
+//   13) A runaway union is bounded rather than allowed to hit the ~50,000-char
+//       cell limit mid-write.
+//   14) ONLY this column merges. Every other cell is a snapshot and must still
+//       be overwritten.
+//   15) With no gearSeen column in the header, behaviour is exactly as before.
+//   16) A header GROWING at the tail is accepted — the whole point, since the
+//       remedy for a refusal is mode:"replace", which destroys the union.
+//   17) replace over a populated gear column is refused. The single most
+//       destructive action available, and a one-word setting in the module's UI.
+//   18) Contention is answered, and the lock is always released.
+// =============================================================================
+
+const GEAR = "gearSeen";
+const gearHeader = () => header([GEAR]);
+const gj = (items) => JSON.stringify({ items: items });
+const gearRow = (name, id, cell, opts = {}) =>
+    row(name, id, Object.assign({}, opts, { extra: [cell] }));
+
+// Reads the gear cell for a character out of the fake grid.
+function gearOf(sh, id) {
+    const head = sh._grid[0];
+    const col = head.indexOf(GEAR);
+    for (let i = 1; i < sh._grid.length; i++) {
+        if (String(sh._grid[i][1]) === String(id)) return sh._grid[i][col];
+    }
+    return undefined;
+}
+
+test("the gear cell UNIONS by hrid across captures", (t) => {
+    const h = gearHeader();
+    const sh = makeSheet([
+        h,
+        gearRow("jodend", 8888, gj([{ hrid: "/items/chaotic_flail", level: 3 }])),
+    ], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    // A later session caught the same member wearing a cape instead — the flail
+    // is not equipped now, and must not be forgotten.
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, gj([{ hrid: "/items/sinister_cape", level: 0 }]))],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.gearMerged, 1);
+    assert.strictEqual(res.gearSkipped, 0);
+    assert.deepStrictEqual(JSON.parse(gearOf(sh, 8888)).items, [
+        { hrid: "/items/chaotic_flail", level: 3 },
+        { hrid: "/items/sinister_cape", level: 0 },
+    ], "both captures must survive, hrid-sorted");
+});
+
+test("the merge keeps the HIGHER enhancement level, whichever way round it arrives", (t) => {
+    for (const [existing, incoming, expected] of [[8, 3, 8], [3, 8, 8]]) {
+        const h = gearHeader();
+        const sh = makeSheet([
+            h,
+            gearRow("jodend", 8888, gj([{ hrid: "/items/chaotic_flail", level: existing }])),
+        ], { maxCols: h.length });
+        const ctx = load({ "SC Roster": sh });
+
+        const res = post(ctx, {
+            secret: SECRET, tab: "SC Roster", header: h,
+            rows: [gearRow("jodend", 8888, gj([{ hrid: "/items/chaotic_flail", level: incoming }]))],
+        });
+
+        assert.strictEqual(res.ok, true, res.error);
+        assert.deepStrictEqual(JSON.parse(gearOf(sh, 8888)).items,
+            [{ hrid: "/items/chaotic_flail", level: expected }],
+            `+${existing} then +${incoming} should settle at +${expected}`);
+    }
+});
+
+test("a BLANK incoming cell does not wipe an accumulated union", (t) => {
+    // Two ways this arrives: the member set hideWearableItems, or the userscript
+    // was reverted and no longer sends the column's content. Neither is a
+    // statement that they own nothing.
+    const h = gearHeader();
+    const accumulated = gj([
+        { hrid: "/items/chaotic_flail", level: 7 },
+        { hrid: "/items/philosophers_ring", level: 2 },
+    ]);
+    const sh = makeSheet([h, gearRow("jodend", 8888, accumulated)], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, "")],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(gearOf(sh, 8888), accumulated, "a blank must contribute nothing, not erase");
+});
+
+test("an empty item list also contributes nothing and destroys nothing", (t) => {
+    const h = gearHeader();
+    const accumulated = gj([{ hrid: "/items/chaotic_flail", level: 7 }]);
+    const sh = makeSheet([h, gearRow("jodend", 8888, accumulated)], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, gj([]))],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(gearOf(sh, 8888), accumulated);
+});
+
+test("an unparseable EXISTING cell is left byte-identical and reported", (t) => {
+    const h = gearHeader();
+    const handEdited = "chaotic flail +3, cape";     // somebody typed prose into it
+    const sh = makeSheet([h, gearRow("jodend", 8888, handEdited)], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, gj([{ hrid: "/items/sinister_cape", level: 0 }]))],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.gearMerged, 0);
+    assert.strictEqual(res.gearSkipped, 1, "the skip must be VISIBLE, not silent");
+    assert.strictEqual(gearOf(sh, 8888), handEdited,
+        "we never overwrite a cell we cannot read — it may hold months of captures");
+    // The rest of the row still updates: one bad cell must not block the write.
+    assert.strictEqual(res.updated, 1);
+});
+
+test("an unparseable INCOMING cell lands blank, never raw", (t) => {
+    // Writing it through would poison every later merge on that member, because
+    // an unparseable cell is then left untouched by design (see above).
+    const h = gearHeader();
+    const sh = makeSheet([h], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [
+            gearRow("newcomer", 4242, '{"items":[{"hrid":"","level":3}]}'),   // empty hrid
+            gearRow("another", 4243, '{"items":[{"hrid":"/items/x","level":-1}]}'), // negative
+            gearRow("third", 4244, "{not json"),
+        ],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.gearSkipped, 3);
+    for (const id of [4242, 4243, 4244]) {
+        assert.strictEqual(gearOf(sh, id), "", `${id} should have a blank gear cell`);
+    }
+});
+
+test("a runaway union is bounded rather than left to hit the cell limit", (t) => {
+    const h = gearHeader();
+    const kept = gj([{ hrid: "/items/chaotic_flail", level: 3 }]);
+    const sh = makeSheet([h, gearRow("jodend", 8888, kept)], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const many = [];
+    for (let i = 0; i < 401; i++) many.push({ hrid: "/items/junk_" + i, level: 0 });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, gj(many))],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.gearSkipped, 1);
+    assert.strictEqual(gearOf(sh, 8888), kept, "abandoning a merge preserves what was there");
+});
+
+test("ONLY the gear column merges — every other cell still overwrites", (t) => {
+    const h = gearHeader();
+    const sh = makeSheet([
+        h,
+        gearRow("jodend", 8888, gj([{ hrid: "/items/chaotic_flail", level: 3 }]),
+                { total: 2128, shrine: 4 }),
+    ], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, gj([{ hrid: "/items/sinister_cape", level: 0 }]),
+                       { total: 2060, shrine: 6 })],
+    });
+
+    const head = sh._grid[0];
+    assert.strictEqual(sh._grid[1][head.indexOf("totalLevel")], 2060,
+        "a snapshot column must take the NEW value, not a merged one");
+    assert.strictEqual(sh._grid[1][head.indexOf("shrine_force_combat")], 6);
+    assert.strictEqual(JSON.parse(gearOf(sh, 8888)).items.length, 2);
+});
+
+test("with no gearSeen column, behaviour is exactly as it was before", (t) => {
+    const h = header();
+    const sh = makeSheet([h, row("Patbowl", 60486, { total: 2128 })], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [row("Patbowl", 60486, { total: 2200 })],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.updated, 1);
+    assert.strictEqual(res.gearMerged, 0);
+    assert.strictEqual(res.gearSkipped, 0);
+    assert.strictEqual(sh._grid[1][4], 2200);
+});
+
+test("a header GROWING at the tail is accepted, and the union starts clean", (t) => {
+    // The reason this matters: the refusal's own advice is mode:"replace", which
+    // would destroy the union. Adding a trailing column must therefore not be a
+    // refusal at all.
+    const before = header();                       // the tab as it stands today
+    const after = gearHeader();                    // the module gained a column
+    const sh = makeSheet([
+        before,
+        row("Patbowl", 60486, { total: 2128 }),
+    ], { maxCols: before.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: after,
+        rows: [gearRow("Patbowl", 60486, gj([{ hrid: "/items/chaotic_flail", level: 3 }]),
+                       { total: 2128 })],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh._grid[0][after.length - 1], GEAR, "the new header cell is written");
+    assert.deepStrictEqual(JSON.parse(gearOf(sh, 60486)).items,
+        [{ hrid: "/items/chaotic_flail", level: 3 }],
+        "an empty sheet cell merges cleanly — no special case needed");
+});
+
+test("replace over a populated gear column is REFUSED", (t) => {
+    const h = gearHeader();
+    const accumulated = gj([{ hrid: "/items/chaotic_flail", level: 7 }]);
+    const sh = makeSheet([h, gearRow("jodend", 8888, accumulated)], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", mode: "replace", header: h,
+        rows: [gearRow("Smashcaster", 99999, gj([]))],
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /refusing replace/);
+    assert.match(res.error, /discardGearHistory/, "the error must say how to proceed deliberately");
+    assert.strictEqual(gearOf(sh, 8888), accumulated, "and nothing may have been touched");
+});
+
+test("replace proceeds with an explicit discard, or when there is no history to lose", (t) => {
+    // Deliberate discard.
+    const h = gearHeader();
+    const sh = makeSheet([h, gearRow("jodend", 8888, gj([{ hrid: "/items/chaotic_flail", level: 7 }]))],
+                         { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", mode: "replace", discardGearHistory: true,
+        header: h, rows: [gearRow("Smashcaster", 99999, gj([]))],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.replaced, true);
+    assert.strictEqual(res.totalRows, 1);
+
+    // Nothing accumulated yet — a replace is harmless and must not be blocked.
+    const h2 = gearHeader();
+    const sh2 = makeSheet([h2, gearRow("jodend", 8888, "")], { maxCols: h2.length });
+    const ctx2 = load({ "SC Roster": sh2 });
+    const res2 = post(ctx2, {
+        secret: SECRET, tab: "SC Roster", mode: "replace", header: h2,
+        rows: [gearRow("Smashcaster", 99999, gj([]))],
+    });
+    assert.strictEqual(res2.ok, true, res2.error);
+    assert.strictEqual(res2.replaced, true);
+});
+
+test("contention is answered cleanly, and the lock is always released", (t) => {
+    const h = gearHeader();
+    const accumulated = gj([{ hrid: "/items/chaotic_flail", level: 7 }]);
+
+    // Another machine holds the lock. Without this guard both writes would read
+    // the same cell and the second would discard the first's contribution.
+    const sh = makeSheet([h, gearRow("jodend", 8888, accumulated)], { maxCols: h.length });
+    const busy = load({ "SC Roster": sh }, { lock: { granted: false } });
+    const res = post(busy, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, gj([{ hrid: "/items/sinister_cape", level: 0 }]))],
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /busy/);
+    assert.strictEqual(gearOf(sh, 8888), accumulated, "a refused write must change nothing");
+    assert.strictEqual(busy._lockCalls.released, 0, "nothing to release when nothing was taken");
+
+    // And on the happy path it is released, so a later write is not locked out.
+    const sh2 = makeSheet([h, gearRow("jodend", 8888, accumulated)], { maxCols: h.length });
+    const ok = load({ "SC Roster": sh2 });
+    post(ok, { secret: SECRET, tab: "SC Roster", header: h, rows: [gearRow("jodend", 8888, gj([]))] });
+    assert.strictEqual(ok._lockCalls.tried, 1);
+    assert.strictEqual(ok._lockCalls.released, 1);
+});
+
+test("the lock is released even when the write throws", (t) => {
+    // A releaseLock() skipped on the error path would wedge the endpoint for
+    // every later write, turning one transient fault into a dead deployment.
+    const h = gearHeader();
+    const sh = makeSheet([h], { maxCols: h.length });
+    sh.getRange = () => { throw new Error("simulated Sheets failure"); };
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [gearRow("jodend", 8888, gj([]))],
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /simulated Sheets failure/);
+    assert.strictEqual(ctx._lockCalls.tried, 1);
+    assert.strictEqual(ctx._lockCalls.released, 1, "the finally must run on the throw path");
+});
+
+test("the lock is released on an early RETURN inside it, not just on a throw", (t) => {
+    // A missing tab returns from inside the locked section. `finally` covers a
+    // return as well as a throw, but the two are different paths and a leak on
+    // either would wedge every later write to the deployment — a mistyped tab
+    // name should not take the endpoint down until the script times out.
+    const ctx = load({ "SC Roster": makeSheet() });
+    const res = post(ctx, {
+        secret: SECRET, tab: "LI Roster",       // allowlisted, but not provided above
+        header: gearHeader(), rows: [gearRow("jodend", 8888, gj([]))],
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /tab not found/);
+    assert.strictEqual(ctx._lockCalls.tried, 1);
+    assert.strictEqual(ctx._lockCalls.released, 1, "the finally must run on the return path");
 });
