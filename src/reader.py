@@ -93,10 +93,26 @@ _UNSET_MEMBER_KEYS = {
     "captured_at": None,
     "shrine_levels": {},
     "provenance": {},
-    "gear": None,
-    "gear_bonuses": {},
 }
 _UNSET_SKILL_KEYS = {"tool_item": None, "tool_enhance": None}
+
+# --- Fields dropped from every serialisation, SET OR NOT --------------------
+# Measured on the live SC roster: the raw gear union costs 57 KB and the resolved
+# bonuses another 59 KB, against a 256 KB members payload — a 45% increase to
+# `data.json`, which the browser fetches on every page load.
+#
+# `gear_bonuses` is DERIVED: ten skills x four floats per member, recomputable
+# from `gear` and the catalogue in microseconds, and read by nothing outside the
+# rate model. Publishing it would be publishing a cache.
+#
+# `gear` is the raw evidence and this repository does like to publish its
+# evidence — but nothing on any page reads it yet, and the aggregate counts an
+# officer actually needs are already in the provenance block (how many members
+# were visible, how many slot resolutions were observed against imputed). So it
+# waits for the per-member gear badge that will use it, at which point deleting
+# its line here is the whole change. Shipping 57 KB now against a follow-up that
+# might want it is not a trade this file makes.
+_NEVER_SERIALISED = ("gear", "gear_bonuses")
 
 
 def member_to_dict(member: MemberRow) -> dict:
@@ -117,6 +133,8 @@ def member_to_dict(member: MemberRow) -> dict:
     diff nobody expected.
     """
     d = asdict(member)
+    for key in _NEVER_SERIALISED:
+        d.pop(key, None)
     for key, unset in _UNSET_MEMBER_KEYS.items():
         if d.get(key) == unset:
             del d[key]

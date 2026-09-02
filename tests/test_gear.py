@@ -514,12 +514,21 @@ def test_data_json_is_byte_identical_with_gear_off():
     assert "gear_bonuses" not in json.dumps(payload)
 
 
-def test_serialised_gear_appears_once_it_is_set():
+def test_gear_is_never_serialised_even_when_set():
+    """Both fields stay out of data.json whatever their value.
+
+    Measured on the live SC roster they would add 116 KB to a 256 KB members
+    payload — a 45% increase to a file the browser fetches on every page load —
+    and nothing on any page reads either of them. ``gear_bonuses`` is a cache of
+    ``gear`` plus the catalogue; ``gear`` waits for the per-member badge that will
+    use it. See reader._NEVER_SERIALISED for the whole argument.
+    """
     m = _member({"/items/philosophers_necklace": 3})
     m.gear_bonuses = gear.resolve(m, _STATS)
-    d = processor.process([m])["members"][0]
-    assert d["gear"] == {"/items/philosophers_necklace": 3}
-    assert d["gear_bonuses"]["Milking"][0] > 0.0
+    assert m.gear and m.gear_bonuses          # they really are set
+    payload = json.dumps(processor.process([m]))
+    assert "gear" not in payload
+    assert "philosophers_necklace" not in payload
 
 
 # ---------------------------------------------------------------------------

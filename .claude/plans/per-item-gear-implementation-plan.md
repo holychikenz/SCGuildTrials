@@ -186,6 +186,44 @@ without losing the other three. Restoring `RISK_SIGMA_SYSTEMATIC` to 0.0123 is a
 separate one-line revert and G8 will record the previous value in the comment, as
 R6 recorded 0.0131.
 
+## 5b. What changed during implementation
+
+Three decisions in §4 and §5 did not survive contact with the code. Each is
+recorded here rather than quietly amended, because the reasoning is the useful
+part.
+
+**`GEAR_UNKNOWN_ITEM_FATAL` was withdrawn, not implemented.** §5 listed it by
+analogy with `ROSTER_UNKNOWN_TOOL_FATAL`. The analogy fails: a tool column is a
+*named slot*, so an item `TOOL_STATS` does not know is either a new tier or a
+shifted header. The gear union is a flat list of whatever was equipped, and
+`research/item-stats.json` carries only the 188 items that *have* non-combat
+stats — combat gear is absent altogether — so the check would flag every Chaotic
+Flail and Anchorbound Plate, some sixty per guild, none actionable. The count is
+reported as **unmodelled** rather than unknown, and the argument sits in
+`config.py` where the switch would have gone.
+
+**The imputation error is resampled, not perturbed by a half-width.** §4's G8
+implied a new `Sources` half-width. Wrong instrument: asserting "this member holds
+the guild mean" when the truth is one draw from the guild's own distribution is
+exactly the case `Sources.house_blank` already handles for a blank `H` cell — "the
+posterior predictive given no information, which also removes the flat default's
+bias for free". A half-width would have to be invented, would be symmetric about a
+mean that is itself the estimate, and would get the shape wrong.
+`gear.ImputationStats` therefore keeps the pools behind its three means, and
+`gear_impute_resample` draws from them.
+
+**Neither gear field is serialised.** Measured on the live SC roster, the raw union
+costs 57 KB and the resolved bonuses another 59 KB against a 256 KB members
+payload — a 45% increase to a file the browser fetches on every page load, for two
+fields nothing on any page reads. `gear_bonuses` is a cache of `gear` plus the
+catalogue; `gear` waits for the per-member badge that will use it, at which point
+deleting one line in `reader._NEVER_SERIALISED` is the whole change.
+
+**And one measurement note for whoever runs G6 again.** Buffer your output:
+`research/scratch/gear_reconcile.py` writes nothing to a redirected file until it
+exits, so a forty-minute run looks indistinguishable from a hung one. Run it with
+`python -u`.
+
 ## 6. What could go wrong, and what it would look like
 
 | risk | symptom | mitigation |

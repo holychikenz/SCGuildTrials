@@ -56,13 +56,15 @@ still works if you prefer a classic venv.
 
 ## Where member data comes from
 
-Every rate in this project is built from four facts about a member: their **skill
-level**, their **house room** level for that skill, the **tool** they hold, and the
-**shrine levels they have bought**. Until 2026-08-31 all four came from a
-hand-maintained spreadsheet tab, and three of them were partly guesses. Now they
-come from a scripted per-character harvest (`apps-script/profiles/`, written to an
-**SC Roster** / **LI Roster** tab and read by `src/roster.py`), with the manual tab
-as a per-field fallback.
+Every rate in this project is built from five facts about a member: their **skill
+level**, their **house room** level for that skill, the **tool** they hold, the
+**shrine levels they have bought**, and — since 2026-09-02 — **the rest of their
+equipment**. Until 2026-08-31 the first four came from a hand-maintained spreadsheet
+tab and three of them were partly guesses; the fifth was not read at all and was
+asserted of everybody as a handful of constants. Now they come from a scripted
+per-character harvest (`apps-script/profiles/`, written to an **SC Roster** / **LI
+Roster** tab and read by `src/roster.py` and `src/gear.py`), with the manual tab as
+a per-field fallback.
 
 ### The precedence is per FIELD, not per member
 
@@ -93,6 +95,87 @@ roster-tab order so the seed-fixed optimizer trajectory stays reproducible. They
 **not** enter `index.html`, which mirrors the officers' own tab and must keep doing
 so — that is the page an officer uses to notice the missing row.
 
+### The fifth fact: equipment, read per item
+
+The roster tab carries one further column, `gearSeen`, and it is not like the others.
+Every other cell is a **snapshot**; this one is the **union of every capture** of that
+member's gear, keyed on item, keeping the higher enhancement level, pooled over months
+and across machines. `src/gear.py` reads it against a 39-item catalogue transcribed
+from the game's own data.
+
+**What it replaced.** Five constants asserted the same equipment of every member — a
++3 cape, a +7 "family piece", +7 on the skilling top and bottom where ticked, and a
+flat 5% gathering-doubling — and a sixth term was not modelled at all: the **neck,
+ring and earring slots**, which no source this project read had ever reported. That
+omission was the largest single line in the risk budget, worth 0.0081–0.0110 of a
+~0.0123 total.
+
+**What the sheet actually said**, pooled over both guilds (202 visible members):
+
+| the model asserted | the union observed |
+|---|---|
+| a +3 cape, every member, every skill | 97 capes; pooled mean **effective** speed 0.0738 against the assumed 0.0665; 73% refined (★) |
+| a +7 family piece, unconditionally | 48% of members show **none** of the four, 37% show **all four**; mean level 4.6–6.3, not 7 |
+| nothing in the neck slot | **178 of 202** wear a necklace — 117 Philosopher's, 57 of Speed, 4 of Efficiency |
+| a flat 5% gathering doubling | 95 gathering rings, 101 gathering earrings; 34 wear Rare Find instead, which is inert in a race |
+| +7 on every piece | grand mean level **5.91** over 1,448 observations; mode 5 |
+
+**The change is, overwhelmingly, the neck slot.** Decomposed per slice, the
+accessories move mean speed +0.046 (SC) / +0.041 (LI) and efficiency +0.018 / +0.013,
+while the cape (+0.009 / +0.006), the family piece (−0.003 / −0.006 efficiency) and
+the garments (~−0.001) are rounding corrections beside it. The net direction is **up**
+— which is precisely why the neck was the largest row in the risk budget.
+
+**The ownership rules.** A slot the union read is priced from what it saw, at the
+enhancement level it saw. A slot it did not read is treated four different ways, and
+the differences are deliberate:
+
+```
+cape           assume the skill's covering cape at this guild's POOLED MEAN
+               bonus -- one slot can only ever show the one worn, so a
+               Gatherer Cape says nothing about the Culinary one
+family piece   assume owned, at THAT ITEM's per-guild mean level
+top / bottom   owned iff the manual checkbox is ticked OR the union saw it;
+               level observed where seen, else the pooled garment mean
+neck/ring/ear  ZERO. Never imputed: the Philosopher's pieces are the rarest
+               items in the game and must not be assumed onto anybody
+```
+
+Two consequences worth stating. A member wearing a **Necklace of Wisdom** or a **Ring
+of Rare Find** — 41 of them — scores zero for that slot without needing any special
+case: they hold the slot with something inert, and the accessory rule already says
+zero. And the **sixteen members who hide their gear are not a special case either**;
+they follow the unobserved rules exactly. There is no `hidden` branch anywhere in the
+module, which is the single largest simplification in its design.
+
+**The imputation statistics are measured, not transcribed**, and per guild — SC's
+family pieces average 1.2–1.5 enhancement levels above LI's, so one shared figure
+would misprice both. Unlike the item table, which is a catalogue fact pinned as a
+constant, these are live measurements of a changing guild and a written-down value
+would be stale the week after. There are three of them rather than one because eight
+of the eleven observed garments rest on **n = 1 or n = 2**, and a mean of one
+observation is not a mean; garments are therefore pooled, family pieces are per item
+(n = 38–50), and capes are pooled as *bonuses* rather than levels because the
+plain/★ split gives a pooled level no unambiguous base to apply itself to.
+
+**Two things the column proved in passing.** The union and the roster's existing tool
+columns agree on **2,020 of 2,020** observations — same item, same enhancement, no
+blanks, no mismatches — which retires `TOOL_ENHANCE_WHEN_UNKNOWN` as demonstrably
+never exercised and validates the upstream writer end to end. And the manual top/bot
+tick turns out to be a near-perfect **superset** of the sighting: four cases in 1,900
+where the union saw a garment nobody had ticked. That is what earns the "ticked **or**
+seen" rule, and what makes a garment neither ticked nor seen a claim of *non*-ownership
+rather than an unknown.
+
+**One judgement call is recorded rather than settled.** The four family pieces are
+held all-or-nothing, and the rotation defence fails: 82 members wear a skilling
+necklace — proving the capture caught them in skilling kit — while showing not one of
+the four. The universal grant is nevertheless kept, on the operator's judgement that
+the union has not yet converged. `GEAR_IMPUTE_FAMILY_PIECE = False` reverses it in one
+line, and the slice is small enough that being wrong costs little either way. The
+disagreement, and how to settle it in a few weeks, is in
+`research/per-item-gear.md` §3.1.
+
 ### The switch ladder
 
 Every one of these is a one-line rollback, and each was measured on its own:
@@ -107,6 +190,11 @@ Every one of these is a one-line rollback, and each was measured on its own:
 | `ROSTER_USE_SHRINES` | the guild-wide shrine read, and `simulate_race`'s once-per-race hoist, bit for bit |
 | `ROSTER_ADMITS_NEW_MEMBERS` | "reported, not seated" for the five roster-only LI members |
 | `ROSTER_MIN_JOIN_RATE` | below this join rate the roster is **refused** for that guild and every member keeps the manual tab's data. Guards the catastrophic case: gviz serving a different tab past the header guard would otherwise silently reprice a whole guild. |
+| `GEAR_SOURCE_ENABLED` | the pre-gear build **bit for bit** — the column is not parsed, nothing is resolved, no new JSON keys, no page change. Pinned by `test_gear_disabled_reproduces_the_golden_week`, which is stronger than a stored golden: the members in it *carry* a full wardrobe, fully resolved, and nothing but the switch stands between that data and the rate. |
+| `GEAR_USE_CAPE` / `_FAMILY_PIECE` / `_GARMENTS` / `_ACCESSORIES` | that slice's pre-gear constant, so an adverse slice can be reverted without losing the other three |
+| `GEAR_IMPUTE_FAMILY_PIECE` | "own only where seen" — the evidence-led reading of the one judgement call above |
+| `GEAR_GATHERING_IN_RATE` | prices every `gatheringQuantity` item at zero, isolating the open question about `doubleProgressChance` **without** also removing the community buff, which the flat constant could not do |
+| `GEAR_MIN_IMPUTE_N` | below this many observations an imputation statistic is **refused** and the pre-gear constant is used, because a mean of two observations is worse than the assumption it replaces — it merely *looks* measured |
 
 ### The four slices, measured one at a time
 
