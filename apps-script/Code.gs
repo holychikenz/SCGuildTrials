@@ -15,7 +15,18 @@
  * guild owns its OWN sign-up tab in this shared spreadsheet ("SC Trial Signup"
  * for Survey Corps, "LI Trial Signup" for Lactose lntolerance). The userscript
  * picks the tab from the CURRENT guild's id and sends it in `tab`; this script
- * only writes tabs on the ALLOWED_TABS allowlist below.
+ * only writes tabs on the TAB_FORMAT allowlist below.
+ *
+ * TWO BLOCK FORMATS, one per tab. The same module also (optionally) sends the
+ * guild's BUILDING & SHRINE LEVELS — a different block entirely, bound for a
+ * different tab ("SC Buildings" / "LI Buildings"):
+ *     'signup'     col 0 = "User",     then one boolean tick per trial column
+ *     'buildings'  col 0 = "Building", then Hrid, Kind, Level, Guild Id, Captured At
+ * TAB_FORMAT records which format each allowlisted tab holds, and a block is
+ * written ONLY to a tab of its own format. That is the interlock that matters:
+ * a levels block landing on a sign-up tab would wipe the roster the Python
+ * reader parses, and a roster on a Buildings tab would bury the levels. Both
+ * are refused as a 'format mismatch' rather than written through.
  *
  * The sheet layout this writes MUST stay in lockstep with guild/src/config.py
  * (SKILLS) and guild/src/signup.py (parse_signup): col 0 = "User", then one
@@ -32,10 +43,18 @@
  *         Who has access:  Anyone
  *      Copy the deployment URL (ends in /exec) into the module's
  *      "Apps Script /exec URL" setting.
- *   5. Create the test tab "chikenz-test" (a duplicate of a sign-up tab), and
- *      make sure each guild's real sign-up tab in ALLOWED_TABS already exists
- *      ("SC Trial Signup", "LI Trial Signup"). doPost never CREATES a tab — it
- *      only writes an existing one. Only tabs in ALLOWED_TABS can ever be written.
+ *   5. Create the tabs BY HAND. doPost never CREATES a tab — it only writes an
+ *      existing one, and only one named in TAB_FORMAT. You need:
+ *         "chikenz-test"     the sign-up test tab (a duplicate of a sign-up tab)
+ *         "SC Trial Signup"  \ each guild's real sign-up tab
+ *         "LI Trial Signup"  /
+ *         "SC Buildings"     \ each guild's building/shrine levels — NEW, and
+ *         "LI Buildings"     / empty is fine; the first write fills them
+ *      There is deliberately NO buildings test tab: the levels block is written
+ *      to its own tab and cannot reach a sign-up tab (format mismatch), so the
+ *      first buildings write goes straight to the per-guild tab. Enable the
+ *      module's "Also sync building/shrine levels" and leave "Force Buildings
+ *      tab (testing)" EMPTY.
  *
  * Re-deploy (Deploy ▸ Manage deployments ▸ edit ▸ new version) after any edit,
  * or the live /exec URL keeps serving the old code.
@@ -51,18 +70,27 @@ var SPREADSHEET_ID = '1b5_zID6K4WRaFXnBMJijSEXr_4l2gi40eFKxuvRJQAE';
 // request is refused (a deliberate safety interlock).
 var SHARED_SECRET = 'PASTE_A_LONG_RANDOM_SECRET_HERE';
 
-// Only these tabs may be written. Keep the test tab first; each guild's real
-// sign-up tab is listed alongside. This is the last line of defence against a
-// fat-fingered (or wrong-guild) tab name clobbering member data.
-//   "SC Trial Signup" — Survey Corps
-//   "LI Trial Signup" — Lactose lntolerance (guild id 240)
-var ALLOWED_TABS = ['chikenz-test', 'SC Trial Signup', 'LI Trial Signup'];
+// Which BLOCK FORMAT each allowlisted tab holds. A payload is written ONLY to a
+// tab of its own format, so a buildings block can never land on a sign-up tab
+// (which would wipe the roster) nor a roster on a buildings tab. This map is the
+// allowlist: doPost still never CREATES a tab — every name here must exist.
+//   'signup'    header[0] = "User"      roster + trial sign-ups (guild-signup-sync)
+//   'buildings' header[0] = "Building"  guild building / shrine levels
+//   "SC …" — Survey Corps (guild id 4);  "LI …" — Lactose lntolerance (guild id 240)
+var TAB_FORMAT = {
+  'chikenz-test':    'signup',
+  'SC Trial Signup': 'signup',
+  'LI Trial Signup': 'signup',
+  'SC Buildings':    'buildings',
+  'LI Buildings':    'buildings'
+};
+var ALLOWED_TABS = Object.keys(TAB_FORMAT);
 
 // The layout is header-driven and width-agnostic: the module sends "User" plus
 // however many tick columns this week's draw needs (compact = 4 skills + 2
-// combat = 7 columns; a full-skills layout = 13). The only hard invariants are
-// col 0 = "User" and a boolean-coercible tick in every column after it. This
-// floor just rejects an obviously-truncated payload.
+// combat = 7 columns; a full-skills layout = 13). A buildings block is a fixed
+// 6. The only hard invariant is that col 0 names the format ("User" or
+// "Building"); this floor just rejects an obviously-truncated payload.
 var MIN_COLS = 3;
 
 function doPost(e) {
@@ -88,9 +116,15 @@ function doPost(e) {
 
     // --- Shape guards -------------------------------------------------------
     var header = body.header;
-    if (!Array.isArray(header) || header.length < MIN_COLS ||
-        String(header[0]) !== 'User') {
-      return json_({ ok: false, error: 'bad header: need ["User", ...>=10 tick columns]' });
+    if (!Array.isArray(header) || header.length < MIN_COLS) {
+      return json_({ ok: false, error: 'bad header: need at least ' + MIN_COLS + ' columns' });
+    }
+    var format = formatOf_(header);
+    if (!format) {
+      return json_({ ok: false, error: 'bad header: col 0 must be "User" (sign-ups) or "Building" (levels)' });
+    }
+    if (TAB_FORMAT[tab] !== format) {
+      return json_({ ok: false, error: 'format mismatch: a ' + format + ' block may not be written to "' + tab + '" (' + TAB_FORMAT[tab] + ' tab)' });
     }
     var nCols = header.length;   // User + 10 skills + any extra (combat) columns
     var rows = body.rows;
@@ -116,9 +150,9 @@ function doPost(e) {
     var out = [header.slice()];
     for (var r = 0; r < rows.length; r++) {
       var src = rows[r];
-      var line = [String(src[0])];               // User name (text)
+      var line = [String(src[0])];               // User name / Building name (text)
       for (var c = 1; c < nCols; c++) {
-        line.push(truthy_(src[c]));               // native boolean (checkbox-friendly)
+        line.push(format === 'signup' ? truthy_(src[c]) : cell_(src[c]));
       }
       out.push(line);
     }
@@ -140,6 +174,7 @@ function doPost(e) {
     return json_({
       ok: true,
       tab: tab,
+      format: format,
       wroteRows: rows.length,
       columns: nCols,
       clearedRows: clearRows,
@@ -153,7 +188,7 @@ function doPost(e) {
 // A browser-openable health check. Visiting the /exec URL returns this JSON,
 // which confirms the deployment is live without writing anything.
 function doGet() {
-  return json_({ ok: true, service: 'guild-signup-sync', allowedTabs: ALLOWED_TABS });
+  return json_({ ok: true, service: 'guild-signup-sync', allowedTabs: ALLOWED_TABS, tabFormats: TAB_FORMAT });
 }
 
 // TRUE (string, any case) or boolean true → true; everything else → false.
@@ -162,6 +197,22 @@ function truthy_(v) {
   if (v === true) return true;
   if (typeof v === 'string') return v.trim().toUpperCase() === 'TRUE';
   return !!v;
+}
+
+// "User" → sign-up block, "Building" → levels block, anything else → refused.
+function formatOf_(header) {
+  var h0 = String(header[0]);
+  if (h0 === 'User') return 'signup';
+  if (h0 === 'Building') return 'buildings';
+  return null;
+}
+
+// Levels block cells: numbers stay numbers (so Level is a real integer cell),
+// null/undefined become blank, everything else is written as text.
+function cell_(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return v;
+  return String(v);
 }
 
 function json_(obj) {
