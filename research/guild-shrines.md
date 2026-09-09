@@ -11,7 +11,7 @@ shrine level is a *cap* and each member's own purchase is the multiplier, measur
 per member off the scripted roster tab — so the buff-level ladder turns out not to
 be the quantity the model needed.
 
-**Source**: `/Users/morgan/pie/cowstuff/milkyway_client_info.json`,
+**Source**: `/Users/morgan/pie/farm/cowstuff/milkyway_client_info.json`,
 `gameVersion v1.20260715.0`, `versionTimestamp 2026-07-16T03:24:51Z`. Keys read:
 `guildBuffDetailMap` (10 entries) and `guildShrineDetailMap` (5 entries).
 **This dump predates the 2026-08-11 patch**; refreshing it is Phase 0 step 1 of

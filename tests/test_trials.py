@@ -201,10 +201,77 @@ def test_building_skill_levels_added_to_effective_level():
 # guild buildings (guild-wide +2 skill levels per building level)
 # ---------------------------------------------------------------------------
 def test_guild_building_levels_all_zero_in_shipped_config():
-    # Live data (guild_updated capture 2026-07-22): no skilling guild building is
-    # built, so the model must add nothing today.
+    """The shipped FALLBACK adds nothing.
+
+    DO NOT "update" these zeros to match SC's live Buildings tab. Since 2026-09-09
+    the live levels are read from the sheet and BOUND for the duration of a guild's
+    optimiser unit (trials.guild_building_levels_scope); this map is what runs when
+    there is no observation, and its zeros are load-bearing twice over:
+
+      * tests/test_roster.py::test_roster_disabled_reproduces_the_golden_week calls
+        run_week bare, entering no scope, and compares with `==` against a golden
+        generated at commit 265326b. Non-zero here breaks it.
+      * config.BUILDINGS_SOURCE_ENABLED = False is only a true rollback if what it
+        falls back to is the pre-source behaviour.
+    """
     for skill in config.GUILD_BUILDING_LEVELS:
         assert trials.guild_building_skill_levels(skill) == 0
+
+
+def test_building_levels_scope_binds_and_restores():
+    """The live levels reach every reader, and are gone again afterwards.
+
+    Ten call sites read config.GUILD_BUILDING_LEVELS at CALL time, which is why one
+    scope suffices; guild_building_skill_levels stands in for all of them here.
+    """
+    saved = config.GUILD_BUILDING_LEVELS
+    assert trials.guild_building_skill_levels("Enhancing") == 0
+    with trials.guild_building_levels_scope({"Enhancing": 1}):
+        assert trials.guild_building_skill_levels("Enhancing") == 2
+        # Skills the observation does not mention keep the fallback, rather than
+        # vanishing: the scope MERGES over the config map, it does not replace it.
+        assert trials.guild_building_skill_levels("Brewing") == 0
+    assert trials.guild_building_skill_levels("Enhancing") == 0
+    assert config.GUILD_BUILDING_LEVELS is saved
+
+
+def test_building_levels_scope_restores_after_an_exception():
+    """The sequential build path runs two guilds in one process (see below), so the
+    restore must survive a failing unit as well as a passing one."""
+    saved = config.GUILD_BUILDING_LEVELS
+    with pytest.raises(ValueError):
+        with trials.guild_building_levels_scope({"Enhancing": 20}):
+            raise ValueError("a unit blew up")
+    assert config.GUILD_BUILDING_LEVELS is saved
+    assert trials.guild_building_skill_levels("Enhancing") == 0
+
+
+def test_building_levels_scope_is_a_noop_for_none_and_empty():
+    """No observation must be bit-identical to before this source existed.
+
+    The IDENTICAL object, not an equal copy — that is what makes an unobserved guild
+    provably the same build as the pre-2026-09-09 one, and what keeps the golden week
+    reproducible.
+    """
+    saved = config.GUILD_BUILDING_LEVELS
+    for levels in (None, {}):
+        with trials.guild_building_levels_scope(levels):
+            assert config.GUILD_BUILDING_LEVELS is saved
+        assert config.GUILD_BUILDING_LEVELS is saved
+
+
+def test_week_result_records_the_injected_levels():
+    """What the page renders must be what the race ran under.
+
+    WeekResult builds guild_building_levels from guild_building_skill_levels, so a
+    week produced inside the scope necessarily records the granted levels — the same
+    property community_buff_level gives COMMUNITY_BUFF_LEVEL.
+    """
+    members = [_member(f"M{i}", {"Enhancing": 100}) for i in range(20)]
+    with trials.guild_building_levels_scope({"Enhancing": 1}):
+        week = trials.run_week(members, skills=["Enhancing"], cap=12, seed=1)
+    granted = week.to_dict()["guild_building_levels"]
+    assert granted == {"Enhancing": 2}
 
 
 def test_guild_building_grants_two_levels_per_building_level(monkeypatch):
@@ -1750,6 +1817,10 @@ def test_the_compute_unit_plans_at_the_guilds_own_cap():
             "min_levels": {},
             "cap": site.party_cap,
             "shrine_caps": site.shrine_caps,
+            # This guild's live building levels ride the same contract (2026-09-09):
+            # resolved in the parent, shipped as data. Bound around the whole unit,
+            # so the WeekResult must record what the race actually ran under.
+            "building_levels": {"Foraging": 3},
             "level": 1,
             "picks": None,
         }
@@ -1757,6 +1828,9 @@ def test_the_compute_unit_plans_at_the_guilds_own_cap():
         assert out["week"]["cap"] == site.party_cap
         assert len(out["week"]["trials"][0]["roster"]) <= site.party_cap
         assert out["week"]["guild_shrine_caps"] == config.shrine_caps(site.key)
+        assert out["week"]["guild_building_levels"] == {
+            "Foraging": 3 * config.GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL
+        }
 
 
 # ===========================================================================

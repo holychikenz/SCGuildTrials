@@ -7,7 +7,7 @@ live buff **levels** — no capture this repo holds records them, exactly the ga
 gathering buff reaches the trial race at all, which is §3 and by far the most
 expensive open question in the model.
 
-**Source**: `/Users/morgan/pie/cowstuff/milkyway_client_info.json`,
+**Source**: `/Users/morgan/pie/farm/cowstuff/milkyway_client_info.json`,
 `gameVersion v1.20260715.0`, `versionTimestamp 2026-07-16T03:24:51Z`. Key read:
 `communityBuffTypeDetailMap` (5 entries). **This dump predates the 2026-08-11
 patch**; refreshing it is a standing TODO shared with the shrine note.

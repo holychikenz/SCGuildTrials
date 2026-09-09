@@ -226,6 +226,54 @@ def community_buff_level(level: int):
             setattr(config, name, value)
 
 
+@contextlib.contextmanager
+def guild_building_levels_scope(levels: Optional[dict[str, int]]):
+    """Run a block with ONE GUILD'S LIVE building levels bound.
+
+    ``levels`` is keyed by trial skill name and comes from that guild's Buildings tab
+    (``buildings.GuildBuildings.skill_levels``), resolved in the parent process and
+    shipped with the optimiser job. ``None`` or ``{}`` is a NO-OP that leaves
+    ``config.GUILD_BUILDING_LEVELS`` untouched — the identical object, not a copy —
+    so a guild whose tab has never been written runs on the config fallback exactly
+    as it did before this source existed, and the golden week stays bit-identical.
+
+    REBINDING RATHER THAN THREADING A PARAMETER is deliberate, and follows the
+    precedent :func:`community_buff_level` sets three functions above with a stronger
+    version of the same argument. Ten call sites read
+    ``config.GUILD_BUILDING_LEVELS`` at CALL time (five here, plus ``optimizer``,
+    ``simulate_trial`` and two ``calibrate`` harnesses); a building level is
+    common-mode across the whole GUILD by definition — not merely the party — so a
+    parameter would carry no information those sites do not already share, while
+    having to be threaded through ``member_bonuses`` -> ``_prepare_member`` ->
+    ``rate`` -> ``simulate_race`` -> the optimizer's hot loop to reach them. It would
+    also rewrite the fifteen tests that currently express this feature by patching
+    the dict.
+
+    The WHOLE DICT is rebound, not its items, so the ``finally`` restores the
+    original object whatever the body did to it.
+
+    NOT thread-safe, and not intended to be — the same contract as
+    :func:`community_buff_level`, and satisfied for the same reason: its one caller
+    is ``build._compute_unit``, which is a process of its own per optimiser unit.
+    The sequential fallback (``config.BUILD_PARALLEL`` off, or a single job) runs two
+    guilds in one process, which is safe only because this restores on the way out —
+    a property pinned by ``tests/test_build.py`` rather than left to trust.
+
+    Named ``..._scope`` because ``guild_building_levels`` is already a
+    :class:`WeekResult` field, and one name for a field and a context manager is how
+    a later reader is misled.
+    """
+    saved = config.GUILD_BUILDING_LEVELS
+    if not levels:
+        yield
+        return
+    try:
+        config.GUILD_BUILDING_LEVELS = {**saved, **levels}
+        yield
+    finally:
+        config.GUILD_BUILDING_LEVELS = saved
+
+
 def _sheet_column(skill: str) -> str:
     """Map a trial skill name to its member-sheet column name.
 

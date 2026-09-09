@@ -17,16 +17,23 @@
  * picks the tab from the CURRENT guild's id and sends it in `tab`; this script
  * only writes tabs on the TAB_FORMAT allowlist below.
  *
- * TWO BLOCK FORMATS, one per tab. The same module also (optionally) sends the
- * guild's BUILDING & SHRINE LEVELS — a different block entirely, bound for a
- * different tab ("SC Buildings" / "LI Buildings"):
+ * THREE BLOCK FORMATS, one per tab. The same module also (optionally) sends
+ * the guild's BUILDING & SHRINE LEVELS — a different block entirely, bound for
+ * a different tab ("SC Buildings" / "LI Buildings"). A third block arrives from
+ * a different program altogether (see the note under 'combat'):
  *     'signup'     col 0 = "User",     then one boolean tick per trial column
  *     'buildings'  col 0 = "Building", then Hrid, Kind, Level, Guild Id, Captured At
+ *     'combat'     col 0 = "Member",   then Trial Hrid, Team, Role, Slot, Guild Id, Generated At
+ * The 'combat' block is written by the OPTIMISER (~/pie/SCLIRoster, a Node CLI:
+ * `report --publish-combat`) — NOT by the in-game module, which knows nothing
+ * about it — and is read back by guild/src/combat.py, which hangs it on
+ * trials.json so the userscript can glow a member's assigned combat tiles.
  * TAB_FORMAT records which format each allowlisted tab holds, and a block is
  * written ONLY to a tab of its own format. That is the interlock that matters:
  * a levels block landing on a sign-up tab would wipe the roster the Python
- * reader parses, and a roster on a Buildings tab would bury the levels. Both
- * are refused as a 'format mismatch' rather than written through.
+ * reader parses, a roster on a Buildings tab would bury the levels, and a
+ * combat block on either would do the same to whichever it landed on. All are
+ * refused as a 'format mismatch' rather than written through.
  *
  * The sheet layout this writes MUST stay in lockstep with guild/src/config.py
  * (SKILLS) and guild/src/signup.py (parse_signup): col 0 = "User", then one
@@ -48,11 +55,16 @@
  *         "chikenz-test"     the sign-up test tab (a duplicate of a sign-up tab)
  *         "SC Trial Signup"  \ each guild's real sign-up tab
  *         "LI Trial Signup"  /
- *         "SC Buildings"     \ each guild's building/shrine levels — NEW, and
- *         "LI Buildings"     / empty is fine; the first write fills them
- *      There is deliberately NO buildings test tab: the levels block is written
- *      to its own tab and cannot reach a sign-up tab (format mismatch), so the
- *      first buildings write goes straight to the per-guild tab. Enable the
+ *         "SC Buildings"     \ each guild's building/shrine levels — empty is
+ *         "LI Buildings"     / fine; the first write fills them
+ *         "SC Combat Teams"  \ each guild's optimiser-published combat teams —
+ *         "LI Combat Teams"  / NEW, and empty is fine; the first optimiser
+ *                              publish fills them. MACHINE-OWNED: nobody types
+ *                              in them; every publish rewrites them from A1.
+ *      There is deliberately NO buildings or combat test tab: neither block can
+ *      reach a sign-up tab (format mismatch), so neither has anything to
+ *      clobber, and the first write of each goes straight to its per-guild tab.
+ *      For the levels block, enable the
  *      module's "Also sync building/shrine levels" and leave "Force Buildings
  *      tab (testing)" EMPTY.
  *
@@ -76,21 +88,27 @@ var SHARED_SECRET = 'PASTE_A_LONG_RANDOM_SECRET_HERE';
 // allowlist: doPost still never CREATES a tab — every name here must exist.
 //   'signup'    header[0] = "User"      roster + trial sign-ups (guild-signup-sync)
 //   'buildings' header[0] = "Building"  guild building / shrine levels
+//   'combat'    header[0] = "Member"    the optimiser's combat teams (SCLIRoster)
 //   "SC …" — Survey Corps (guild id 4);  "LI …" — Lactose lntolerance (guild id 240)
 var TAB_FORMAT = {
   'chikenz-test':    'signup',
   'SC Trial Signup': 'signup',
   'LI Trial Signup': 'signup',
   'SC Buildings':    'buildings',
-  'LI Buildings':    'buildings'
+  'LI Buildings':    'buildings',
+  'SC Combat Teams': 'combat',
+  'LI Combat Teams': 'combat'
 };
 var ALLOWED_TABS = Object.keys(TAB_FORMAT);
 
 // The layout is header-driven and width-agnostic: the module sends "User" plus
 // however many tick columns this week's draw needs (compact = 4 skills + 2
 // combat = 7 columns; a full-skills layout = 13). A buildings block is a fixed
-// 6. The only hard invariant is that col 0 names the format ("User" or
-// "Building"); this floor just rejects an obviously-truncated payload.
+// 6, a combat block a fixed 7 — but neither width is asserted here, because the
+// PYTHON readers guard their own headers cell by cell and a width check here
+// would be a second, drifting copy of that contract. The only hard invariant is
+// that col 0 names the format ("User", "Building" or "Member"); this floor just
+// rejects an obviously-truncated payload.
 var MIN_COLS = 3;
 
 function doPost(e) {
@@ -121,7 +139,7 @@ function doPost(e) {
     }
     var format = formatOf_(header);
     if (!format) {
-      return json_({ ok: false, error: 'bad header: col 0 must be "User" (sign-ups) or "Building" (levels)' });
+      return json_({ ok: false, error: 'bad header: col 0 must be "User" (sign-ups), "Building" (levels) or "Member" (combat teams)' });
     }
     if (TAB_FORMAT[tab] !== format) {
       return json_({ ok: false, error: 'format mismatch: a ' + format + ' block may not be written to "' + tab + '" (' + TAB_FORMAT[tab] + ' tab)' });
@@ -150,7 +168,7 @@ function doPost(e) {
     var out = [header.slice()];
     for (var r = 0; r < rows.length; r++) {
       var src = rows[r];
-      var line = [String(src[0])];               // User name / Building name (text)
+      var line = [String(src[0])];               // User / Building / Member name (text)
       for (var c = 1; c < nCols; c++) {
         line.push(format === 'signup' ? truthy_(src[c]) : cell_(src[c]));
       }
@@ -199,16 +217,21 @@ function truthy_(v) {
   return !!v;
 }
 
-// "User" → sign-up block, "Building" → levels block, anything else → refused.
+// "User" → sign-up block, "Building" → levels block, "Member" → combat teams,
+// anything else → refused. Col 0 is the whole sentinel: it is the one cell every
+// writer of a given block agrees on, and it is what guild/src/config.py's
+// *_SENTINEL_HEADERS check first when reading the tab back.
 function formatOf_(header) {
   var h0 = String(header[0]);
   if (h0 === 'User') return 'signup';
   if (h0 === 'Building') return 'buildings';
+  if (h0 === 'Member') return 'combat';
   return null;
 }
 
-// Levels block cells: numbers stay numbers (so Level is a real integer cell),
-// null/undefined become blank, everything else is written as text.
+// Non-sign-up block cells (levels, combat teams): numbers stay numbers, so
+// Level and Guild Id are real numeric cells; null/undefined become blank, and
+// everything else is written as text.
 function cell_(v) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'number') return v;

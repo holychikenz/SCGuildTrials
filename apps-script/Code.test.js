@@ -1,5 +1,5 @@
 // =============================================================================
-// Tests — apps-script/Code.gs  (the SIGN-UP + BUILDINGS write endpoint)
+// Tests — apps-script/Code.gs  (the SIGN-UP + BUILDINGS + COMBAT write endpoint)
 // -----------------------------------------------------------------------------
 // Run:  node --test apps-script/Code.test.js
 //
@@ -8,9 +8,10 @@
 // spreadsheet, and the only other way to exercise it is Deploy → new version →
 // poke the real sheet.
 //
-// One endpoint now carries TWO mutually destructive block formats — a sign-up
-// roster and a block of building/shrine levels — so what is pinned here is
-// mostly the interlock that keeps them apart:
+// One endpoint now carries THREE mutually destructive block formats — a
+// sign-up roster, a block of building/shrine levels, and the optimiser's
+// combat teams — so what is pinned here is mostly the interlock that keeps
+// them apart:
 //
 //   1) A buildings block reaches its own tab, and `Level` lands as a real
 //      NUMBER. A stringified level would sort and chart as text on the sheet.
@@ -23,8 +24,14 @@
 //      two tab settings, so a mis-set tab name is an easy slip.
 //   4) REGRESSION — sign-ups still behave exactly as before, ticks coerced to
 //      native booleans. The format guard is new code on the live roster path.
-//   5) The allowlist still refuses an unknown tab, and holds exactly the five
-//      real tabs. There is deliberately no buildings test tab.
+//   5) The allowlist still refuses an unknown tab, and holds exactly the seven
+//      real tabs. There is deliberately no buildings or combat test tab.
+//   6) A combat block reaches its own tab with `Guild Id` numeric and the hrid
+//      intact, and the interlock is THREE-way, not two: every one of the six
+//      wrong-tab pairings is refused. The combat writer is a different program
+//      from the other two (the optimiser, a Node CLI), holding this endpoint's
+//      URL and its own tab names, so a mis-set name is the same easy slip —
+//      and this block's tabs sit beside the hand-maintained ones.
 // =============================================================================
 "use strict";
 
@@ -132,6 +139,18 @@ const S_ROWS = [
     ["IronOwl", "FALSE", "FALSE", "TRUE", "FALSE", "FALSE", "TRUE"],
 ];
 
+// A combat-teams block, exactly the shape the optimiser's combatRowsFromAssignment
+// emits (SCLIRoster optimizer/src/publish/combatTab.js). Two seats of one team and
+// one of another, so the grouping the Python reader does has something to group.
+const C_HEADER = ["Member", "Trial Hrid", "Team", "Role", "Slot", "Guild Id", "Generated At"];
+function combatRows(guildId = 4, at = AT) {
+    return [
+        ["Yedic", "/guild_combat/chameleon", "SC Team 1", "tank", "tank 1", guildId, at],
+        ["Pipsqueak", "/guild_combat/chameleon", "SC Team 1", "cursed", "cursed 1", guildId, at],
+        ["IronOwl", "/guild_combat/hedgehog", "SC Team 2", "healer_blooming", "healer_blooming 1", guildId, at],
+    ];
+}
+
 // --- 1. the buildings happy path --------------------------------------------
 
 test("a buildings block is written to its own tab, with Level as a real number", (t) => {
@@ -214,7 +233,11 @@ test("a header naming neither format is refused before any tab is opened", (t) =
     });
 
     assert.strictEqual(res.ok, false);
-    assert.match(res.error, /col 0 must be "User" \(sign-ups\) or "Building" \(levels\)/);
+    // Three formats now, so the refusal names all three. A header that matches
+    // none of them must be refused BEFORE the tab is opened — this is the guard
+    // that stands between a typo'd header and a clear-and-rewrite from A1.
+    assert.match(res.error,
+        /col 0 must be "User" \(sign-ups\), "Building" \(levels\) or "Member" \(combat teams\)/);
     assert.strictEqual(sh.getLastRow(), 0);
 });
 
@@ -273,24 +296,132 @@ test("an unknown tab is refused before the format is even considered", (t) => {
     assert.match(res.error, /tab not allowed: Nope/);
 });
 
-test("doGet lists exactly the five real tabs, with their formats", (t) => {
+test("doGet lists exactly the seven real tabs, with their formats", (t) => {
     const ctx = load({});
     const res = JSON.parse(ctx.doGet()._text);
 
     assert.strictEqual(res.ok, true);
     assert.strictEqual(res.service, "guild-signup-sync");
-    assert.strictEqual(res.allowedTabs.length, 5,
-        "five tabs: three sign-up, two buildings — there is NO buildings test tab");
+    assert.strictEqual(res.allowedTabs.length, 7,
+        "seven tabs: three sign-up, two buildings, two combat — there is NO " +
+        "buildings or combat test tab");
     assert.deepStrictEqual(res.allowedTabs.slice().sort(), [
-        "LI Buildings", "LI Trial Signup", "SC Buildings", "SC Trial Signup", "chikenz-test",
+        "LI Buildings", "LI Combat Teams", "LI Trial Signup",
+        "SC Buildings", "SC Combat Teams", "SC Trial Signup", "chikenz-test",
     ]);
+    // doGet is the deployment's own health check: opening the /exec URL in a
+    // browser is how the operator confirms a re-deploy actually took, so this
+    // map is a shipped contract, not an internal detail.
     assert.deepStrictEqual(res.tabFormats, {
         "chikenz-test": "signup",
         "SC Trial Signup": "signup",
         "LI Trial Signup": "signup",
         "SC Buildings": "buildings",
         "LI Buildings": "buildings",
+        "SC Combat Teams": "combat",
+        "LI Combat Teams": "combat",
     });
+});
+
+// --- 6. the combat block, and the three-way interlock -----------------------
+
+test("a combat block is written to its own tab, with Guild Id as a real number " +
+     "and everything else text", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Combat Teams": sh });
+
+    const res = post(ctx, { secret: SECRET, tab: "SC Combat Teams", header: C_HEADER, rows: combatRows(4) });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.tab, "SC Combat Teams");
+    assert.strictEqual(res.format, "combat", "the reply should name the format it wrote");
+    assert.strictEqual(res.wroteRows, 3);
+    assert.strictEqual(res.columns, 7);
+
+    assert.strictEqual(sh._grid[0][0], "Member", "A1 must carry the format's own header");
+    assert.deepStrictEqual(sh._grid[0].slice(0, 7), C_HEADER, "the header goes down verbatim");
+    assert.strictEqual(sh._grid[1][0], "Yedic");
+
+    // The hrid is the contract between the three sides (the optimiser writes it,
+    // combat.py guards its "/guild_combat/" prefix, the userscript derives the
+    // tile slug from it), so it must survive as text, character for character.
+    assert.strictEqual(sh._grid[1][1], "/guild_combat/chameleon");
+    assert.strictEqual(typeof sh._grid[1][1], "string");
+    assert.strictEqual(sh._grid[3][1], "/guild_combat/hedgehog");
+
+    // Guild Id is the wrong-guild guard, and combat.py reads it as an int —
+    // cell_() keeps it a NUMBER. truthy_ would have made it `true`.
+    assert.strictEqual(sh._grid[1][5], 4);
+    assert.strictEqual(typeof sh._grid[1][5], "number", "Guild Id must be a numeric cell");
+    assert.strictEqual(sh._grid[1][6], AT, "the timestamp stays text");
+    assert.strictEqual(sh._grid[2][4], "cursed 1", "the slot label stays text");
+});
+
+test("the combat block goes to either guild's tab, independently", (t) => {
+    const sc = makeSheet([], { maxCols: 26 });
+    const li = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Combat Teams": sc, "LI Combat Teams": li });
+
+    const res = post(ctx, { secret: SECRET, tab: "LI Combat Teams", header: C_HEADER, rows: combatRows(240) });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(li._grid[1][5], 240);
+    assert.strictEqual(sc.getLastRow(), 0, "publishing one guild's teams disturbed the other's tab");
+});
+
+test("a COMBAT block sent to a SIGN-UP tab is refused, and the roster survives", (t) => {
+    // The destructive case for the new format. The optimiser is a separate
+    // program holding this endpoint's URL and its own tab names; a mis-set name
+    // would clear-and-rewrite the roster tab into three rows of team seats.
+    const signup = makeSheet([S_HEADER, ...S_ROWS], { maxCols: S_HEADER.length });
+    const before = JSON.stringify(signup._grid);
+    const ctx = load({ "SC Trial Signup": signup });
+
+    const res = post(ctx, { secret: SECRET, tab: "SC Trial Signup", header: C_HEADER, rows: combatRows(4) });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /format mismatch/);
+    assert.match(res.error, /combat block/, "the error should name the block it refused");
+    assert.match(res.error, /SC Trial Signup/, "and the tab it refused to write");
+    assert.strictEqual(JSON.stringify(signup._grid), before,
+        "the roster tab must be byte-identical — a partial write is still a loss");
+});
+
+test("a SIGN-UP block sent to a COMBAT tab is refused, and the teams survive", (t) => {
+    const combat = makeSheet([C_HEADER, ...combatRows(4)], { maxCols: C_HEADER.length });
+    const before = JSON.stringify(combat._grid);
+    const ctx = load({ "SC Combat Teams": combat });
+
+    const res = post(ctx, { secret: SECRET, tab: "SC Combat Teams", header: S_HEADER, rows: S_ROWS });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /format mismatch/);
+    assert.match(res.error, /signup block/);
+    assert.match(res.error, /SC Combat Teams/);
+    assert.strictEqual(JSON.stringify(combat._grid), before, "the combat tab must be untouched");
+});
+
+test("a BUILDINGS block sent to a COMBAT tab is refused — the interlock is three-way", (t) => {
+    // The pairing nothing else covers. With three formats there are six wrong
+    // pairings, not two, and TAB_FORMAT is what makes them all one rule rather
+    // than a growing list of special cases.
+    const combat = makeSheet([C_HEADER, ...combatRows(4)], { maxCols: C_HEADER.length });
+    const before = JSON.stringify(combat._grid);
+    const ctx = load({ "SC Combat Teams": combat, "SC Buildings": makeSheet() });
+
+    const res = post(ctx, { secret: SECRET, tab: "SC Combat Teams", header: B_HEADER, rows: buildingsRows(4) });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /format mismatch/);
+    assert.match(res.error, /buildings block/);
+    assert.match(res.error, /SC Combat Teams/);
+    assert.strictEqual(JSON.stringify(combat._grid), before);
+
+    // And the mirror, so the third pairing is pinned in both directions.
+    const other = post(ctx, { secret: SECRET, tab: "SC Buildings", header: C_HEADER, rows: combatRows(4) });
+    assert.strictEqual(other.ok, false);
+    assert.match(other.error, /format mismatch/);
+    assert.match(other.error, /combat block/);
 });
 
 // --- guards (unchanged behaviour, re-pinned) --------------------------------

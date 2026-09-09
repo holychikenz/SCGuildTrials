@@ -47,7 +47,7 @@ zero** behaviour change and Phase 2 is the single-line flip the repo's rollback
 discipline demands. The same trick keeps ~60 existing tests untouched (§7).
 
 **Confidence.** The shrine numbers and the guild-point cost curves are read from the
-real dump at `/Users/morgan/pie/cowstuff/milkyway_client_info.json`; every quantitative
+real dump at `/Users/morgan/pie/farm/cowstuff/milkyway_client_info.json`; every quantitative
 claim in §2.2–§2.5 is measured on this repo's own model, and §2.5 on the **live** SC/LI
 rosters. Two things are *not* verified and gate Phase 2 — see §3.
 
@@ -68,7 +68,7 @@ rosters. Two things are *not* verified and gate Phase 2 — see §3.
 
 ### 2.1 Guild shrine skilling buffs — from `guildBuffDetailMap`
 
-Source: `/Users/morgan/pie/cowstuff/milkyway_client_info.json`, `gameVersion
+Source: `/Users/morgan/pie/farm/cowstuff/milkyway_client_info.json`, `gameVersion
 v1.20260715.0`, `versionTimestamp 2026-07-16T03:24:51Z`. **This dump is PRE-patch**
 (Phase 0 refreshes it). Ten buffs, each keyed to a shrine and flagged `isCombat`:
 
@@ -508,7 +508,7 @@ Each phase is independently shippable and independently revertible.
 
 ### Phase 0 — refresh the ground truth, change no behaviour
 
-1. Re-fetch `milkyway_client_info.json` in `~/pie/cowstuff` and confirm the version
+1. Re-fetch `milkyway_client_info.json` in `~/pie/farm/cowstuff` and confirm the version
    bumps past `v1.20260715.0`. Diff `guildBuffDetailMap`, `guildShrineDetailMap`,
    `guildTrialDetailMap` and search for a partial-credit coefficient and a participant
    term (`grep -c partial` was **0** on the pre-patch dump). This is the cheapest possible
@@ -1026,7 +1026,7 @@ already follow the degrade-don't-fail rule `draw.py` established.
 * `research/trial-messages.md` — confirmed work/success formulas; `currentProgress` and
   `currentTrialsData` (the §2.7 verification kit); the headcount linear-vs-compounding
   question at 318-330; guild-building data at 103-152.
-* `/Users/morgan/pie/cowstuff/milkyway_client_info.json` — `guildBuffDetailMap`,
+* `/Users/morgan/pie/farm/cowstuff/milkyway_client_info.json` — `guildBuffDetailMap`,
   `guildShrineDetailMap` (§2.1). **Pre-patch at time of writing.**
 * `config.py:311-331` (`_refine_slack` rationale), `:395-417` (safety-swap rationale),
   `:466-505` (confirmed formulas), `:554-644` (guild buildings + cost curve).

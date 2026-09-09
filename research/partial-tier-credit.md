@@ -717,7 +717,7 @@ and both guilds remain minutes inside the CI budget.
 
 - [ ] **Paste the verbatim patch notes** over §1's paraphrases (Guild Trials 1, 3,
       5, 6, 7; Guild 2, 3; and the missing Guild item 4).
-- [ ] **Refresh `/Users/morgan/pie/cowstuff/milkyway_client_info.json`** past
+- [ ] **Refresh `/Users/morgan/pie/farm/cowstuff/milkyway_client_info.json`** past
       `v1.20260715.0` and re-run the searches: `grep -c partial` was **0** on the
       pre-patch dump (re-verified 2026-08-11), so a non-zero count is itself the
       finding. Diff `guildBuffDetailMap`, `guildShrineDetailMap` and

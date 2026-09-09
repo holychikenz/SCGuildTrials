@@ -1,7 +1,7 @@
 # Milky Way Idle — Guild "Trials" system: real game-server messages
 
 Source: captured websocket logs in
-`/Users/morgan/pie/cowstuff/tampermonkey/.captures/wslog-YYYYMMDD.jsonl`
+`/Users/morgan/pie/farm/cowstuff/tampermonkey/.captures/wslog-YYYYMMDD.jsonl`
 (console-*.jsonl contained no trial references).
 
 Each captured line is a wrapper: `{"t":<ms>,"kind":"ws","sessionId":"...","type":"<T>","payload":{...}}`.

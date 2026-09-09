@@ -11,12 +11,15 @@ import html
 import json
 import os
 import sys
+from collections import Counter
 from concurrent import futures
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import buildings as buildings_model
+from . import combat as combat_model
 from . import config
 from . import draw as draw_model
 from . import gear as gear_model
@@ -24,7 +27,7 @@ from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
 from .processor import process
-from .reader import MemberRow, SheetStructureError, fetch_csv, parse
+from .reader import MemberRow, SheetStructureError, fetch_csv, norm_name, parse
 from .scraper import scrape_member_tab
 
 OUTPUT_DIR = Path("_site")
@@ -141,6 +144,39 @@ class GuildSite:
         return config.shrine_caps(self.key)
 
     @property
+    def buildings_tab(self) -> str:
+        """This guild's building & shrine levels tab (config.BUILDING_TABS).
+
+        A THIRD machine-written tab, and the first that describes the GUILD rather
+        than its members: the in-game Tampermonkey module POSTs guildBuildingLevelMap
+        through the Apps Script endpoint in apps-script/ (see its README). Read only
+        when config.BUILDINGS_SOURCE_ENABLED is on.
+
+        The tabs are created by hand and START EMPTY, so this tab existing does not
+        mean it has been written — buildings.parse_buildings reports that as
+        observed=False and the guild falls back to config.GUILD_BUILDING_LEVELS.
+        """
+        return config.BUILDING_TABS[self.key]
+
+    @property
+    def combat_tab(self) -> str:
+        """This guild's machine-owned combat teams tab (config.COMBAT_TABS).
+
+        A FOURTH machine-written tab, and the only one written by something outside
+        this repository: the combat-trial optimiser in ~/pie/SCLIRoster POSTs its
+        recommended teams through the same Apps Script endpoint in apps-script/ (see
+        its README), and src/combat.py reads them. Read only when
+        config.COMBAT_SOURCE_ENABLED is on.
+
+        MACHINE-OWNED: nobody types in it, and every publish clears and rewrites it
+        from A1. Like the Buildings tabs it is created by hand and STARTS EMPTY, so
+        this tab existing does not mean it has been published to —
+        combat.parse_combat reports that as observed=False and trials.json says
+        `available: false` with the reason in words.
+        """
+        return config.COMBAT_TABS[self.key]
+
+    @property
     def out_dir(self) -> Path:
         return OUTPUT_DIR / self.subdir if self.subdir else OUTPUT_DIR
 
@@ -178,6 +214,7 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
     """
     member_count = inputs.register.get("member_count", len(inputs.members))
     prov = inputs.roster_provenance
+    buildings_age = _capture_age_days(inputs.buildings_captured_at)
     out = {
         "enabled": bool(config.ROSTER_SOURCE_ENABLED),
         "source": "manual tab",
@@ -214,6 +251,29 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
         "gear_imputed_by_slot": {},
         "gear_refused_statistics": [],
         "gear_stats": None,
+        # --- guild buildings (src/buildings.py) ----------------------------
+        # The GUILD's own levels, not any member's, so these sit apart from every
+        # count above. `buildings_source` is the tab when there is an observation
+        # and config.GUILD_BUILDING_LEVELS when there is not, because "which
+        # numbers ran" is the question a reader of any of the three artefacts is
+        # actually asking. `buildings_unavailable` distinguishes a tab that has
+        # never been written from one that could not be read.
+        "buildings_enabled": bool(config.BUILDINGS_SOURCE_ENABLED),
+        "buildings_source": (
+            config.BUILDING_TABS.get(inputs.site_key, "")
+            if inputs.buildings_captured_at
+            else "config.GUILD_BUILDING_LEVELS"
+        ),
+        "buildings_captured_at": inputs.buildings_captured_at,
+        # _capture_age_days and ROSTER_MAX_AGE_DAYS are REUSED rather than twinned —
+        # see the note beside BUILDING_HRID_TO_SKILL in config: a building level moves
+        # more slowly than a member's, so the roster's threshold is conservative here,
+        # and a second constant would be a second thing to drift.
+        "buildings_age_days": buildings_age,
+        "buildings_stale": (
+            buildings_age is not None and buildings_age > config.ROSTER_MAX_AGE_DAYS
+        ),
+        "buildings_unavailable": inputs.buildings_unavailable,
     }
     if prov is None:
         return out
@@ -534,8 +594,104 @@ def _badge(present: bool, label: str) -> str:
     return f'<span class="{cls}" title="{html.escape(label)}">{label[0]}</span>'
 
 
+def _attach_week(register: dict, week: Optional[dict], draw_warning: str) -> None:
+    """Project this week's assignments onto the register, in place.
+
+    data.json and index.html answer "what does each member have"; trials.json answers
+    "what is each member doing this week". A reader who wanted both fetched both, and
+    the in-game script that motivates this has one fetch to spend. So the register now
+    CARRIES a compact projection of the week: a top-level ``week`` block (the parties as
+    name lists, the bench, the draw, whether it may be stale) and a per-member ``trial``
+    stamp. trials.json is untouched and stays the full record — this copies OUT of
+    ``week`` and never aliases into it, so nothing done to the register can leak back.
+
+    THE JOIN IS BY NAME, exact first and then ``reader.norm_name``, under ``roster.join``'s
+    ambiguity rule: a normalised key held by two distinct names on EITHER side matches
+    nobody through normalisation. The two sides are different exports — the register is
+    the UNMERGED member tab (for SC the gid=0 CSV; ``_fetch_guild``) and the trials seat
+    the roster-MERGED members, which include roster-only members the tab has never heard
+    of. Neither side is dropped: a seated name with no register row goes in
+    ``not_on_register`` (the register may not grow a row for it — index.html mirrors the
+    officers' tab, README "Where member data comes from"), and a register member the
+    optimiser never saw is stamped ``unassigned`` and listed, which should not happen
+    (``roster.merge`` copies every manual member) and is a WARNING when it does.
+
+    ``week_date`` is copied as trials.json carries it — the BUILD date (trials.run_week),
+    the draw source publishing no cycle date (draw.TrialDraw). A consumer that wants to
+    know whether this block is current compares ``generated_at`` with trials.json's.
+    """
+    if week is None:
+        register["week"] = None
+        return
+
+    # Who is where: seated names in draw order (a member is in at most one party by
+    # construction), then the bench. Insertion order is kept for every list below so a
+    # rebuild of the same week diffs clean.
+    seat: dict[str, tuple[Optional[str], str]] = {}
+    for trial in week["trials"]:
+        for entry in trial["roster"]:
+            seat.setdefault(entry["name"], (trial["skill"], "assigned"))
+    for name in week.get("bench") or []:
+        seat.setdefault(name, (None, "bench"))
+
+    members = register["members"]
+    ambiguous = {
+        k for k, c in Counter(norm_name(n) for n in seat).items() if c > 1
+    } | {
+        k for k, c in Counter(norm_name(m["name"]) for m in members).items() if c > 1
+    }
+    by_norm: dict[str, str] = {}
+    for name in seat:
+        by_norm.setdefault(norm_name(name), name)
+
+    claimed: set[str] = set()
+    unassigned: list[str] = []
+    for m in members:
+        hit = m["name"] if m["name"] in seat else None
+        if hit is None and norm_name(m["name"]) not in ambiguous:
+            hit = by_norm.get(norm_name(m["name"]))
+        if hit is None:
+            m["trial"] = {"skill": None, "status": "unassigned"}
+            unassigned.append(m["name"])
+        else:
+            skill, status = seat[hit]
+            m["trial"] = {"skill": skill, "status": status}
+            claimed.add(hit)
+
+    register["week"] = {
+        "generated_at": week["generated_at"],
+        "week_date": week["week_date"],
+        "skills": list(week["skills"]),
+        "draw_stale": bool(draw_warning),
+        "draw_warning": draw_warning,
+        "community_buff_level": week["community_buff_level"],
+        "total_points": week["total_points"],
+        "total_credit_points": week["total_credit_points"],
+        "parties": [
+            {
+                "skill": t["skill"],
+                "party_size": t["party_size"],
+                "tier_reached": t["tier_reached"],
+                "points": t["points"],
+                "credit_points": _credit_points(t),
+                "clear_probability": t.get("clear_probability"),
+                # The trials page's own default order (rate at the final tier,
+                # descending), so the two pages name a party in the same order.
+                "members": [r["name"] for r in _sorted_roster(t)],
+            }
+            for t in week["trials"]
+        ],
+        "bench": list(week.get("bench") or []),
+        "not_on_register": [n for n in seat if n not in claimed],
+        "unassigned": unassigned,
+    }
+
+
 def _render_html(data: dict, site: "GuildSite") -> str:
     skills = data["skills"]
+    # This week's assignments, when the register carries them (_attach_week). None or
+    # absent renders the page exactly as it was: no banner, no section, no column.
+    week = data.get("week")
 
     # Summary table header cells.
     summary_rows = "".join(
@@ -553,6 +709,8 @@ def _render_html(data: dict, site: "GuildSite") -> str:
     # Members table header: Member | Main | Flex | <skill> x N.
     skill_headers = "".join(f"<th>{html.escape(s)}</th>" for s in skills)
 
+    trial_header = "<th>Trial</th>" if week is not None else ""
+
     member_rows = []
     for m in data["members"]:
         cells = [
@@ -560,6 +718,11 @@ def _render_html(data: dict, site: "GuildSite") -> str:
             f"<td>{html.escape(m['main_classes'])}</td>",
             f"<td>{html.escape(m['flex'])}</td>",
         ]
+        if week is not None:
+            stamp = m.get("trial") or {"skill": None, "status": "unassigned"}
+            label = stamp["skill"] or stamp["status"]
+            cls = "trialcell" if stamp["skill"] else "trialcell muted"
+            cells.append(f'<td class="{cls}">{html.escape(label)}</td>')
         for skill in skills:
             entry = m["skills"][skill]
             level = "" if entry["level"] is None else entry["level"]
@@ -576,6 +739,51 @@ def _render_html(data: dict, site: "GuildSite") -> str:
 
     members_html = "".join(member_rows)
 
+    alert_html = ""
+    week_section = ""
+    if week is not None:
+        if week["draw_stale"]:
+            # The same banner trials.html shows, for the same reason: first thing on
+            # the page, so a fallback draw cannot be mistaken for a live one.
+            alert_html = (
+                '<div class="alert" role="alert"><strong>Draw may be stale.</strong> '
+                f"{html.escape(week['draw_warning'])}</div>"
+            )
+        party_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(p['skill'])}</td>"
+            f"<td class=num>{p['party_size']}</td>"
+            f"<td class=num>{p['tier_reached']}</td>"
+            f"<td class=num>{_cp(p['credit_points'])}</td>"
+            "</tr>"
+            for p in week["parties"]
+        )
+        bench_note = (
+            " &middot; bench: " + html.escape(", ".join(week["bench"]))
+            if week["bench"] else ""
+        )
+        # Roster-only members are seated but have no row here (index.html mirrors
+        # the officers' tab). Named, so the page drops nobody either.
+        extra_note = (
+            '<p class="meta">Also seated, but not on this tab: '
+            f"{html.escape(', '.join(week['not_on_register']))}.</p>"
+            if week["not_on_register"] else ""
+        )
+        week_section = f"""
+  <h2>This week's trials</h2>
+  <p class="meta">Week of {html.escape(week['week_date'])} &middot;
+     {html.escape(', '.join(week['skills']))}{bench_note} &middot;
+     full detail on the <a href="trials.html">Guild Trials</a> page.</p>
+  {extra_note}
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Skill</th><th class=num>Party</th><th class=num>Tier</th>
+                 <th class=num>Credit pts</th></tr></thead>
+      <tbody>{party_rows}</tbody>
+    </table>
+  </div>
+"""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -586,7 +794,7 @@ def _render_html(data: dict, site: "GuildSite") -> str:
   :root {{
     --bg: #0f1115; --panel: #171a21; --line: #2a2f3a;
     --text: #e6e8ec; --muted: #99a0ad; --accent: #6ea8fe;
-    --on: #3ecf8e; --off: #3a3f4b;
+    --on: #3ecf8e; --off: #3a3f4b; --warn: #e0b341;
   }}
   * {{ box-sizing: border-box; }}
   body {{
@@ -618,6 +826,10 @@ def _render_html(data: dict, site: "GuildSite") -> str:
   .nav {{ margin: .5rem 0 0; font-size: .95rem; }}
   .nav a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
   .nav a:hover {{ text-decoration: underline; }}
+  .alert {{ background: #2a1f10; border: 1px solid var(--warn); color: #f2dca6;
+            border-radius: 8px; padding: .8rem 1rem; margin: 0 0 1.25rem;
+            font-size: .9rem; }}
+  .trialcell.muted {{ color: var(--muted); font-style: italic; }}
   footer {{ max-width: 1100px; margin: 2rem auto 0; color: var(--muted); font-size: .8rem; }}
 </style>
 </head>
@@ -630,6 +842,7 @@ def _render_html(data: dict, site: "GuildSite") -> str:
      &nbsp;&middot;&nbsp; <a href="{site.sibling_home}">{html.escape(site.sibling_title)} &rarr;</a></p>
 </header>
 <main>
+  {alert_html}{week_section}
   <h2>Per-skill summary</h2>
   <div class="scroll">
     <table>
@@ -647,7 +860,7 @@ def _render_html(data: dict, site: "GuildSite") -> str:
   <div class="scroll">
     <table>
       <thead>
-        <tr><th>Member</th><th>Main</th><th>Flex</th>{skill_headers}</tr>
+        <tr><th>Member</th><th>Main</th><th>Flex</th>{trial_header}{skill_headers}</tr>
       </thead>
       <tbody>{members_html}</tbody>
     </table>
@@ -1594,6 +1807,50 @@ def _assignment_footnote(week: dict) -> str:
         f"Optimised assignment (Phase 2). Parties are chosen by {_strategy_phrase(strategy)} "
         "to maximise total guild points against the simulate_race model, honouring "
         f"the {week['cap']}-per-party cap; members who would only lower a party's tier are benched."
+    )
+
+
+def _buildings_source_phrase(week: dict) -> str:
+    """Where this page's guild-building levels came from, and how old they are.
+
+    THIS SENTENCE USED TO SAY THE OPPOSITE — "entered by hand in
+    config.GUILD_BUILDING_LEVELS for now, not read from the sheet" — and became false
+    on 2026-09-09 when the levels started arriving from each guild's Buildings tab.
+    It is a function rather than a constant because the answer now differs per guild
+    and per build: SC reads its tab, LI's tab has never been written, and either can
+    fall back.
+
+    Reads the provenance block attached to ``week`` with ``.get``, following
+    ``_provenance_placeholder``'s established convention — an old published
+    trials.json must still render, and it carries none of these keys.
+    """
+    prov = week.get("provenance") or {}
+    tab = prov.get("buildings_source") or ""
+    captured = prov.get("buildings_captured_at") or ""
+    unavailable = prov.get("buildings_unavailable") or ""
+
+    if captured and tab:
+        stale = (
+            f" &mdash; older than {config.ROSTER_MAX_AGE_DAYS} days, so treat it as "
+            f"possibly behind the guild"
+            if prov.get("buildings_stale")
+            else ""
+        )
+        return (
+            f"Levels are read from this guild&rsquo;s "
+            f"<code>{html.escape(tab)}</code> tab, written from the game itself "
+            f"(captured <code>{html.escape(captured)}</code>{stale}):"
+        )
+
+    # No observation. Say which of the two reasons, because the remedies differ: an
+    # unwritten tab fills itself, an unreadable one needs somebody to look.
+    reason = (
+        f" {html.escape(unavailable)}" if unavailable else ""
+    )
+    return (
+        f"No building levels were read for this guild, so the modelled levels are "
+        f"the configured fallback in <code>config.GUILD_BUILDING_LEVELS</code>."
+        f"{reason} On those levels:"
     )
 
 
@@ -2742,9 +2999,8 @@ def _render_trials_html(
         building cap of level&nbsp;20. Those levels are added to each member's own
         level in the success calc above (the <em>BuildingSkillLevels</em> term)
         but deliberately <em>not</em> to work power, which no capture has yet
-        confirmed. Building levels are entered by hand in
-        <code>config.GUILD_BUILDING_LEVELS</code> for now, not read from the
-        sheet: {_guild_buildings_footnote(week)}. The
+        confirmed. {_buildings_source_phrase(week)}
+        {_guild_buildings_footnote(week)}. The
         <a href="#upgrades-section">upgrade section</a> above works out how many
         levels of each drawn building would buy another tier, what that costs in
         total, and how many weeks the spend takes to earn itself back.</li>
@@ -4039,6 +4295,29 @@ class _GuildInputs:
     # Non-empty when the roster tab could not be read: the reason, for the warning
     # and the on-page banner. The build still ships, from the manual tab.
     roster_unavailable: str = ""
+    # This guild's LIVE guild-building levels, keyed by trial skill name, from its
+    # Buildings tab. Empty when the tab is off, unreadable, or has never been
+    # written — in which case the guild runs on config.GUILD_BUILDING_LEVELS. Bound
+    # around the optimiser by trials.guild_building_levels_scope in _compute_unit.
+    building_levels: dict[str, int] = field(default_factory=dict)
+    # The Buildings capture's ISO-8601 stamp, for the page and the CI summary. "" when
+    # there is no observation. Outlined past config.ROSTER_MAX_AGE_DAYS, a banner and
+    # not a cutoff — the tab is written only when a member running the module opens
+    # the guild panel, and an old capture still beats the zeros it replaces.
+    buildings_captured_at: str = ""
+    # Non-empty when the levels could not be used: EITHER the tab has never been
+    # written (normal, and LI's position today) OR it could not be read. Those are
+    # different things an officer would act on differently, so the text says which.
+    buildings_unavailable: str = ""
+    # The optimiser's published combat teams (combat.GuildCombat), or None when they
+    # were not read at all — the flag is off, or the tab could not be parsed.
+    # Attached to trials.json by _write_guild as the `combat` key. Picklable
+    # dataclass, like everything else here.
+    combat: Optional["combat_model.GuildCombat"] = None
+    # Non-empty when the block is not usable: never written, unreadable, stale against
+    # the sign-up header, or the flag is off. The text is what trials.json publishes
+    # verbatim, so the userscript can show the reason rather than an empty tile grid.
+    combat_unavailable: str = ""
     # Filled by main() in the render phase from the published unit's result. Not an
     # input — it lives here so one object carries everything _write_guild needs.
     plan_dict: Optional[dict] = None
@@ -4250,6 +4529,94 @@ def _report_gear(site: "GuildSite", prov: "roster_model.Provenance") -> None:
         )
 
 
+def _fetch_combat(
+    site: "GuildSite", signup_csv: str
+) -> tuple[Optional["combat_model.GuildCombat"], str]:
+    """Read this guild's published combat teams, and say why not when it cannot.
+
+    THE ONE RULE THIS FUNCTION EXISTS TO ENFORCE: combat data can never stop the
+    deploy. SC is required=True, and on 2026-07-25 a required parse failure took down
+    every page of BOTH guilds (config.py's incident note). So every non-network
+    failure mode — the tab missing (which arrives as gviz serving the FIRST tab's
+    prose, not as an error), a hand edit, the optimiser's header changing, another
+    guild's id, a skilling hrid, a blank name, an unreadable sign-up header, a stale
+    pair — comes back as ``(maybe-an-observation, reason)`` with a non-empty human
+    reason, is printed to stderr, and lets the build ship. The same shape as the
+    roster and buildings blocks in _fetch_guild, and for the same reason.
+
+    A network ``RuntimeError`` DOES propagate, exactly as it does for every other tab
+    (see the roster and buildings blocks): the same host serves the member tab, which
+    would have failed first, so there is no page to ship either way.
+
+    ``signup_csv`` is this guild's own sign-up tab, already fetched by the caller, for
+    the boss cross-check. "" (the fetch itself failed structurally) reaches
+    combat.signup_combat_pair, which refuses it as "cannot cross-check" — the right
+    answer, because an unverified pair is exactly what the guard exists to withhold.
+
+    Returns:
+        (observation-or-None, reason). The reason is "" only when the block is
+        usable; it is what trials.json publishes verbatim in ``unavailable``.
+    """
+    observed: Optional["combat_model.GuildCombat"] = None
+    reason = ""
+
+    if not config.COMBAT_SOURCE_ENABLED:
+        # GATED AT THE FETCH, like ROSTER_SOURCE_ENABLED: with the flag off the build
+        # does not talk to the tab at all, so the rollback also covers the case where
+        # the optimiser's writer is the thing that is broken. _write_guild checks the
+        # same flag and attaches no key, so trials.json is byte-identical to before.
+        reason = (
+            "config.COMBAT_SOURCE_ENABLED is off, so no combat teams are published."
+        )
+    else:
+        try:
+            observed = combat_model.scrape_combat_tab(site.combat_tab, site.key)
+        except SheetStructureError as exc:
+            # The tab may simply not exist yet: gviz serves the spreadsheet's FIRST
+            # tab for a name it cannot find, so a missing tab lands here as a header
+            # mismatch rather than as emptiness. combat.py's guard text says so.
+            observed = None
+            reason = (
+                f"The {site.combat_tab!r} tab could not be read, so no combat teams "
+                f"are published for this guild. Reason: {exc}"
+            )
+        else:
+            if not observed.observed:
+                # NOT a failure. The tab is created by hand and empty, and the
+                # optimiser has not published to it yet. Kept distinct from "could
+                # not be read": the remedy differs, and an officer acts on the words.
+                reason = (
+                    f"The {site.combat_tab!r} tab exists but has never been "
+                    f"written — it fills the first time the optimiser runs "
+                    f"`report --publish-combat`."
+                )
+            else:
+                try:
+                    pair = combat_model.signup_combat_pair(
+                        signup_csv, site.signup_tab
+                    )
+                except SheetStructureError as exc:
+                    reason = (
+                        f"Cannot cross-check the {site.combat_tab!r} tab: this "
+                        f"guild's {site.signup_tab!r} header could not be read, so "
+                        f"there is nothing to check this week's bosses against. An "
+                        f"unverified pair is exactly what the guard withholds. "
+                        f"Reason: {exc}"
+                    )
+                else:
+                    reason = combat_model.cross_check(observed, pair)
+
+    if reason:
+        # One line, one shape, every failure mode — including the flag, so a build
+        # log always says why a guild has no combat block rather than leaving its
+        # absence to be inferred.
+        print(
+            f"WARNING ({site.key}): combat teams unavailable — {reason}",
+            file=sys.stderr,
+        )
+    return observed, reason
+
+
 def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _GuildInputs:
     """Fetch one guild's sheet inputs and validate its sign-up tab against the draw.
 
@@ -4332,6 +4699,60 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             )
             _report_roster_join(site, roster_provenance)
 
+    # --- The guild's own building & shrine levels --------------------------------
+    # THE ONLY SOURCE HERE THAT DESCRIBES THE GUILD RATHER THAN ITS MEMBERS, and
+    # before 2026-09-09 the ten skilling levels were typed into
+    # config.GUILD_BUILDING_LEVELS by hand — one map shared by both guilds.
+    #
+    # DEGRADES exactly as the roster block above does, and for the identical reason:
+    # SC is required=True, so an uncaught SheetStructureError here would take down
+    # every page of BOTH guilds over a second-order input. A network RuntimeError
+    # still propagates and fails the build. What we fall back TO is the config map,
+    # which is all zeros — i.e. today's shipped behaviour, not a stale guess.
+    building_levels: dict[str, int] = {}
+    buildings_captured_at = ""
+    buildings_unavailable = ""
+    if config.BUILDINGS_SOURCE_ENABLED:
+        try:
+            observation = buildings_model.scrape_buildings_tab(
+                site.buildings_tab, site.key
+            )
+        except SheetStructureError as exc:
+            buildings_unavailable = (
+                f"The {site.buildings_tab!r} tab could not be read, so this guild's "
+                f"guild-building levels come from config.GUILD_BUILDING_LEVELS "
+                f"instead. Reason: {exc}"
+            )
+            print(
+                f"WARNING ({site.key}): buildings tab unreadable, falling back to "
+                f"the configured levels:\n{exc}",
+                file=sys.stderr,
+            )
+        else:
+            if observation.observed:
+                building_levels = observation.skill_levels
+                buildings_captured_at = observation.captured_at
+            else:
+                # NOT a failure. The tabs are created by hand and empty, and this one
+                # has never been written. Said in the words an officer can act on,
+                # and kept distinct from "could not be read" — the remedy differs.
+                buildings_unavailable = (
+                    f"The {site.buildings_tab!r} tab exists but has never been "
+                    f"written, so no guild building is modelled for this guild. It "
+                    f"fills itself the first time a member running the in-game "
+                    f"sync module opens the guild panel."
+                )
+                print(
+                    f"WARNING ({site.key}): {site.buildings_tab} is empty; "
+                    f"guild-building levels fall back to the configured zeros",
+                    file=sys.stderr,
+                )
+    else:
+        buildings_unavailable = (
+            "config.BUILDINGS_SOURCE_ENABLED is off, so guild-building levels come "
+            "from config.GUILD_BUILDING_LEVELS rather than from the sheet."
+        )
+
     # --- The sign-up tab, and whether it is talking about THIS week --------------
     # A SheetStructureError here means this guild's sign-up tab no longer carries the
     # tick-box sign-up table (e.g. trials went "free-assigned" and the tab was
@@ -4341,6 +4762,11 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     picks: Optional[dict[str, set[str]]] = None
     unavailable = ""
     unavailable_short = ""
+    # Bound before the try so the name exists on every path out of it. It already did
+    # wherever the fetch SUCCEEDED, but _fetch_combat below reads it and a reader
+    # should not have to prove that from the exception flow; "" is the right value
+    # for it, and combat.signup_combat_pair refuses "" as "cannot cross-check".
+    signup_csv = ""
     try:
         signup_csv = signup_model.fetch_signup_csv(site.signup_tab)
         tab_skills = draw_model.trial_columns(signup_csv, site.signup_tab)
@@ -4385,6 +4811,12 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             file=sys.stderr,
         )
 
+    # --- The optimiser's published combat teams ---------------------------------
+    # AFTER the sign-up tab, because the cross-check needs its header: the tab's two
+    # bosses must equal (as a set) the two the game put in this guild's own sign-up
+    # columns F-G. Never stops the deploy — see _fetch_combat's docstring.
+    combat, combat_unavailable = _fetch_combat(site, signup_csv)
+
     return _GuildInputs(
         site_key=site.key,
         members=members,
@@ -4394,6 +4826,11 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
         signup_unavailable_short=unavailable_short,
         roster_provenance=roster_provenance,
         roster_unavailable=roster_unavailable,
+        building_levels=building_levels,
+        buildings_captured_at=buildings_captured_at,
+        buildings_unavailable=buildings_unavailable,
+        combat=combat,
+        combat_unavailable=combat_unavailable,
     )
 
 
@@ -4407,6 +4844,10 @@ def _compute_unit(job: dict) -> dict:
     config.COMMUNITY_BUFF_LEVEL says) or a ladder level for a counterfactual, run
     inside trials.community_buff_level — which is why this must be a process of its
     own rather than a thread (that context manager rebinds config globals).
+
+    ``job["building_levels"]`` is this guild's live guild-building levels, bound
+    around the whole unit; ``{}`` means no observation and runs on
+    ``config.GUILD_BUILDING_LEVELS``.
 
     ``job["picks"]`` is None for a counterfactual unit and the parsed sign-up ticks
     for the published one. The sign-up plan is deliberately computed HERE, in the same
@@ -4423,30 +4864,44 @@ def _compute_unit(job: dict) -> dict:
     shrine_caps = job["shrine_caps"]
 
     ladder: dict = {}
-    if level is None:
-        # The published unit also rates its own plan at every rung of the buff
-        # ladder, for the page's level selector. It is the SAME search — one
-        # optimize() call, twenty score_assignment() calls at ~2ms each — so the
-        # ladder is free beside the unit that carries it, and could not be computed
-        # anywhere else without redoing the search or shipping the parties between
-        # processes.
-        if config.TRIALS_BUFF_LEVEL_SLIDER:
-            week, rungs = trials_model.run_week_ladder(
-                members, skills=skills, cap=cap, min_levels=min_levels,
-                shrine_caps=shrine_caps,
-            )
-            ladder = {str(k): v.to_dict() for k, v in rungs.items()}
+    # THE GUILD'S LIVE BUILDING LEVELS, bound for the whole unit. Every reader of
+    # config.GUILD_BUILDING_LEVELS reads it at call time — the success calc, the
+    # optimiser's hot loop, the upgrade probes and WeekResult's own record of what it
+    # ran under — so one scope here reaches all of them, and the WeekResult the page
+    # renders necessarily agrees with the race that produced it. Empty levels are a
+    # no-op, so a guild with no observation is bit-identical to before this source
+    # existed. See trials.guild_building_levels_scope for why this binds rather than
+    # threading a parameter, and why doing so is safe HERE in particular.
+    # `.get`, not `[...]`, and unlike `cap` deliberately: an ABSENT key means "no
+    # observation", which is a legitimate state (LI's, today) and resolves to the
+    # config fallback. A missing `cap` must raise, because a default there would
+    # silently mis-plan a page — which is what that test guards. The link that could
+    # actually break here is _unit_jobs dropping the key, and that has its own test.
+    with trials_model.guild_building_levels_scope(job.get("building_levels")):
+        if level is None:
+            # The published unit also rates its own plan at every rung of the buff
+            # ladder, for the page's level selector. It is the SAME search — one
+            # optimize() call, twenty score_assignment() calls at ~2ms each — so the
+            # ladder is free beside the unit that carries it, and could not be
+            # computed anywhere else without redoing the search or shipping the
+            # parties between processes.
+            if config.TRIALS_BUFF_LEVEL_SLIDER:
+                week, rungs = trials_model.run_week_ladder(
+                    members, skills=skills, cap=cap, min_levels=min_levels,
+                    shrine_caps=shrine_caps,
+                )
+                ladder = {str(k): v.to_dict() for k, v in rungs.items()}
+            else:
+                week = trials_model.run_week(
+                    members, skills=skills, cap=cap, min_levels=min_levels,
+                    shrine_caps=shrine_caps,
+                )
         else:
-            week = trials_model.run_week(
-                members, skills=skills, cap=cap, min_levels=min_levels,
-                shrine_caps=shrine_caps,
-            )
-    else:
-        with trials_model.community_buff_level(level):
-            week = trials_model.run_week(
-                members, skills=skills, cap=cap, min_levels=min_levels,
-                shrine_caps=shrine_caps,
-            )
+            with trials_model.community_buff_level(level):
+                week = trials_model.run_week(
+                    members, skills=skills, cap=cap, min_levels=min_levels,
+                    shrine_caps=shrine_caps,
+                )
 
     out: dict = {"week": week.to_dict(), "ladder": ladder}
 
@@ -4506,6 +4961,35 @@ def _summary_line(
             f"{len(plan['unmatched_signups'])} unmatched"
         )
 
+    # The guild's own building levels: the capture date and what is actually built,
+    # or why nothing was read. One clause, the same one-line CI visibility the roster
+    # join and the gear audit already get — a source that went silent must be visible
+    # in the log rather than only on the page.
+    # NB week["guild_building_levels"] holds the GRANTED SKILL LEVELS, not the
+    # building levels — WeekResult builds it through guild_building_skill_levels,
+    # which has already applied the +2 per level. Multiplying again here reported
+    # SC's level-1 Observatory as "Enhancing+4"; it grants +2.
+    granted = {sk: lv for sk, lv in (week.get("guild_building_levels") or {}).items() if lv}
+    if inputs.buildings_captured_at:
+        buildings_note = (
+            f"buildings {inputs.buildings_captured_at[:10]} "
+            + (", ".join(f"{sk}+{lv}" for sk, lv in granted.items()) or "none built")
+        )
+    else:
+        buildings_note = f"buildings NONE READ — {inputs.buildings_unavailable[:60]}"
+
+    # The optimiser's combat teams: the publish date and the parties, or why there are
+    # none. Same one-clause visibility the buildings block gets just above, and the
+    # line a CI log is read for when the in-game glow goes dark — the reason is here
+    # as well as in trials.json, truncated because the full text is a paragraph.
+    if inputs.combat is not None and inputs.combat.observed and not inputs.combat_unavailable:
+        combat_note = "combat " + inputs.combat.generated_at[:10] + " " + ", ".join(
+            f"{combat_model.norm_trial(t.hrid)}x{len(t.roster)}"
+            for t in inputs.combat.teams
+        )
+    else:
+        combat_note = f"combat NONE — {inputs.combat_unavailable[:60]}"
+
     dest = f"_site/{site.subdir}/" if site.subdir else "_site/"
     return (
         f"[{site.key}] {dest} {inputs.register['member_count']} members "
@@ -4518,8 +5002,39 @@ def _summary_line(
         )
         + f" (total {week['total_credit_points']:,.1f} cp / {week['total_points']} pts); "
         f"buffs L{week['community_buff_level']}{maxbuff_note}; "
+        f"{buildings_note}; "
+        f"{combat_note}; "
         f"signup: {signup_note}"
     )
+
+
+def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
+    """The `combat` key of trials.json — the plan's §4.2, to the field.
+
+    FIVE KEYS, ALWAYS THE SAME FIVE, whatever happened upstream. `available` gates
+    everything for the consumer; `unavailable` carries the reason verbatim (the same
+    text the CI WARNING printed), so the in-game panel can SAY why nothing glows
+    instead of showing an empty grid. An absence stated in words is the whole point:
+    `available: false` is a statement, not an error.
+
+    This is pure dict work over fields the dataclass always has, so it cannot raise
+    and cannot be the thing that stops a deploy.
+    """
+    obs = inputs.combat
+    available = bool(obs is not None and obs.observed and not inputs.combat_unavailable)
+    reason = inputs.combat_unavailable
+    if not available and not reason:
+        # Reachable only from a hand-built _GuildInputs (i.e. a test): _fetch_combat
+        # never returns an unusable block with an empty reason. Still answered, and
+        # in the same words, rather than publishing an unexplained `false`.
+        reason = f"The {site.combat_tab!r} tab was not read."
+    return {
+        "available": available,
+        "unavailable": "" if available else reason,
+        "source": site.combat_tab,
+        "generated_at": obs.generated_at if available else "",
+        "trials": [t.to_dict() for t in obs.teams] if available else [],
+    }
 
 
 def _write_guild(
@@ -4550,6 +5065,42 @@ def _write_guild(
         week_maxbuff["provenance"] = provenance
     if inputs.plan_dict is not None:
         inputs.plan_dict["provenance"] = provenance
+
+    # --- The optimiser's combat teams, on trials.json -------------------------------
+    # After provenance and before the register projection, so `week` is complete
+    # before anything projects from it. ATTACHED HERE rather than carried as a
+    # trials.WeekResult field on purpose: run_week's dict is pinned byte-for-byte by
+    # tests/test_roster.py's golden, which never calls _write_guild.
+    #
+    # Gated: config.COMBAT_SOURCE_ENABLED = False is the byte-for-byte rollback (no
+    # key at all, and _fetch_combat did not even fetch). The block carries its own
+    # `available` / `unavailable`, so a stale or missing tab is published as a STATED
+    # absence rather than a silent one — the userscript shows the reason. Nothing is
+    # added to _provenance_block: this key has exactly one consumer and already says
+    # its own provenance, and a second place for the same fact is a second place to
+    # drift.
+    if config.COMBAT_SOURCE_ENABLED:
+        week["combat"] = _combat_block(inputs, site)
+
+    # --- This week's assignments, projected onto the register ------------------
+    # After the provenance block and before data.json / index.html are written, so
+    # the register carries both. Gated: config.REGISTER_CARRIES_WEEK = False is the
+    # byte-for-byte rollback of the API (no new keys, no Trial column).
+    if config.REGISTER_CARRIES_WEEK:
+        _attach_week(inputs.register, week, draw_warning)
+        stamped = inputs.register["week"]
+        if stamped is not None and stamped["unassigned"]:
+            # Should never fire: roster.merge copies every manual member, so every
+            # register name ought to be seated or benched. If it does, the register
+            # export and the member tab disagree on a name — actionable, so loud,
+            # like the sign-up join's WARNING below.
+            print(
+                f"WARNING ({site.key}): {len(stamped['unassigned'])} member(s) on the "
+                f"'{site.member_tab}' tab were neither seated nor benched and are "
+                f"stamped 'unassigned' in data.json: "
+                + ", ".join(stamped["unassigned"]),
+                file=sys.stderr,
+            )
 
     # --- Member skill register (index.html + data.json) ---------------------
     (out / "data.json").write_text(
@@ -4721,6 +5272,11 @@ def _unit_jobs(site: "GuildSite", inputs: _GuildInputs, week_draw) -> list[dict]
         # reason, for the shrine caps.
         "cap": site.party_cap,
         "shrine_caps": site.shrine_caps,
+        # This guild's LIVE building levels. From `inputs`, not from `site`, because
+        # unlike the cap and the shrine caps these are FETCHED rather than
+        # configured — but shipped under the same contract as those two: resolved
+        # once in the parent, carried as plain data, never re-derived in a child.
+        "building_levels": inputs.building_levels,
     }
     jobs = [{**common, "level": None, "picks": inputs.picks}]
     if config.TRIALS_PUBLISH_MAXBUFF_PAGE:

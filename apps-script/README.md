@@ -29,11 +29,33 @@ The same module optionally sends a **second, unrelated block**: the guild's
       Lactose lntolerance → "LI Buildings"
 ```
 
+A **third** block arrives from a different program altogether — not from the
+game at all. The combat-trial optimiser in `~/pie/SCLIRoster` publishes its
+recommended teams, one row per seated member, through this same endpoint:
+
+```
+SCLIRoster optimiser (Node CLI: `report --publish-combat`)
+   │  builds { tab, header:["Member","Trial Hrid","Team","Role","Slot","Guild Id","Generated At"],
+   │           rows:[[name, "/guild_combat/<boss>", "SC Team 1", role, slot, guildId, at], …] }
+   ▼  POST {secret, tab, header, rows}
+      Survey Corps        → "SC Combat Teams"
+      Lactose lntolerance → "LI Combat Teams"
+```
+
+That is the optimiser's **only** spreadsheet write, and `guild/src/combat.py`
+reads the tab back and hangs it on `trials.json`, so the in-game userscript can
+glow the tiles a member has been assigned. The optimiser's own credentials
+(`~/.config/scliroster/credentials.json`) take **`combatWriteSecret`** from
+[step 3](#one-time-setup) below and **`combatWriteUrl`** from step 4 — the same
+secret and the same `/exec` URL the module uses.
+
 `TAB_FORMAT` records which **block format** each tab holds — `signup`
-(`header[0] === "User"`) or `buildings` (`header[0] === "Building"`) — and a
-block is written **only** to a tab of its own format. That is the interlock that
-matters: a levels block landing on a sign-up tab would wipe the roster the
-Python reader parses. Either way round it is refused as a `format mismatch`.
+(`header[0] === "User"`), `buildings` (`header[0] === "Building"`) or `combat`
+(`header[0] === "Member"`) — and a block is written **only** to a tab of its own
+format. That is the interlock that matters: a levels block landing on a sign-up
+tab would wipe the roster the Python reader parses, and with three formats there
+are six wrong pairings rather than two. Every one is refused as a
+`format mismatch`.
 
 The module lives in the sibling repo:
 `~/pie/farm/cowstuff/tampermonkey/src/modules/guild-signup-sync/index.js`.
@@ -46,10 +68,15 @@ The module lives in the sibling repo:
    - **`chikenz-test`** — a duplicate of one of them, the sign-up test tab
    - **`SC Buildings`**, **`LI Buildings`** — each guild's building/shrine levels.
      Add these two as **empty** tabs; the first write fills them.
+   - **`SC Combat Teams`**, **`LI Combat Teams`** — each guild's combat teams as
+     published by the optimiser. Add these two as **empty** tabs as well; the
+     first `report --publish-combat` fills them, and an empty tab is a normal
+     state that the Python reader reports as "never written" rather than an
+     error.
 
-   There is deliberately **no buildings test tab**. A levels block cannot reach a
-   sign-up tab (format mismatch), so it has nothing to clobber — once
-   **Also sync building/shrine levels** is on and **Force Buildings tab
+   There is deliberately **no buildings or combat test tab**. Neither block can
+   reach a sign-up tab (format mismatch), so neither has anything to clobber —
+   once **Also sync building/shrine levels** is on and **Force Buildings tab
    (testing)** is left empty, writes go straight to the per-guild tab.
 2. **Add the script.** Spreadsheet → **Extensions → Apps Script**. Paste
    `Code.gs` in, replacing the default file.
@@ -128,5 +155,12 @@ Editing `Code.gs` does **not** change the live `/exec` behaviour until you
   `reader._to_bool` accepts. This applies to `signup` blocks only; a `buildings`
   block writes numbers as numbers (so `Level` is a real integer cell) and
   everything else as text.
+- **Machine-owned tabs.** `SC`/`LI Buildings` and `SC`/`LI Combat Teams` are
+  rewritten from `A1` on every write. Anything typed into them is lost on the
+  next write, and the Python reader refuses a hand-edited header
+  (`src/buildings.py`, `src/combat.py`) rather than parse it — the guild's
+  build then reports the tab as unavailable, with the reason, instead of
+  publishing wrong teams. Type in the sign-up and "Trial Assignments" tabs, not
+  in these four.
 - **Empty maps are refused.** The module will not write a building block for a
   guild reporting an empty `guildBuildingLevelMap`, rather than zero the tab.

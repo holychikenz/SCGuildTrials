@@ -36,7 +36,8 @@ shared as "anyone with the link".
 3. **Process** rows into a summary (`src/processor.py`) — *this is the seam for
    future custom logic*; today it computes member count and per-skill averages.
 4. **Build** `_site/index.html` (self-contained, inline CSS) and
-   `_site/data.json` (`src/build.py`) — once per guild (Survey Corps at the
+   `_site/data.json` — which since 2026-09 also carries this week's assignments
+   (see below) — (`src/build.py`) once per guild (Survey Corps at the
    root, other guilds under their own sub-directory, e.g. `_site/li/`).
 
 ## Run locally
@@ -488,6 +489,49 @@ Three decisions worth keeping:
 
 State lives entirely in the reader's browser — nothing is written to the sheet,
 and clearing site data clears the pins.
+
+### data.json carries this week's assignments
+
+`data.json` answers *what does each member have*; `trials.json` answers *what is
+each member doing this week*. A reader who wanted both fetched both and then walked
+four party rosters, which is one request more than an in-game userscript has to
+spend. So `data.json` now also carries a **projection** of the week — never a copy:
+no rates, tools, timelines or probes. `trials.json` is unchanged and remains the
+full record.
+
+Two additions, both gated on `config.REGISTER_CARRIES_WEEK`:
+
+- A top-level **`week`** object: `generated_at`, `week_date`, `skills`,
+  `draw_stale`, `draw_warning`, `community_buff_level`, `total_points`,
+  `total_credit_points`, `parties` (each `skill`, `party_size`, `tier_reached`,
+  `points`, `credit_points`, `clear_probability`, `members` as a name list),
+  `bench`, `not_on_register` and `unassigned`.
+- A **`trial`** stamp on every member: `{"skill": …, "status": …}`, where `status`
+  is `assigned`, `bench` or `unassigned` and `skill` is `null` unless assigned.
+
+The consumer recipe:
+
+```js
+const m = data.members.find(m => m.name === me);
+m?.trial?.skill                       // the skill, or null
+data.week.draw_stale                  // whether the draw was a fallback
+data.week.generated_at                // equal to trials.json's when both are one build
+```
+
+Three caveats worth stating plainly:
+
+- **`week_date` is the *build* date**, not a cycle id — the draw source publishes no
+  cycle date. To know whether the block is current, compare `generated_at` with
+  `trials.json`'s; equal means the two files are one build.
+- **`member_count` is the register's count, not the seat count.** Roster-only members
+  are seated but have no register row (`index.html` mirrors the officers' tab), so
+  they are named in `week.not_on_register` instead — look them up in
+  `week.parties[*].members`. The seat count is `sum(party_size) + len(bench)`.
+- **Every existing key is unchanged** in name, type, order and value; `week` and
+  `members[i].trial` are the only additions.
+
+Setting `config.REGISTER_CARRIES_WEEK = False` is the one-line rollback: no `week`
+key, no `trial` keys, no `Trial` column, and `data.json`'s key set exactly as it was.
 
 ## Sign-up optimiser (real sign-ups)
 

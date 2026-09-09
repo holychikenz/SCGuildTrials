@@ -1351,7 +1351,7 @@ GATHERING_SKILLS = frozenset({"Milking", "Foraging", "Woodcutting"})
 
 # --- Community buffs (event) + gear ------------------------------------------
 # The MAGNITUDES here are CONFIRMED game data, read from the client dump's
-# `communityBuffTypeDetailMap` (`/Users/morgan/pie/cowstuff/milkyway_client_info.json`,
+# `communityBuffTypeDetailMap` (`/Users/morgan/pie/farm/cowstuff/milkyway_client_info.json`,
 # gameVersion v1.20260715.0) and written up in research/community-buffs.md. Each
 # community buff is bought with cowbells and carries its OWN level ladder 1..20;
 # the magnitude follows the same in-game rule the buildings and shrines use,
@@ -1439,6 +1439,19 @@ TRIALS_BUFF_LEVEL_SLIDER = True
 # coexist by design.
 TRIALS_PUBLISH_MAXBUFF_PAGE = False
 
+# The register (index.html + data.json) CARRIES this week's assignments: a compact
+# `week` block (parties as name lists, the bench, the draw and whether it may be
+# stale) and a `trial` stamp on every member. A projection of trials.json, not a copy
+# — no rates, tools or timelines — so that one fetch of data.json answers both "what
+# does each member have" and "what is each member doing this week"; the in-game
+# script that asked for this has one request to spend. trials.json is unchanged and
+# stays the full record. See build._attach_week.
+#
+# False is the one-line rollback: no `week` key, no `trial` keys, no Trial column —
+# data.json's key set exactly as before, pinned by
+# tests/test_register_week.py::test_flag_off_is_byte_identical_and_on_is_additive.
+REGISTER_CARRIES_WEEK = True
+
 # --- Build concurrency (src/build.py) ---------------------------------------
 # The build's four optimiser units — two guilds x {published regime, maxed-buff
 # counterfactual} — are mutually independent and are run in parallel PROCESSES. See
@@ -1510,7 +1523,10 @@ HOUSE_ENHANCING_SPEED = HOUSE_ENHANCING_SPEED_PER_LEVEL * DEFAULT_HOUSE_LEVEL  #
 #      "maxLevel": 20, "skillHrid": "/skills/brewing",
 #      "buffs": [{"typeHrid": "/buff_types/brewing_level",
 #                 "flatBoost": 2, "flatBoostLevelBonus": 2, "ratioBoost": 0}]}
-# Building -> trial skill (all ten follow the identical +2/level pattern):
+# Building -> trial skill (all ten follow the identical +2/level pattern). This
+# list is TRANSCRIBED into BUILDING_HRID_TO_SKILL below, which is what the sheet
+# reader dispatches on; keep the two in step (a test pins the dict against
+# GUILD_BUILDING_LEVELS' own keys, so a typo there cannot go quiet):
 #   dairy_barn -> Milking        forge      -> C.Smithing   kitchen    -> Cooking
 #   garden     -> Foraging       workshop   -> Crafting     brewery    -> Brewing
 #   log_shed   -> Woodcutting    sewing_parlor -> Tailoring laboratory -> Alchemy
@@ -1530,17 +1546,34 @@ GUILD_BUILDING_MAX_LEVEL = 20               # in-game guild buildings cap at 20
 # here). A skill omitted, None, or 0 grants nothing. Values are clamped to
 # 0..GUILD_BUILDING_MAX_LEVEL by trials.guild_building_skill_levels.
 #
-# CURRENT DATA (guild_updated capture 2026-07-22, Survey Corps id 4): NO
-# skilling guild building is built. The guild's live guildBuildingLevelMap holds
-# only builders_hall 3, guild_hall 4, skilling_encampment 1, combat_encampment 1,
-# dojo 1, plus the force/tempo shrines — none of which grants a skill level.
-# Lactose lntolerance has no capture, so ONE map serves both guilds for now (the
-# same pragmatic choice the column map makes above). SPLIT THIS PER GUILD the
-# moment real levels arrive and the two guilds diverge: build.build_guild runs
-# the whole pipeline once per guild and would need to thread its key through
-# trials.run_week -> simulate_race/optimize -> rate.
-# Setting every value to 0 restores the pre-2026-07-25 behaviour (the model is
-# then identical to the retired BUILDING_SKILL_LEVELS = 0) — one-line rollback.
+# THIS MAP IS THE FALLBACK, NOT THE LIVE DATA — since 2026-09-09. Each guild's
+# real levels are read from its own Buildings tab (BUILDING_TABS below, parsed by
+# src/buildings.py) and bound around that guild's optimiser unit by
+# trials.guild_building_levels_scope. This map is what runs when
+# BUILDINGS_SOURCE_ENABLED is off, when a guild's tab cannot be read, or when the
+# tab exists but has never been written (which is LI's case today).
+#
+# It stays ALL ZERO on purpose, and the zeros are load-bearing in two ways:
+#   1. tests/test_roster.py::test_roster_disabled_reproduces_the_golden_week calls
+#      trials.run_week bare — entering no scope — and compares with `==` against a
+#      golden generated at commit 265326b. Zeros are what keep it bit-identical.
+#   2. They are the pre-2026-07-25 behaviour (identical to the retired
+#      BUILDING_SKILL_LEVELS = 0), so BUILDINGS_SOURCE_ENABLED = False is a true
+#      one-line rollback rather than a rollback to some other guess.
+# A blank tab therefore reads as "no building modelled" rather than as an
+# observation of zero — which is the honest answer for a guild we cannot see, and
+# the same direction of error the repo takes everywhere else.
+#
+# The 2026-07-22 guild_updated capture this map used to hold (SC: builders_hall 3,
+# guild_hall 4, skilling_encampment 1, combat_encampment 1, dojo 1, plus the
+# force/tempo shrines — none granting a skill level) is superseded by the tab and
+# kept only in this sentence. The instruction that used to stand here — "SPLIT THIS
+# PER GUILD the moment real levels arrive ... thread its key through
+# trials.run_week -> simulate_race/optimize -> rate" — was discharged by reading the
+# tab instead, and by binding rather than threading. See
+# .claude/plans/buildings-tab-implementation-plan.md §3 for why threading was
+# rejected: ten call sites read this global at CALL time, so a scope reaches all of
+# them for free, exactly as trials.community_buff_level already argues.
 GUILD_BUILDING_LEVELS = {
     "Milking": 0,       # /guild_buildings/dairy_barn
     "Foraging": 0,      # /guild_buildings/garden
@@ -1584,6 +1617,125 @@ GUILD_BUILDING_POINT_COSTS = {
     11: 10050,  12: 13575,   13: 18325,   14: 24725,   15: 33400,
     16: 45075,  17: 60850,   18: 82150,   19: 110900,  20: 149725,
 }
+
+# --- Guild buildings: the LIVE source (per-guild "Buildings" tab) ------------
+# NEW 2026-09-09. The in-game Tampermonkey module reads guildBuildingLevelMap off
+# guild_updated / init_character_data and POSTs it, via the Apps Script endpoint in
+# apps-script/, to a per-guild tab of the same public sheet everything else here is
+# read from. One row per building and per shrine, 28 rows, header
+#   Building | Hrid | Kind | Level | Guild Id | Captured At
+# parsed by src/buildings.py through the same credential-free GVIZ_URL as the member
+# and roster tabs. See apps-script/README.md for the writer's side of the contract.
+#
+# THE TABS ARE CREATED BY HAND AND START EMPTY ("the first write fills them"), so an
+# EMPTY tab is a normal state and not an error: buildings.parse_buildings returns
+# observed=False for it and the guild runs on GUILD_BUILDING_LEVELS. As of
+# 2026-09-09 that is exactly LI's position — SC's tab holds 28 rows, LI's is 0 bytes.
+BUILDINGS_SOURCE_ENABLED = True
+# False -> the build never fetches a Buildings tab and every guild runs on
+# GUILD_BUILDING_LEVELS, bit-for-bit as before 2026-09-09. The one-line rollback,
+# and the same shape of master switch as ROSTER_SOURCE_ENABLED / SHRINE_BUFFS_APPLY_IN_TRIALS.
+
+BUILDING_TABS = {
+    "sc": "SC Buildings",
+    "li": "LI Buildings",
+}
+
+# Each guild's in-game id, for the cross-check in buildings.parse_buildings: every
+# row of a Buildings tab carries the id of the guild it was captured from, so a tab
+# holding the OTHER guild's levels is caught rather than modelled. That failure is
+# silent, plausible (the module routes by a hand-edited guild-id -> tab map) and
+# precisely the class config.shrine_caps' docstring refuses to fall back on.
+# Source: apps-script/Code.gs:79.
+GUILD_IDS = {
+    "sc": 4,
+    "li": 240,
+}
+
+# gviz wrong-tab / structure guard for a Buildings tab, in the same spirit as
+# GVIZ_SENTINEL_HEADERS but by "equals" throughout: this tab is machine-written with
+# one clean header row, so there is no merged junk to tolerate and any deviation is
+# real. gviz does NOT error on an unknown tab name — it silently serves a DIFFERENT
+# tab (measured 2026-09-09: a bogus name returned 3518 bytes of the first tab), which
+# is what makes this guard mandatory rather than defensive.
+# DO NOT append GVIZ_NO_HEADER_COLLAPSE to a Buildings fetch: see that constant's
+# note — "&headers=0" blanks the label of every numeric column.
+BUILDINGS_SENTINEL_HEADERS = {
+    0: ("equals", "Building"),
+    1: ("equals", "Hrid"),
+    2: ("equals", "Kind"),
+    3: ("equals", "Level"),
+    4: ("equals", "Guild Id"),
+    5: ("equals", "Captured At"),
+}
+
+# --- Combat teams: the optimiser's ONE write to the sheet (per-guild machine tab) ----
+# NEW 2026-09-09. The combat-trial optimiser in ~/pie/SCLIRoster publishes its
+# recommended teams — one row per seated member — through the same Apps Script
+# endpoint in apps-script/ that the sign-up and buildings blocks use, to a per-guild
+# tab of the public sheet. Header (fixed, seven columns, guarded by equals below):
+#   Member | Trial Hrid | Team | Role | Slot | Guild Id | Generated At
+# Parsed by src/combat.py and attached to trials.json as a top-level `combat` key, for
+# the in-game userscript that glows a member's assigned tiles. NON-REQUIRED: any failure
+# degrades to `available: false` with the reason, and never stops the deploy — SC is
+# `required`, and the 2026-07-25 incident above is what a required parse failure costs.
+#
+# THE TABS ARE MACHINE-OWNED AND START EMPTY. An empty tab is a normal state (the
+# optimiser has not published yet); a hand-edited one fails the header guard loudly.
+# DO NOT append GVIZ_NO_HEADER_COLLAPSE: one clean header row, exactly what gviz's
+# default collapse hands over (see that constant's note, and buildings.py's).
+#
+# False is the one-line rollback: no fetch, no `combat` key — trials.json byte-identical,
+# pinned by tests/test_combat.py::test_flag_off_is_byte_identical_and_on_is_additive.
+COMBAT_SOURCE_ENABLED = True
+
+COMBAT_TABS = {
+    "sc": "SC Combat Teams",
+    "li": "LI Combat Teams",
+}
+
+# gviz wrong-tab / structure guard for a Combat Teams tab, equals throughout (machine-
+# written, no merged junk). gviz serves the FIRST tab for an unknown name (measured
+# 2026-09-09), so this is mandatory, not defensive. Must match SCLIRoster
+# optimizer/src/publish/combatTab.js HEADER and apps-script/Code.gs's 'combat' format.
+COMBAT_SENTINEL_HEADERS = {
+    0: ("equals", "Member"),
+    1: ("equals", "Trial Hrid"),
+    2: ("equals", "Team"),
+    3: ("equals", "Role"),
+    4: ("equals", "Slot"),
+    5: ("equals", "Guild Id"),
+    6: ("equals", "Generated At"),
+}
+
+# The TEN SKILLING buildings, hrid -> trial skill name, transcribed from the prose
+# list above GUILD_BUILDING_LEVELS. Nothing else belongs here: the seven combat
+# buildings (dojo, armory, gym, archery_range, mystical_study, dining_room, library),
+# the two encampments and the four utility buildings (guild_hall, builders_hall,
+# treasury, archives) grant no SKILLING level and so cannot enter this model. They
+# are not dropped either — buildings.parse_buildings keeps every unmapped hrid in
+# GuildBuildings.other_levels, so the data exists for the combat optimiser in
+# ~/pie/SCLIRoster and for the reward multipliers, once their per-level rules are
+# confirmed. An hrid the game adds later lands there too, counted, never silent.
+BUILDING_HRID_TO_SKILL = {
+    "/guild_buildings/dairy_barn": "Milking",
+    "/guild_buildings/garden": "Foraging",
+    "/guild_buildings/log_shed": "Woodcutting",
+    "/guild_buildings/forge": "C.Smithing",
+    "/guild_buildings/workshop": "Crafting",
+    "/guild_buildings/sewing_parlor": "Tailoring",
+    "/guild_buildings/kitchen": "Cooking",
+    "/guild_buildings/brewery": "Brewing",
+    "/guild_buildings/laboratory": "Alchemy",
+    "/guild_buildings/observatory": "Enhancing",
+}
+
+# Staleness for a Buildings capture deliberately REUSES ROSTER_MAX_AGE_DAYS rather
+# than adding a twin. A building level changes far more slowly than a member's own
+# levels, so a threshold tuned for the roster is conservative here, and a second
+# constant would be a second thing to drift. Like that one it is a BANNER threshold
+# and not a cutoff: the tab is written only when a member running the module opens
+# the guild panel, and an old capture is still better data than the zeros it replaces.
 
 # --- Guild shrines (guild-wide SPEED / EFFICIENCY buffs) ---------------------
 # NEW 2026-08-11: "Shrine buffs now apply inside guild Trials". Before the patch the
