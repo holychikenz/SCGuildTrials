@@ -19,7 +19,7 @@ script.google.com/macros/s/<id>/exec   ← Code.gs, runs as the sheet OWNER
 ```
 
 The module lives in the sibling repo:
-`~/pie/cowstuff/tampermonkey/src/modules/guild-signup-sync/index.js`.
+`~/pie/farm/cowstuff/tampermonkey/src/modules/guild-signup-sync/index.js`.
 
 ## One-time setup
 
@@ -57,7 +57,7 @@ The module lives in the sibling repo:
 - **Round-trip through the reader** (proves the guild pipeline can parse what we
   wrote):
   ```bash
-  cd ~/pie/guild
+  cd ~/pie/farm/guild
   uv run python -c "from src.signup import fetch_signup_csv, parse_signup; \
     print(parse_signup(fetch_signup_csv('chikenz-test')))"
   ```

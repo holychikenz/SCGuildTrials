@@ -2,7 +2,7 @@
  * GUILD TRIALS — sign-up write endpoint (Google Apps Script Web App)
  * ---------------------------------------------------------------------------
  * The counterpart to the Tampermonkey module `guild-signup-sync`
- * (~/pie/cowstuff/tampermonkey/src/modules/guild-signup-sync/index.js).
+ * (~/pie/farm/cowstuff/tampermonkey/src/modules/guild-signup-sync/index.js).
  *
  * The game emits one `guild_characters_updated` WebSocket message when you open
  * Guild ▸ Members; the userscript turns it into { header, rows, tab } and POSTs

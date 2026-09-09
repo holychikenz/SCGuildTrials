@@ -39,7 +39,7 @@ per-guild tab, chosen by the rows' own guild id:
 ```
 
 The modules live in the sibling repo:
-`~/pie/cowstuff/tampermonkey/src/modules/guild-profile-{store,sheet}/index.js`.
+`~/pie/farm/cowstuff/tampermonkey/src/modules/guild-profile-{store,sheet}/index.js`.
 
 ## Upsert, not overwrite — and why it must be
 
@@ -96,7 +96,7 @@ a second time instead of updated.
 - **Run the tests** (no dependencies; stubs `SpreadsheetApp`, so nothing touches
   the live sheet):
   ```bash
-  cd ~/pie/guild && node --test apps-script/profiles/Code.test.js
+  cd ~/pie/farm/guild && node --test apps-script/profiles/Code.test.js
   ```
 - **Dry run:** open a few profile cards in game, then palette → *Guild Profile
   Sheet* → panel → **Send to sheet** with **Dry run** on. It logs the exact block

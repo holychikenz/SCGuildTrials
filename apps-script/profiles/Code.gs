@@ -3,7 +3,7 @@
  * ---------------------------------------------------------------------------
  * The counterpart to the Tampermonkey modules `guild-profile-store` /
  * `guild-profile-sheet`
- * (~/pie/cowstuff/tampermonkey/src/modules/guild-profile-sheet/index.js).
+ * (~/pie/farm/cowstuff/tampermonkey/src/modules/guild-profile-sheet/index.js).
  *
  * INDEPENDENT OF THE SIGN-UP ENDPOINT, deliberately. Sign-ups and profile
  * lookups are unrelated jobs with unrelated payloads, so they get separate
