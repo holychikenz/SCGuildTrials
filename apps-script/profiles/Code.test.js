@@ -425,6 +425,27 @@ test("each guild's roster tab is written independently", (t) => {
 //   17) replace over a populated gear column is refused. The single most
 //       destructive action available, and a one-word setting in the module's UI.
 //   18) Contention is answered, and the lock is always released.
+//
+// A SECOND union column, `abilitiesSeen`, joined the first. It carries ability
+// levels, which `equippedAbilities` shows only a handful of per capture, and it
+// has the SAME cell shape on purpose: parseGear_/mergeGear_ are shape-generic
+// and serve both, so the two unions cannot drift apart. What the tests below
+// earn their place for:
+//
+//   19) The abilities union itself, across captures, alongside a gear merge.
+//   20) MAX on level, both arrival orders. Exact here rather than merely
+//       honest: ability levels are XP-driven and never fall.
+//   21) A blank incoming cell must not wipe an accumulated union — a hidden
+//       profile sends exactly that.
+//   22) BOTH columns merge INDEPENDENTLY in one write, and every other cell
+//       still overwrites. The loop over MERGE_COLUMNS is what this pins.
+//   23) An unparseable EXISTING abilities cell is left byte-identical and
+//       counted separately from gear's.
+//   24) An unparseable INCOMING abilities cell never lands raw.
+//   25) replace is refused when ANY union column holds history — including
+//       when gearSeen is empty and only abilitiesSeen is populated. The old
+//       guard checked gear alone, which would have let a replace wipe this one.
+//   26) A legacy tab with NEITHER column accepts a header growing by both.
 // =============================================================================
 
 const GEAR = "gearSeen";
@@ -439,6 +460,22 @@ function gearOf(sh, id) {
     const col = head.indexOf(GEAR);
     for (let i = 1; i < sh._grid.length; i++) {
         if (String(sh._grid[i][1]) === String(id)) return sh._grid[i][col];
+    }
+    return undefined;
+}
+
+// The second union column. Same shape, same merge, same helpers — only the
+// header name differs, which is exactly the claim MERGE_COLUMNS makes.
+const ABIL = "abilitiesSeen";
+const unionHeader = () => header([GEAR, ABIL]);
+const unionRow = (name, id, gearCell, abilCell, opts = {}) =>
+    row(name, id, Object.assign({}, opts, { extra: [gearCell, abilCell] }));
+
+// Reads any named column for a character out of the fake grid.
+function cellOf(sh, id, col) {
+    const c = sh._grid[0].indexOf(col);
+    for (let i = 1; i < sh._grid.length; i++) {
+        if (String(sh._grid[i][1]) === String(id)) return sh._grid[i][c];
     }
     return undefined;
 }
@@ -622,6 +659,11 @@ test("with no gearSeen column, behaviour is exactly as it was before", (t) => {
     assert.strictEqual(res.updated, 1);
     assert.strictEqual(res.gearMerged, 0);
     assert.strictEqual(res.gearSkipped, 0);
+    // Neither union column is present, so neither counter can move. A payload
+    // narrower than MERGE_COLUMNS is what a reverted userscript sends, and it
+    // must cost nothing.
+    assert.strictEqual(res.abilitiesMerged, 0);
+    assert.strictEqual(res.abilitiesSkipped, 0);
     assert.strictEqual(sh._grid[1][4], 2200);
 });
 
@@ -753,4 +795,213 @@ test("the lock is released on an early RETURN inside it, not just on a throw", (
     assert.match(res.error, /tab not found/);
     assert.strictEqual(ctx._lockCalls.tried, 1);
     assert.strictEqual(ctx._lockCalls.released, 1, "the finally must run on the return path");
+});
+
+// =============================================================================
+// The abilities union — the SECOND column that merges instead of overwriting
+// =============================================================================
+
+const aj = (items) => JSON.stringify({ items: items });
+
+test("abilitiesSeen UNIONS by hrid across captures", (t) => {
+    const h = unionHeader();
+    const sh = makeSheet([
+        h,
+        unionRow("jodend", 8888, gj([]), aj([{ hrid: "/abilities/berserk", level: 62 }])),
+    ], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    // The member re-slotted; the earlier ability must not be forgotten.
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [unionRow("jodend", 8888, gj([]), aj([{ hrid: "/abilities/fierce_aura", level: 35 }]))],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.abilitiesMerged, 1);
+    assert.strictEqual(res.abilitiesSkipped, 0);
+    // The gear cell merged too, contributing nothing — both columns run the
+    // same loop, and an empty union is still a successful merge.
+    assert.strictEqual(res.gearMerged, 1);
+    assert.deepStrictEqual(JSON.parse(cellOf(sh, 8888, ABIL)).items, [
+        { hrid: "/abilities/berserk", level: 62 },
+        { hrid: "/abilities/fierce_aura", level: 35 },
+    ], "both captures must survive, hrid-sorted");
+});
+
+test("abilitiesSeen keeps the HIGHER level, whichever way round it arrives", (t) => {
+    // Ability levels are XP-driven and never fall, so max is EXACT here — the
+    // highest level ever seen IS the current level.
+    for (const [held, incoming, want] of [[62, 70, 70], [70, 62, 70]]) {
+        const h = unionHeader();
+        const sh = makeSheet([
+            h,
+            unionRow("jodend", 8888, gj([]), aj([{ hrid: "/abilities/berserk", level: held }])),
+        ], { maxCols: h.length });
+        const ctx = load({ "SC Roster": sh });
+
+        const res = post(ctx, {
+            secret: SECRET, tab: "SC Roster", header: h,
+            rows: [unionRow("jodend", 8888, gj([]),
+                            aj([{ hrid: "/abilities/berserk", level: incoming }]))],
+        });
+
+        assert.strictEqual(res.ok, true, res.error);
+        assert.deepStrictEqual(JSON.parse(cellOf(sh, 8888, ABIL)).items,
+            [{ hrid: "/abilities/berserk", level: want }],
+            `held ${held}, incoming ${incoming}`);
+    }
+});
+
+test("a blank incoming abilitiesSeen does not wipe an accumulated union", (t) => {
+    // What a hidden profile sends, and what a reverted userscript sends. Reading
+    // it as "they have none" would erase months of captures.
+    const h = unionHeader();
+    const accumulated = aj([{ hrid: "/abilities/berserk", level: 62 }]);
+    const sh = makeSheet([h, unionRow("jodend", 8888, gj([]), accumulated)],
+                         { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [unionRow("jodend", 8888, gj([]), "")],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(cellOf(sh, 8888, ABIL), accumulated, "byte-identical");
+});
+
+test("both union columns merge independently in one write, and every other cell overwrites", (t) => {
+    // The loop over MERGE_COLUMNS, pinned: two columns, two independent merges,
+    // and the snapshot columns still take the new value.
+    const h = unionHeader();
+    const sh = makeSheet([
+        h,
+        unionRow("jodend", 8888,
+                 gj([{ hrid: "/items/chaotic_flail", level: 3 }]),
+                 aj([{ hrid: "/abilities/berserk", level: 62 }]),
+                 { total: 2000, shrine: 4 }),
+    ], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [unionRow("jodend", 8888,
+                        gj([{ hrid: "/items/sinister_cape", level: 0 }]),
+                        aj([{ hrid: "/abilities/fierce_aura", level: 35 }]),
+                        { total: 2060, shrine: 6 })],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.gearMerged, 1);
+    assert.strictEqual(res.abilitiesMerged, 1);
+    assert.deepStrictEqual(JSON.parse(cellOf(sh, 8888, GEAR)).items, [
+        { hrid: "/items/chaotic_flail", level: 3 },
+        { hrid: "/items/sinister_cape", level: 0 },
+    ]);
+    assert.deepStrictEqual(JSON.parse(cellOf(sh, 8888, ABIL)).items, [
+        { hrid: "/abilities/berserk", level: 62 },
+        { hrid: "/abilities/fierce_aura", level: 35 },
+    ]);
+    const head = sh._grid[0];
+    assert.strictEqual(sh._grid[1][head.indexOf("totalLevel")], 2060,
+        "a snapshot column must take the NEW value, not a merged one");
+    assert.strictEqual(sh._grid[1][head.indexOf("shrine_force_combat")], 6);
+});
+
+test("an unparseable abilitiesSeen cell is left byte-identical and counted in abilitiesSkipped", (t) => {
+    // It may have been hand-edited, or reveal a bug in our writer; either way it
+    // can hold data no single machine could rebuild. The count is what keeps the
+    // abandonment visible rather than silent — and it is counted per column, so
+    // a broken abilities cell does not read as a broken gear cell.
+    const h = unionHeader();
+    const prose = "ask jodend, he knows";
+    const sh = makeSheet([h, unionRow("jodend", 8888, gj([]), prose)], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [unionRow("jodend", 8888, gj([]), aj([{ hrid: "/abilities/berserk", level: 62 }]))],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.abilitiesSkipped, 1);
+    assert.strictEqual(res.gearSkipped, 0);
+    assert.strictEqual(res.updated, 1);
+    assert.strictEqual(cellOf(sh, 8888, ABIL), prose, "never overwritten blind");
+});
+
+test("an unparseable INCOMING abilitiesSeen lands blank on an appended row", (t) => {
+    // Writing it raw would poison every later merge on that member: the cell
+    // would no longer parse, and by design we then refuse to touch it.
+    const h = unionHeader();
+    const sh = makeSheet([h, unionRow("Patbowl", 60486, gj([]), gj([]))], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: h,
+        rows: [unionRow("jodend", 8888, gj([]), '{"items":[{"hrid":"","level":3}]}')],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.appended, 1);
+    assert.strictEqual(res.abilitiesSkipped, 1);
+    assert.strictEqual(cellOf(sh, 8888, ABIL), "");
+});
+
+test("replace over a populated abilitiesSeen is REFUSED even when gearSeen is empty", (t) => {
+    // The old guard checked gearSeen alone. A member who hides their gear but
+    // not their abilities has an empty gear cell and a populated abilities one,
+    // and a replace would have wiped the latter without a word.
+    const h = unionHeader();
+    const accumulated = aj([{ hrid: "/abilities/berserk", level: 62 }]);
+    const sh = makeSheet([h, unionRow("jodend", 8888, "", accumulated)], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", mode: "replace", header: h,
+        rows: [unionRow("jodend", 8888, "", aj([]))],
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /refusing replace/);
+    assert.match(res.error, /abilitiesSeen/);
+    assert.match(res.error, /discardGearHistory/);
+    assert.strictEqual(cellOf(sh, 8888, ABIL), accumulated, "nothing was written");
+
+    // The flag covers EVERY union column — one guard, one escape hatch.
+    const ok = post(ctx, {
+        secret: SECRET, tab: "SC Roster", mode: "replace", header: h,
+        discardGearHistory: true,
+        rows: [unionRow("jodend", 8888, "", aj([]))],
+    });
+    assert.strictEqual(ok.ok, true, ok.error);
+    assert.strictEqual(ok.replaced, true);
+});
+
+test("a legacy tab with NEITHER union column accepts a header growing by both", (t) => {
+    // The deploy story: a tab that predates both columns must take them at the
+    // tail without a refusal, because the refusal's own advice is mode:"replace".
+    const before = header();
+    const after = unionHeader();
+    const sh = makeSheet([before, row("Patbowl", 60486, { total: 2128 })],
+                         { maxCols: before.length });
+    const ctx = load({ "SC Roster": sh });
+
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster", header: after,
+        rows: [unionRow("Patbowl", 60486,
+                        gj([{ hrid: "/items/chaotic_flail", level: 3 }]),
+                        aj([{ hrid: "/abilities/berserk", level: 62 }]),
+                        { total: 2128 })],
+    });
+
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh._grid[0][after.length - 2], GEAR);
+    assert.strictEqual(sh._grid[0][after.length - 1], ABIL);
+    assert.deepStrictEqual(JSON.parse(cellOf(sh, 60486, GEAR)).items,
+        [{ hrid: "/items/chaotic_flail", level: 3 }]);
+    assert.deepStrictEqual(JSON.parse(cellOf(sh, 60486, ABIL)).items,
+        [{ hrid: "/abilities/berserk", level: 62 }],
+        "an empty sheet cell merges cleanly — no special case needed");
 });

@@ -140,21 +140,26 @@ restore the previous settings or re-send once with `mode:"replace"`.
 A header that merely **grows at the tail** is accepted: a payload column whose
 sheet cell is still blank is a new column, not drift. This matters because the
 remedy for a refusal is `mode:"replace"`, and replace destroys the accumulated
-`gearSeen` union — so refusing a harmless column addition would push you
-straight into the one action that loses data.
+unions — so refusing a harmless column addition would push you straight into
+the one action that loses data.
 
 Note that a **narrower** payload is also harmless. `doPost` only ever addresses
 the first *n* columns, where *n* comes from the payload, so reverting the
-userscript to a build that does not send `gearSeen` leaves that column
+userscript to a build that does not send `abilitiesSeen` leaves that column
 completely untouched — read, written and cleared never. The union survives a
-rollback with no export and no ritual. This is why `gearSeen` is the **last**
-column and why no setting toggles it.
+rollback with no export and no ritual. This is why the union columns are the
+**trailing block**, in add order (`gearSeen`, then `abilitiesSeen`), and why no
+setting toggles either: reverting only the newer feature narrows the payload to
+end at the older column, leaving the newer one beyond *n* and intact.
 
-## The gear union (`gearSeen`)
+## The union columns (`gearSeen`, `abilitiesSeen`)
 
-Every other cell on a row is a snapshot, and the newest write wins. `gearSeen`
-is the exception: it is the **union of every capture**, accumulated over months
-and across machines.
+Every other cell on a row is a snapshot, and the newest write wins. These two
+are the exceptions: each is the **union of every capture**, accumulated over
+months and across machines. They share a cell shape, and `Code.gs` merges them
+with the same shape-generic code — see `MERGE_COLUMNS`.
+
+### `gearSeen`
 
 Combat slots rotate with whatever a member is training, so one profile card
 shows a fraction of their gear. The userscript sends what *this* capture saw of
@@ -174,6 +179,31 @@ The item set is generated from the game's own catalogue rather than written
 down, so a new tier is picked up automatically. The consumer is
 `guild/` Python, not a human reading the cell.
 
+### `abilitiesSeen`
+
+`equippedAbilities` lists only the handful of abilities a member has slotted at
+the moment of the read, and members re-slot constantly, so a snapshot says more
+about the hour than the character. The userscript sends what *this* capture saw
+in the identical shape:
+
+```json
+{"items":[{"hrid":"/abilities/berserk","level":62}]}
+```
+
+and the endpoint unions it by `hrid`, keeping the higher `level`, exactly as it
+does for gear. Two differences from `gearSeen` are worth knowing:
+
+- **Max is exact here, not merely honest.** Ability levels are XP-driven and
+  never fall, so the highest level ever seen *is* the current level. No
+  ironman-economy argument is needed.
+- **There is no tracked set.** All 57 abilities in the catalogue are wanted and
+  the worst-case cell is ~2.6 KB against a 45,000-character bound, so this
+  column has nothing to look up and never waits for client data to arrive.
+
+A hidden profile (`hideWearableItems`) nulls `equippedAbilities` along with
+`wearableItemMap`, so it sends a blank cell — which contributes nothing and
+erases nothing, the same as for gear.
+
 ### Operating notes
 
 - **Merging is why this script takes a lock.** Two machines writing at once used
@@ -182,12 +212,14 @@ down, so a new tier is picked up automatically. The consumer is
   that cannot get the lock is answered `ok:false` with a `busy:` error; just
   retry. Nothing is lost by a skipped write, because the same gear is seen again
   the next time that card is opened.
-- **`mode:"replace"` is refused** while the column holds anything, since no
-  single machine can rebuild the union. Export the column first, then re-send
-  with `discardGearHistory:true` if you genuinely mean to discard it. The
-  userscript never sends that flag.
+- **`mode:"replace"` is refused** while **any** union column holds anything,
+  since no single machine can rebuild a union; the error names the column that
+  stopped it. Export the columns first, then re-send with
+  `discardGearHistory:true` if you genuinely mean to discard them. That flag
+  predates the second union column and covers **every** one of them — one guard,
+  one escape hatch. The userscript never sends it.
 - **A cell that will not parse is left exactly as it is** and counted in the
-  response's `gearSkipped`. That is deliberate: it may have been hand-edited, or
+  response's `gearSkipped` or `abilitiesSkipped`, per column. That is deliberate: it may have been hand-edited, or
   it may reveal a bug in the writer, and either way it can hold months of
   captures. The trade-off is that such a cell never self-heals — **clear it by
   hand** and the next write starts a fresh union.
@@ -198,9 +230,14 @@ down, so a new tier is picked up automatically. The consumer is
   member who has refined will show both hrids for ever — truthfully, "owned the
   base, now refined". `itemDetailMap[hrid].baseItemHrids` (38 pairs in the
   catalogue) lets the consumer collapse the pair; do not count them as two.
-- **The response reports `gearMerged` and `gearSkipped`** alongside
-  `updated`/`appended`. A non-zero `gearSkipped` on a tab nobody has hand-edited
-  means a writer bug — investigate rather than ignore.
+- **The response reports `gearMerged`/`gearSkipped` and
+  `abilitiesMerged`/`abilitiesSkipped`** alongside `updated`/`appended`, one
+  pair per union column. A non-zero `*Skipped` on a tab nobody has hand-edited
+  means a writer bug — investigate rather than ignore. And an **absent**
+  `abilitiesMerged` in the reply means the live deployment predates the column
+  and is overwriting it snapshot-by-snapshot: nothing is lost, but nothing
+  accumulates until you redeploy. The userscript logs a warning when it sees
+  that.
 
 ## Safety notes
 
@@ -210,9 +247,9 @@ down, so a new tier is picked up automatically. The consumer is
 - **Shared secret.** The `/exec` URL is world-reachable. Treat the secret like a
   password; rotate by changing it in both places and re-deploying. Keep it
   distinct from the sign-up script's so one leak does not expose both.
-- **The gear union is the one irreplaceable thing on the tab.** Every other
+- **The union columns are the irreplaceable things on the tab.** Every other
   column can be rebuilt by re-sending from `guild-profile-store`, which keeps
-  each profile verbatim. The union cannot: it is the pooled history of several
+  each profile verbatim. A union cannot: it is the pooled history of several
   machines. Guard `mode:"replace"` accordingly.
 - **Blanks vs zeros.** `null` becomes an empty cell, never `0` — a withheld tool
   (a member with `hideWearableItems` set) or an absent `famePoints` must not read

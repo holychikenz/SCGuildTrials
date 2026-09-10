@@ -45,14 +45,15 @@
  * happened not to look at this session. `mode:"replace"` exists for a
  * deliberate full refresh.
  *
- * ── ONE COLUMN IS MERGED, NOT OVERWRITTEN: `gearSeen` ──────────────────────
+ * ── TWO COLUMNS ARE MERGED, NOT OVERWRITTEN: `gearSeen`, `abilitiesSeen` ───
  * Upsert replaces a matched row wholesale, which is right for every column that
- * is a snapshot. `gearSeen` is not a snapshot: it is the UNION of every capture
- * of that member's gear, accumulated over months and across machines. Combat
- * slots rotate with whatever is being trained, so one profile card shows a
- * fraction of what somebody owns; we merge by hrid and keep the higher
- * enhancement level. See GEAR_COLUMN and mergeGear_ for the rule and its
- * reasoning, and the "gear union" section of README.md for operation.
+ * is a snapshot. These two are not snapshots: each is the UNION of every
+ * capture, accumulated over months and across machines. Combat slots rotate
+ * with whatever is being trained, so one profile card shows a fraction of what
+ * somebody owns; and `equippedAbilities` shows only the handful slotted this
+ * hour. Both merge by hrid, keeping the higher level. See MERGE_COLUMNS and
+ * mergeGear_ for the rule and its reasoning, and the "union columns" section
+ * of README.md for operation.
  *
  * Three consequences worth knowing before editing this file:
  *
@@ -62,9 +63,10 @@
  *      the first's contribution permanently. LockService serialises the
  *      read-modify-write; a refusal is answered with a retryable `busy:`.
  *   2. `mode:"replace"` IS GUARDED. It clears out to getLastColumn(), so it
- *      reaches this column even from a narrower payload — and no single machine
- *      can rebuild the union. A replace over a populated gear column is refused
- *      unless the payload carries `discardGearHistory:true`.
+ *      reaches these columns even from a narrower payload — and no single
+ *      machine can rebuild a union. A replace over ANY populated union column
+ *      is refused unless the payload carries `discardGearHistory:true`; that
+ *      flag predates the second column and covers every one of them.
  *   3. A HEADER MAY NOW GROW AT THE TAIL. headerMismatch_ tolerates a payload
  *      column whose sheet cell is blank, because the old remedy for a refusal
  *      was `mode:"replace"` — which would have destroyed the union. A SHIFT is
@@ -137,7 +139,7 @@ var KEY_COLUMN = 'characterId';
 var MAX_COLS = 300;
 var MIN_COLS = 5;
 
-// ── THE ONE COLUMN THAT IS MERGED, NOT OVERWRITTEN ─────────────────────────
+// ── THE COLUMNS THAT ARE MERGED, NOT OVERWRITTEN ───────────────────────────
 // Every other cell on a row is a snapshot, and last-write-wins is correct for
 // it. This one is an accumulated UNION across months and machines.
 //
@@ -159,6 +161,18 @@ var MIN_COLS = 5;
 // cell, both union their own view, and the second write silently discards the
 // first's contribution — permanently. See LockService in doPost.
 var GEAR_COLUMN = 'gearSeen';
+
+// The second union column: ability levels. `equippedAbilities` shows a handful
+// per capture and members re-slot constantly, so a snapshot says more about
+// the hour than the character. Same cell shape, same merge, same lock. Max is
+// EXACT here — ability levels are XP-driven and never fall.
+var ABILITIES_COLUMN = 'abilitiesSeen';
+
+// Every column merged rather than overwritten, in header order. A LIST, and no
+// assumption that all are present: a reverted userscript narrows the payload to
+// end at an older column, and each must be found and merged independently.
+// parseGear_ / mergeGear_ are shape-generic and serve every entry here.
+var MERGE_COLUMNS = [GEAR_COLUMN, ABILITIES_COLUMN];
 
 // The catalogue yields 200 tracked items; these are slack to bound a runaway
 // (a restructured catalogue, or a bug adding untracked hrids) rather than
@@ -269,25 +283,29 @@ function doPost(e) {
 
     var out = [];
     var updated = 0, appended = 0, replaced = false;
-    var gearIdx = gearColumnIndex_(header, nCols);
-    var gearMerged = 0, gearSkipped = 0;
+    var mergeCols = mergeColumnIndices_(header, nCols);   // [{ name, idx }], present ones only
+    var merged = {}, skipped = {};
 
     var lastRow = sh.getLastRow();
 
     // `replace` clears the block wholesale — and note it clears out to
-    // getLastColumn(), so it reaches the gear column even when the payload is
-    // narrower than the tab. That column is the ONE thing here that cannot be
-    // rebuilt from any single machine's archive: it is months of captures from
-    // several of them, and guild-profile-store holds only what THIS browser
-    // saw. So a replace over a populated gear column is refused unless the
-    // caller states, in the payload, that it means it. The userscript never
-    // sends that flag, so it can only be set deliberately by hand.
-    if (mode === 'replace' && !body.discardGearHistory &&
-        gearHistoryPresent_(sh, lastRow)) {
-      return json_({ ok: false, error: 'refusing replace: the "' + GEAR_COLUMN +
-        '" column holds accumulated gear history, which replace would destroy ' +
-        'and which cannot be rebuilt from one machine. Export it first, then ' +
-        're-send with discardGearHistory:true if you really mean it.' });
+    // getLastColumn(), so it reaches the union columns even when the payload is
+    // narrower than the tab. Those columns are the ONLY things here that cannot
+    // be rebuilt from any single machine's archive: they are months of captures
+    // from several of them, and guild-profile-store holds only what THIS
+    // browser saw. So a replace over ANY populated union column is refused
+    // unless the caller states, in the payload, that it means it.
+    //
+    // `discardGearHistory` predates the second union column and covers EVERY
+    // union column; the userscript never sends it, so it can only be set by hand.
+    if (mode === 'replace' && !body.discardGearHistory) {
+      var held = unionHistoryPresent_(sh, lastRow);
+      if (held) {
+        return json_({ ok: false, error: 'refusing replace: the "' + held +
+          '" column holds accumulated history, which replace would destroy ' +
+          'and which cannot be rebuilt from one machine. Export it first, then ' +
+          're-send with discardGearHistory:true if you really mean it.' });
+      }
     }
 
     var existingHeader = lastRow >= 1 ? sh.getRange(1, 1, 1, nCols).getValues()[0] : [];
@@ -305,9 +323,11 @@ function doPost(e) {
         // Nothing to merge into on a fresh row, but a malformed payload must
         // still never be written through: it would poison every later merge on
         // that member, since an unparseable cell is left untouched by design.
-        if (gearIdx !== -1 && parseGear_(fresh[gearIdx]) === null) {
-          fresh[gearIdx] = '';
-          gearSkipped++;
+        for (var mi = 0; mi < mergeCols.length; mi++) {
+          if (parseGear_(fresh[mergeCols[mi].idx]) === null) {
+            fresh[mergeCols[mi].idx] = '';
+            skipped[mergeCols[mi].name] = (skipped[mergeCols[mi].name] || 0) + 1;
+          }
         }
         out.push(fresh);
       }
@@ -341,21 +361,25 @@ function doPost(e) {
         var row = normaliseRow_(rows[r], nCols);
         var key = String(row[keyIdx]);
         if (Object.prototype.hasOwnProperty.call(index, key)) {
-          // The one column that accumulates instead of being replaced. On the
+          // The columns that accumulate instead of being replaced. On the
           // very first write of a new column the sheet's cell is '', which
           // parseGear_ maps to [], so this is a clean insert with no special
           // case.
-          if (gearIdx !== -1) {
-            var m = mergeGear_(out[index[key]][gearIdx], row[gearIdx]);
-            row[gearIdx] = m.text;
-            if (m.ok) { gearMerged++; } else { gearSkipped++; }
+          for (var mj = 0; mj < mergeCols.length; mj++) {
+            var mc = mergeCols[mj];
+            var m = mergeGear_(out[index[key]][mc.idx], row[mc.idx]);
+            row[mc.idx] = m.text;
+            if (m.ok) { merged[mc.name] = (merged[mc.name] || 0) + 1; }
+            else      { skipped[mc.name] = (skipped[mc.name] || 0) + 1; }
           }
           out[index[key]] = row;
           updated++;
         } else {
-          if (gearIdx !== -1 && parseGear_(row[gearIdx]) === null) {
-            row[gearIdx] = '';
-            gearSkipped++;
+          for (var mk = 0; mk < mergeCols.length; mk++) {
+            if (parseGear_(row[mergeCols[mk].idx]) === null) {
+              row[mergeCols[mk].idx] = '';
+              skipped[mergeCols[mk].name] = (skipped[mergeCols[mk].name] || 0) + 1;
+            }
           }
           index[key] = out.length;
           out.push(row);
@@ -385,8 +409,10 @@ function doPost(e) {
       replaced: replaced,
       totalRows: out.length,
       columns: nCols,
-      gearMerged: gearMerged,
-      gearSkipped: gearSkipped
+      gearMerged: merged[GEAR_COLUMN] || 0,
+      gearSkipped: skipped[GEAR_COLUMN] || 0,
+      abilitiesMerged: merged[ABILITIES_COLUMN] || 0,
+      abilitiesSkipped: skipped[ABILITIES_COLUMN] || 0
     });
 
     } finally {
@@ -430,6 +456,7 @@ function normaliseRow_(src, nCols) {
 // Note the absence of isFinite/Number: Code.test.js runs this file in a vm
 // context carrying only Array, String, Object, JSON, Math and Error. Hence
 // self-inequality for NaN and an explicit bound for Infinity.
+// Shape-generic: serves every MERGE_COLUMNS entry, not only gear.
 function parseGear_(cell) {
   var s = String(cell === null || cell === undefined ? '' : cell);
   if (s === '') return [];
@@ -486,30 +513,41 @@ function mergeGear_(existing, incoming) {
   return { text: text, ok: true };
 }
 
-function gearColumnIndex_(header, nCols) {
-  for (var i = 0; i < nCols; i++) if (String(header[i]) === GEAR_COLUMN) return i;
-  return -1;
+// The union columns present in THIS payload's header, by name, with their
+// indices. A column absent from the header is simply not merged — that is what
+// a reverted userscript looks like, and it must cost nothing.
+function mergeColumnIndices_(header, nCols) {
+  var out = [];
+  for (var m = 0; m < MERGE_COLUMNS.length; m++) {
+    for (var i = 0; i < nCols; i++) {
+      if (String(header[i]) === MERGE_COLUMNS[m]) { out.push({ name: MERGE_COLUMNS[m], idx: i }); break; }
+    }
+  }
+  return out;
 }
 
-// Does the TAB already hold accumulated gear history? Read against the sheet's
-// OWN header across its full width, never the payload's: the sheet may be wider
-// than the payload (a reverted userscript sends fewer columns), and the column
-// we must protect could sit beyond nCols.
-function gearHistoryPresent_(sh, lastRow) {
-  if (lastRow < 2) return false;
+// Does the TAB already hold accumulated history in ANY union column? Returns
+// the first such column's name, or null. Read against the sheet's OWN header
+// across its full width, never the payload's: the sheet may be wider than the
+// payload (a reverted userscript sends fewer columns), and the column to
+// protect could sit beyond nCols.
+function unionHistoryPresent_(sh, lastRow) {
+  if (lastRow < 2) return null;
   var width = sh.getLastColumn();
-  if (width < 1) return false;
+  if (width < 1) return null;
   var head = sh.getRange(1, 1, 1, width).getValues()[0];
-  var col = -1;
-  for (var i = 0; i < width; i++) {
-    if (String(head[i]) === GEAR_COLUMN) { col = i + 1; break; }
+  for (var m = 0; m < MERGE_COLUMNS.length; m++) {
+    var col = -1;
+    for (var i = 0; i < width; i++) {
+      if (String(head[i]) === MERGE_COLUMNS[m]) { col = i + 1; break; }
+    }
+    if (col === -1) continue;
+    var vals = sh.getRange(2, col, lastRow - 1, 1).getValues();
+    for (var r = 0; r < vals.length; r++) {
+      if (String(vals[r][0] === undefined ? '' : vals[r][0]) !== '') return MERGE_COLUMNS[m];
+    }
   }
-  if (col === -1) return false;
-  var vals = sh.getRange(2, col, lastRow - 1, 1).getValues();
-  for (var r = 0; r < vals.length; r++) {
-    if (String(vals[r][0] === undefined ? '' : vals[r][0]) !== '') return true;
-  }
-  return false;
+  return null;
 }
 
 function isBlankRow_(arr) {
@@ -524,7 +562,7 @@ function isBlankRow_(arr) {
 // A payload column whose SHEET cell is BLANK is a new column, not drift: the
 // userscript gained one and this tab has not seen it yet. Tolerating that is
 // what lets a column be ADDED without mode:"replace" — and replace would
-// destroy the accumulated gear union, so refusing here would push the operator
+// destroy the accumulated unions, so refusing here would push the operator
 // straight into the one action that loses data.
 //
 // A SHIFT is still refused. Both cells non-empty and different means the column
