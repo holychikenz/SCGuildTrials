@@ -5008,14 +5008,36 @@ def _summary_line(
     )
 
 
+# The version of the `combat.loadouts` contract, and the spelling of the loadout
+# values inside it. Bumped only by a BREAKING change to the loadout shape; a consumer
+# that does not recognise either refuses the loadouts and keeps the teams.
+# "engine-dto" means equipment values are keyed `hrid`, the engine DTO's spelling, NOT
+# `itemHrid`, the UI's. Converting between the two is SCLIRoster's exportRoster.js's
+# job and is not reimplemented here or anywhere else.
+COMBAT_LOADOUT_SCHEMA = 1
+COMBAT_LOADOUT_SHAPE = "engine-dto"
+
+
 def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
     """The `combat` key of trials.json — the plan's §4.2, to the field.
 
-    FIVE KEYS, ALWAYS THE SAME FIVE, whatever happened upstream. `available` gates
-    everything for the consumer; `unavailable` carries the reason verbatim (the same
-    text the CI WARNING printed), so the in-game panel can SAY why nothing glows
-    instead of showing an empty grid. An absence stated in words is the whole point:
-    `available: false` is a statement, not an error.
+    SEVEN KEYS, ALWAYS THE SAME SEVEN, whatever happened upstream (five until
+    2026-09-15; `loadout_schema` and `loadouts` widened the promise without weakening
+    it). `available` gates everything for the consumer; `unavailable` carries the
+    reason verbatim (the same text the CI WARNING printed), so the in-game panel can
+    SAY why nothing glows instead of showing an empty grid. An absence stated in words
+    is the whole point: `available: false` is a statement, not an error.
+
+    The two loadout keys are emitted UNCONDITIONALLY — `loadouts` merely empties to
+    `{"shape": "engine-dto", "by_id": {}}` when there is nothing to publish. A
+    consumer therefore never has to ask whether the key exists before asking whether
+    it is populated, and a seven-wide tab (the old writer) and an unavailable block
+    reach it as the same shape. `loadout_id` is "" on any seat the tab carried none
+    for, by CombatSeat's own default.
+
+    `shape` is published LITERALLY because the values inside carry `hrid` — the engine
+    DTO's spelling — and not `itemHrid`, the UI's. A consumer that does not recognise
+    the shape must refuse the block rather than guess which spelling it is holding.
 
     This is pure dict work over fields the dataclass always has, so it cannot raise
     and cannot be the thing that stops a deploy.
@@ -5033,6 +5055,11 @@ def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
         "unavailable": "" if available else reason,
         "source": site.combat_tab,
         "generated_at": obs.generated_at if available else "",
+        "loadout_schema": COMBAT_LOADOUT_SCHEMA,
+        "loadouts": {
+            "shape": COMBAT_LOADOUT_SHAPE,
+            "by_id": obs.loadouts if available else {},
+        },
         "trials": [t.to_dict() for t in obs.teams] if available else [],
     }
 

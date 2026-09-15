@@ -19,9 +19,17 @@ bytes below are what a live build actually gets today when it asks for
 prose, captured verbatim. "The tab does not exist" is therefore not a state anything
 can detect by size or emptiness — only the header guard can tell, which is why
 ``config.COMBAT_SENTINEL_HEADERS`` is equals-throughout on all seven cells.
+
+SEVEN-WIDE AND NINE-WIDE TABS ARE BOTH TESTED, and that is not thoroughness — it is
+the contract. The reader shipped BEFORE the writer that appended the two loadout
+columns, so "seven wide" is the live state on the day this lands and "nine wide" is
+the state a week later; a rollback of the writer returns to seven. Every pairing has
+to parse, or the cross-repo rollout has an ordering it cannot survive.
 """
 
 import copy
+import csv
+import io
 import json
 
 import pytest
@@ -106,6 +114,11 @@ def test_parses_a_machine_written_tab():
     # every row identically, so this differs from the newest only on a torn write.
     assert g.generated_at == AT
     assert g.hrids == {"/guild_combat/chameleon", "/guild_combat/hedgehog"}
+    # A SEVEN-wide tab — what the older writer publishes — still parses, and every
+    # seat simply carries no loadout. This is the backwards-compatibility lever the
+    # whole cross-repo rollout hangs on, so it is asserted on the main fixture rather
+    # than off in a corner.
+    assert g.loadouts == {}
 
     # TAB ORDER: first-seen (hrid, team) walking rows top to bottom.
     assert [t.team for t in g.teams] == ["SC Team 1", "SC Team 2"]
@@ -117,9 +130,11 @@ def test_parses_a_machine_written_tab():
         "team": "SC Team 1",
         "party_size": 3,
         "roster": [
-            {"name": "Yedic", "role": "tank", "slot": "tank 1"},
-            {"name": "Pipsqueak", "role": "cursed", "slot": "cursed 1"},
-            {"name": "jodend", "role": "healer_blooming", "slot": "healer_blooming 1"},
+            {"name": "Yedic", "role": "tank", "slot": "tank 1", "loadout_id": ""},
+            {"name": "Pipsqueak", "role": "cursed", "slot": "cursed 1",
+             "loadout_id": ""},
+            {"name": "jodend", "role": "healer_blooming", "slot": "healer_blooming 1",
+             "loadout_id": ""},
         ],
     }
     # party_size is derived, never carried: it cannot disagree with the roster.
@@ -237,6 +252,244 @@ def test_a_blank_member_name_raises():
         )
 
     assert "blank Member on row 3" in str(exc.value)
+
+
+# --- The optional loadout pair: a nine-wide tab ------------------------------------
+#
+# The writer appended `Loadout Id` and `Loadout` at indices 7 and 8 on 2026-09-15.
+# Everything below is about the two properties that make that safe: the reader accepts
+# BOTH widths, and the `Loadout` cell — the first in this pipeline ever to contain a
+# comma or a double quote — survives a REAL CSV round trip rather than a hand-written
+# approximation of one.
+
+NINE_HEADER = [
+    "Member", "Trial Hrid", "Team", "Role", "Slot", "Guild Id", "Generated At",
+    "Loadout Id", "Loadout",
+]
+
+# A genuine recommendation, with everything the shape has to survive: a `null` slot
+# (wear nothing there, which is NOT the same as omitting the slot), an EMPTY trigger
+# list (no conditions at all, which is NOT "the game's defaults"), and a populated one.
+LOADOUT = {
+    "equipment": {
+        "/equipment_types/two_hand": {"hrid": "/items/griffin_bulwark_refined"},
+        "/equipment_types/off_hand": None,
+        "/equipment_types/head": {"hrid": "/items/corsair_helmet_refined"},
+    },
+    "abilities": [
+        {"hrid": "/abilities/invincible", "triggers": []},
+        {"hrid": "/abilities/provoke", "triggers": []},
+        {
+            "hrid": "/abilities/taunt",
+            "triggers": [
+                {
+                    "dependencyHrid": "/ability_trigger_dependencies/self",
+                    "conditionHrid": "/ability_trigger_conditions/mp",
+                    "comparatorHrid": "/ability_trigger_comparators/less_than_equal",
+                    "value": 50,
+                }
+            ],
+        },
+    ],
+}
+LOADOUT_JSON = json.dumps(LOADOUT, sort_keys=True, separators=(",", ":"))
+LOADOUT_ID = "ld_9c41ab27f0e3"
+
+OTHER_LOADOUT = {"equipment": {}, "abilities": [None, {"hrid": "/abilities/puncture",
+                                                       "triggers": []}]}
+OTHER_JSON = json.dumps(OTHER_LOADOUT, sort_keys=True, separators=(",", ":"))
+OTHER_ID = "ld_00ff11ee22dd"
+
+
+def _csv9(*rows, header=None):
+    """Serialise through the REAL csv module — not an f-string.
+
+    This is the point of R4. A `Loadout` cell is canonical JSON: commas throughout and
+    a double quote around every key. gviz wraps such a field in double quotes and
+    DOUBLES each internal one (RFC 4180), and `csv.reader` is what undoes it. Building
+    the fixture with `csv.writer` means the bytes under test are quoted and doubled the
+    way the wire really does it, so the test exercises the seam instead of agreeing
+    with itself.
+    """
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    w.writerow(header or NINE_HEADER)
+    for r in rows:
+        w.writerow(r)
+    return buf.getvalue()
+
+
+def _row9(name, team="SC Team 1", slot="tank 1", ld_id=LOADOUT_ID, blob=LOADOUT_JSON):
+    return [name, "/guild_combat/swarm", team, "tank", slot, "4", AT, ld_id, blob]
+
+
+def test_a_nine_wide_tab_parses_and_dedupes():
+    """The feature: seats point at ids, and the loadouts live once each."""
+    text = _csv9(
+        _row9("Yedic"),
+        _row9("IronOwl", slot="tank 2"),
+        _row9("Maine", slot="tank 3", ld_id=OTHER_ID, blob=OTHER_JSON),
+    )
+    g = combat.parse_combat(text, "sc", tab="SC Combat Teams")
+
+    assert g.observed is True
+    assert [s.loadout_id for s in g.teams[0].roster] == [
+        LOADOUT_ID, LOADOUT_ID, OTHER_ID
+    ]
+    # Denormalised on the tab, normalised here: three rows, two loadouts.
+    assert set(g.loadouts) == {LOADOUT_ID, OTHER_ID}
+    assert g.loadouts[LOADOUT_ID] == LOADOUT
+
+    # `triggers: []` means NO CONDITIONS, not "the game's defaults", so an empty list
+    # must arrive as an empty list and not as a missing key or a null.
+    abilities = g.loadouts[LOADOUT_ID]["abilities"]
+    assert abilities[0]["triggers"] == []
+    assert abilities[2]["triggers"][0]["value"] == 50
+    # Abilities are POSITIONAL: index 0 is the special, 1..4 the rotation. A `null`
+    # entry is a real position and must not be filtered away.
+    assert g.loadouts[OTHER_ID]["abilities"][0] is None
+    # A `null` equipment slot means "wear nothing here" and is likewise not a gap.
+    assert g.loadouts[LOADOUT_ID]["equipment"]["/equipment_types/off_hand"] is None
+    # The engine spelling, published literally. `itemHrid` is the UI's and converting
+    # between them is SCLIRoster's exportRoster.js's job, not this reader's.
+    assert "itemHrid" not in json.dumps(g.to_dict())
+    assert g.to_dict()["teams"][0]["roster"][0]["loadout_id"] == LOADOUT_ID
+
+
+def test_the_loadout_cell_survives_a_real_csv_round_trip():
+    """R4, directly: the first cell in this pipeline to hold commas and quotes.
+
+    The blob below is quoted and doubled by `csv.writer` exactly as gviz does it — the
+    raw text really does contain `""` sequences — and comes back byte-identical. A
+    reader that split rows on commas by hand would shear it at the first one and hand
+    the fragments to `Guild Id` and `Generated At`.
+    """
+    text = _csv9(_row9("Yedic"))
+
+    assert '""' in text, "the fixture must actually be doubled, or it tests nothing"
+    assert text.count(",") > 20, "and must actually contain commas inside the cell"
+
+    g = combat.parse_combat(text, "sc", tab="SC Combat Teams")
+    assert g.loadouts[LOADOUT_ID] == LOADOUT
+    # And byte-for-byte, not merely equal-as-objects: the canonical JSON is what the
+    # id is derived from, so a re-serialisation that differs would break the dedupe.
+    assert json.dumps(
+        g.loadouts[LOADOUT_ID], sort_keys=True, separators=(",", ":")
+    ) == LOADOUT_JSON
+
+
+def test_a_blank_loadout_pair_is_a_seat_without_a_recommendation():
+    """A member the optimiser could not build for still gets a seat."""
+    g = combat.parse_combat(
+        _csv9(_row9("Yedic", ld_id="", blob=""), _row9("IronOwl", slot="tank 2")),
+        "sc",
+        tab="SC Combat Teams",
+    )
+    assert [s.loadout_id for s in g.teams[0].roster] == ["", LOADOUT_ID]
+    assert set(g.loadouts) == {LOADOUT_ID}
+
+
+def test_a_half_filled_loadout_pair_raises():
+    """Both cells or neither; one alone is a torn write."""
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv9(_row9("Yedic", blob="")), "sc", tab="SC Combat Teams"
+        )
+    assert "half-filled loadout on row 2" in str(exc.value)
+
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv9(_row9("Yedic", ld_id="")), "sc", tab="SC Combat Teams"
+        )
+    assert "half-filled loadout on row 2" in str(exc.value)
+
+
+def test_malformed_loadout_json_raises():
+    """Not a crash, not a silent drop: a named SheetStructureError, which degrades."""
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv9(_row9("Yedic", blob='{"equipment":{,}')),
+            "sc",
+            tab="SC Combat Teams",
+        )
+    assert "not valid JSON" in str(exc.value)
+    assert "row 2" in str(exc.value)
+
+    # A well-formed blob of the WRONG TYPE is refused too — a list would reach the
+    # userscript as a shape it cannot read.
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv9(_row9("Yedic", blob="[1,2,3]")), "sc", tab="SC Combat Teams"
+        )
+    assert "not an object" in str(exc.value)
+
+
+def test_one_id_with_two_different_blobs_raises():
+    """The id is CONTENT-derived, so this cannot be two legitimate publishes.
+
+    The reader does not recompute the hash — that rule lives in exactly one file, on
+    the writer's side. It verifies instead, and this is the property it can verify
+    without owning the rule.
+    """
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv9(
+                _row9("Yedic"),
+                _row9("IronOwl", slot="tank 2", blob=OTHER_JSON),
+            ),
+            "sc",
+            tab="SC Combat Teams",
+        )
+    msg = str(exc.value)
+    assert "DIFFERENT JSON" in msg and LOADOUT_ID in msg
+
+    # The SAME id with the SAME JSON is the normal case — every member sharing a
+    # template hits it — and must not raise.
+    ok = combat.parse_combat(
+        _csv9(_row9("Yedic"), _row9("IronOwl", slot="tank 2")),
+        "sc",
+        tab="SC Combat Teams",
+    )
+    assert set(ok.loadouts) == {LOADOUT_ID}
+
+
+def test_a_mistyped_optional_header_on_a_wide_tab_raises():
+    """Nine wide with a drifted eighth cell is a broken writer, not an old one.
+
+    Guessing which would attribute JSON to whatever column happened to hold it.
+    """
+    bad = list(NINE_HEADER)
+    bad[7] = "Loadout ID"  # capital D — the exact drift a human would introduce
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv9(_row9("Yedic"), header=bad), "sc", tab="SC Combat Teams"
+        )
+    msg = str(exc.value)
+    assert "col 7: expected equals 'Loadout Id', got 'Loadout ID'" in msg
+
+
+def test_the_optional_pair_is_not_required_on_a_seven_wide_tab():
+    """The lever, stated as its own test: seven cells validate, unchanged.
+
+    The reader ships BEFORE the writer, and a rollback of the writer returns the tab
+    to seven. Neither direction may raise.
+    """
+    g = combat.parse_combat(LIVE_SHAPE_CSV, "sc", tab="SC Combat Teams")
+    assert g.observed is True
+    assert g.loadouts == {}
+    assert all(s.loadout_id == "" for t in g.teams for s in t.roster)
+
+
+def test_a_wrong_tab_serve_still_names_exactly_the_seven_required_cells():
+    """The wrong-tab fixture is NINETEEN columns wide, which is the trap here.
+
+    A width-triggered check of the optional pair would add two more mismatches to a
+    message whose one job is to say "this is not the combat tab". The optional pair is
+    therefore checked only once the required seven have all passed.
+    """
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(WRONG_TAB_CSV, "sc", tab="SC Combat Teams")
+    assert str(exc.value).count("col ") == 7
 
 
 # --- The cross-check ---------------------------------------------------------------
@@ -460,8 +713,12 @@ def test_write_guild_attaches_the_block_on_both_guilds(tmp_path, monkeypatch):
             "unavailable",
             "source",
             "generated_at",
+            "loadout_schema",
+            "loadouts",
             "trials",
         }
+        assert block["loadout_schema"] == 1
+        assert block["loadouts"] == {"shape": "engine-dto", "by_id": {}}
         assert block["available"] is True
         assert block["unavailable"] == ""
         assert block["source"] == site.combat_tab
@@ -472,9 +729,13 @@ def test_write_guild_attaches_the_block_on_both_guilds(tmp_path, monkeypatch):
         ]
         assert all(t["party_size"] == len(t["roster"]) for t in block["trials"])
         assert all(
-            set(r) == {"name", "role", "slot"}
+            set(r) == {"name", "role", "slot", "loadout_id"}
             for t in block["trials"]
             for r in t["roster"]
+        )
+        # Seven-wide fixture: the seats publish, with no loadout to point at.
+        assert all(
+            r["loadout_id"] == "" for t in block["trials"] for r in t["roster"]
         )
         assert "combat 2026-09-09 swarmx1, badgerx1" in summary
 
@@ -490,6 +751,11 @@ def test_write_guild_attaches_the_block_on_both_guilds(tmp_path, monkeypatch):
         assert block["available"] is False
         assert block["unavailable"] == f"The {site.combat_tab!r} tab was not read."
         assert block["trials"] == [] and block["generated_at"] == ""
+        # The two loadout keys are present on the UNAVAILABLE path too: a consumer
+        # never has to ask whether the key exists before asking whether it is
+        # populated.
+        assert block["loadout_schema"] == 1
+        assert block["loadouts"] == {"shape": "engine-dto", "by_id": {}}
         assert "combat NONE — " in summary
 
 
