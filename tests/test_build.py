@@ -191,3 +191,35 @@ def test_the_summary_says_why_when_nothing_was_read():
     )
     assert "buildings NONE READ" in line
     assert "never been written" in line
+
+
+# ---------------------------------------------------------------------------
+# the combat block's loadout keys
+# ---------------------------------------------------------------------------
+def test_the_combat_block_always_carries_both_loadout_keys():
+    """"FIVE KEYS, ALWAYS THE SAME FIVE" became seven, and the "always" is the point.
+
+    `_combat_block` is the one place the userscript's contract is fixed, and its
+    promise was never "five keys when things go well". A consumer must not have to ask
+    whether `loadouts` exists before asking whether it is populated, because the two
+    questions have different answers on different days and only one of them is
+    interesting. So on the UNAVAILABLE path — no observation at all, which is what a
+    missing tab, a stale tab and a disabled flag all reduce to — both keys are still
+    emitted, with `by_id` empty and `shape` stated.
+
+    `shape` is literal for a reason worth not rediscovering: the values inside carry
+    `hrid`, the engine DTO's spelling, and not `itemHrid`, the UI's. A consumer that
+    does not recognise the shape must refuse the loadouts rather than guess which
+    spelling it is holding.
+    """
+    site = build.GUILD_SITES[0]
+    block = build._combat_block(_summary_inputs(combat=None), site)
+
+    assert block["available"] is False
+    assert block["loadout_schema"] == 1
+    assert block["loadouts"] == {"shape": "engine-dto", "by_id": {}}
+    assert block["trials"] == []
+    assert set(block) == {
+        "available", "unavailable", "source", "generated_at",
+        "loadout_schema", "loadouts", "trials",
+    }

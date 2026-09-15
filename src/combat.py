@@ -8,6 +8,21 @@ recommended teams — one row per seated member — through the Apps Script endp
 else here is read from:
 
     Member | Trial Hrid | Team | Role | Slot | Guild Id | Generated At
+                                            [| Loadout Id | Loadout]
+
+The last two cells are OPTIONAL and were appended on 2026-09-15. A tab written by the
+older writer is seven wide and still parses here, with every seat's ``loadout_id``
+left ``""`` — this reader is tolerant BY CONSTRUCTION so that it could ship before
+the writer, which is the only reason the cross-repo rollout is safe in either order.
+
+``Loadout`` is THE FIRST CELL IN THIS PIPELINE ever to contain a comma or a double
+quote: it holds canonical JSON, and JSON is commas and quotes almost exclusively.
+gviz's CSV export handles that the way RFC 4180 says — the field is wrapped in double
+quotes and every internal double quote is DOUBLED (``"`` -> ``""``) — and
+``csv.reader`` undoes exactly that, which is why the parse below reads whole cells
+rather than splitting on commas anywhere. Nothing in this module may ever split a row
+by hand; a hand-rolled split would shear every loadout at its first comma and hand the
+fragments to the wrong columns.
 
 That tab is the whole bridge. This module reads it, cross-checks it against the
 guild's OWN sign-up tab, and ``build._write_guild`` attaches the result to
@@ -71,6 +86,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 from dataclasses import dataclass, field
 from urllib.parse import quote
@@ -90,6 +106,11 @@ COL_ROLE = 3
 COL_SLOT = 4
 COL_GUILD_ID = 5
 COL_GENERATED_AT = 6
+# Appended 2026-09-15, and OPTIONAL: guarded by config.COMBAT_OPTIONAL_HEADERS only
+# when the header is wider than seven. Indices 0-6 above are untouched by design, so
+# any reader slicing [:7] — this one included, before that date — is unaffected.
+COL_LOADOUT_ID = 7
+COL_LOADOUT = 8
 
 # Every Trial Hrid must start with this. A structural guard a display name could not
 # admit, and the reason §3.1 of the plan publishes the hrid rather than "Swarm": it is
@@ -117,9 +138,20 @@ class CombatSeat:
     name: str
     role: str
     slot: str
+    # The id of the loadout the optimiser RECOMMENDS for this seat — a key into
+    # GuildCombat.loadouts, never the loadout itself (the artefact is normalised; the
+    # tab is not). "" when the tab is seven wide, or when the optimiser could not
+    # build one for this member. A consumer resolves it or shows nothing; there is no
+    # third outcome.
+    loadout_id: str = ""
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "role": self.role, "slot": self.slot}
+        return {
+            "name": self.name,
+            "role": self.role,
+            "slot": self.slot,
+            "loadout_id": self.loadout_id,
+        }
 
 
 @dataclass
@@ -158,6 +190,13 @@ class GuildCombat:
     # bottom. The writer sorts by Team then Slot, so this is stable across publishes
     # of the same recommendation.
     teams: list[CombatTeam] = field(default_factory=list)
+    # id -> the recommended loadout, deduped: many seats share one. Empty when the
+    # tab is seven wide. The ids are the optimiser's own content hashes and are NOT
+    # recomputed here — the canonicalisation rule lives in exactly one file
+    # (SCLIRoster's optimizer/src/publish/loadout.js) and a second implementation of
+    # it in another language is a second implementation to drift. This side VERIFIES
+    # instead: two rows sharing an id with different JSON is a structure error.
+    loadouts: dict[str, dict] = field(default_factory=dict)
 
     @property
     def hrids(self) -> set[str]:
@@ -176,6 +215,7 @@ class GuildCombat:
             "observed": self.observed,
             "generated_at": self.generated_at,
             "teams": [t.to_dict() for t in self.teams],
+            "loadouts": self.loadouts,
         }
 
 
@@ -227,10 +267,23 @@ def fetch_combat_csv(tab_name: str) -> str:
 def _validate_combat_header(header: list[str], tab: str) -> None:
     """Guard against gviz silently serving the wrong tab, or a hand-edited one.
 
-    Matches by EQUALS on all seven cells (see the module docstring: this tab is
-    machine-written, so there is no merged junk to tolerate). A wrong-tab serve — the
-    only way "the tab does not exist" can reach this module — fails on cell 0: the
+    Matches by EQUALS on all seven REQUIRED cells (see the module docstring: this tab
+    is machine-written, so there is no merged junk to tolerate). A wrong-tab serve —
+    the only way "the tab does not exist" can reach this module — fails on cell 0: the
     officers' first tab opens with a blank cell, not "Member".
+
+    The two OPTIONAL loadout cells are checked only when the header is WIDER than the
+    required seven, and only once the required seven have all matched. Both halves of
+    that are deliberate:
+
+      * Width-gated, because a seven-wide tab written by the older optimiser is a
+        supported, indefinitely-safe state (§0 of the plan, and the whole reason this
+        reader could ship first). Requiring nine would turn a rollback of the writer
+        into a broken build.
+      * Only after the required seven pass, because a wrong-tab serve is nineteen
+        columns of officers' prose: checking the optional pair against that would add
+        two more mismatches to a message that is already naming the real problem, and
+        the message's job is to say "this is not the combat tab", once.
     """
     mismatches = []
     for col, (mode, expected) in config.COMBAT_SENTINEL_HEADERS.items():
@@ -240,6 +293,15 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
             mismatches.append(
                 f"col {col}: expected {mode} {expected!r}, got {actual!r}"
             )
+
+    if not mismatches and len(header) > len(config.COMBAT_SENTINEL_HEADERS):
+        for col, (mode, expected) in config.COMBAT_OPTIONAL_HEADERS.items():
+            actual = _cell(header, col)
+            ok = actual == expected if mode == "equals" else expected in actual
+            if not ok:
+                mismatches.append(
+                    f"col {col}: expected {mode} {expected!r}, got {actual!r}"
+                )
 
     if mismatches:
         raise SheetStructureError(
@@ -280,6 +342,78 @@ def _check_guild_id(raw: str, guild_key: str, tab: str, row_no: int) -> None:
         )
 
 
+def _parse_loadout(
+    raw: list[str], loadouts: dict[str, dict], tab: str, row_no: int
+) -> str:
+    """Read one row's optional ``Loadout Id`` / ``Loadout`` pair; return the id.
+
+    ``""`` — and no entry in ``loadouts`` — for a seven-wide row, and for a nine-wide
+    row whose pair is blank (a seated member the optimiser could not build a loadout
+    for; the seat still publishes, and the CLI names the shortfall on its own side).
+
+    VERIFIES, never recomputes. The id is the optimiser's content hash over its own
+    canonical JSON, and rehashing it here would be a second implementation of a
+    canonicalisation rule that deliberately lives in exactly one file. What this side
+    CAN check without owning the rule is consistency: one publish clears and rewrites
+    the tab from A1, so two rows carrying the same id with different JSON cannot be a
+    stale row — it is a torn write or a hand edit, and either way one of the two
+    blobs would be attributed to members it was never recommended for.
+
+    Raises:
+        SheetStructureError: on malformed JSON, on a non-object blob, on an id with
+            no JSON beside it (or the reverse), or on an id/JSON conflict.
+    """
+    if len(raw) <= COL_LOADOUT_ID:
+        return ""
+
+    loadout_id = _cell(raw, COL_LOADOUT_ID)
+    blob = _cell(raw, COL_LOADOUT)
+
+    if loadout_id == "" and blob == "":
+        return ""
+
+    if loadout_id == "" or blob == "":
+        raise SheetStructureError(
+            f"the {tab!r} tab has a half-filled loadout on row {row_no}: "
+            f"Loadout Id {loadout_id!r}, Loadout {blob[:60]!r}. The writer emits both "
+            f"cells or neither, so one without the other is a torn write or a hand "
+            f"edit. Re-run the optimiser's `report --publish-combat` rather than "
+            f"editing this machine-owned tab."
+        )
+
+    try:
+        parsed = json.loads(blob)
+    except ValueError as exc:
+        raise SheetStructureError(
+            f"the {tab!r} tab's Loadout on row {row_no} is not valid JSON ({exc}). "
+            f"The cell holds canonical JSON, which contains commas and double quotes; "
+            f"gviz quotes and doubles them per RFC 4180 and csv.reader undoes that, so "
+            f"a malformed blob here means the writer wrote one — or the tab was hand "
+            f"edited. Got: {blob[:120]!r}"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise SheetStructureError(
+            f"the {tab!r} tab's Loadout on row {row_no} parsed as "
+            f"{type(parsed).__name__}, not an object. A loadout is "
+            f"{{equipment, abilities}}; anything else would reach the userscript as a "
+            f"shape it cannot read. Got: {blob[:120]!r}"
+        )
+
+    seen = loadouts.get(loadout_id)
+    if seen is not None and seen != parsed:
+        raise SheetStructureError(
+            f"the {tab!r} tab carries Loadout Id {loadout_id!r} on row {row_no} with "
+            f"DIFFERENT JSON from an earlier row that shares it. The id is derived "
+            f"from the content, so two spellings of one id cannot both be right, and "
+            f"publishing either would attribute a recommendation to members it was "
+            f"never made for. Every publish clears and rewrites this tab from A1, so "
+            f"this is a torn write or a hand edit; re-run `report --publish-combat`."
+        )
+    loadouts[loadout_id] = parsed
+    return loadout_id
+
+
 def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
     """Parse a Combat Teams tab's gviz CSV into a :class:`GuildCombat`.
 
@@ -315,6 +449,10 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
     # why this is a dict rather than a list plus a search.
     teams: dict[tuple[str, str], CombatTeam] = {}
     stamps: list[str] = []
+    # id -> loadout, built as the rows are walked. The tab is DENORMALISED (every row
+    # carries the whole blob, so a row is auditable on its own); the artefact is
+    # normalised, and this dict is where the two meet.
+    loadouts: dict[str, dict] = {}
 
     for offset, raw in enumerate(data):
         # +2: line 1 is the header, and rows are counted as a human reads the tab.
@@ -352,11 +490,18 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
         if stamp:
             stamps.append(stamp)
 
+        loadout_id = _parse_loadout(raw, loadouts, tab, row_no)
+
         key = (hrid, team)
         if key not in teams:
             teams[key] = CombatTeam(hrid=hrid, team=team)
         teams[key].roster.append(
-            CombatSeat(name=name, role=_cell(raw, COL_ROLE), slot=_cell(raw, COL_SLOT))
+            CombatSeat(
+                name=name,
+                role=_cell(raw, COL_ROLE),
+                slot=_cell(raw, COL_SLOT),
+                loadout_id=loadout_id,
+            )
         )
 
     return GuildCombat(
@@ -365,6 +510,7 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
         observed=True,
         generated_at=min(stamps) if stamps else "",
         teams=list(teams.values()),
+        loadouts=loadouts,
     )
 
 

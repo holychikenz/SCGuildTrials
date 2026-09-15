@@ -1673,8 +1673,10 @@ BUILDINGS_SENTINEL_HEADERS = {
 # NEW 2026-09-09. The combat-trial optimiser in ~/pie/SCLIRoster publishes its
 # recommended teams — one row per seated member — through the same Apps Script
 # endpoint in apps-script/ that the sign-up and buildings blocks use, to a per-guild
-# tab of the public sheet. Header (fixed, seven columns, guarded by equals below):
+# tab of the public sheet. Header (seven REQUIRED columns guarded by equals below,
+# plus two OPTIONAL appended ones — see COMBAT_OPTIONAL_HEADERS):
 #   Member | Trial Hrid | Team | Role | Slot | Guild Id | Generated At
+#                                                       [| Loadout Id | Loadout]
 # Parsed by src/combat.py and attached to trials.json as a top-level `combat` key, for
 # the in-game userscript that glows a member's assigned tiles. NON-REQUIRED: any failure
 # degrades to `available: false` with the reason, and never stops the deploy — SC is
@@ -1706,6 +1708,30 @@ COMBAT_SENTINEL_HEADERS = {
     4: ("equals", "Slot"),
     5: ("equals", "Guild Id"),
     6: ("equals", "Generated At"),
+}
+
+# The two cells the optimiser APPENDED on 2026-09-15, carrying its recommended
+# LOADOUT for each seated member. Kept in a PARALLEL map rather than added to the
+# required one above, and that is the whole backwards-compatibility lever: the
+# required map stays exactly seven entries, so a tab written by the OLD writer —
+# seven columns, no loadout — still validates and still publishes, and this reader
+# could therefore ship before the writer did.
+#   Member | Trial Hrid | Team | Role | Slot | Guild Id | Generated At |
+#                                                       Loadout Id | Loadout
+# Checked by combat._validate_combat_header ONLY when the header is wider than seven,
+# and then by equals, exactly as the required cells are: a NINE-wide tab whose eighth
+# cell is not 'Loadout Id' is a drifted writer, not an old one, and guessing which is
+# how the wrong JSON gets attributed to the wrong column.
+#
+# `Loadout Id` is a content-derived 'ld_' + 12 hex digits; `Loadout` is the canonical
+# JSON of the recommendation itself. It is THE RECOMMENDATION, never an observation of
+# what a member is wearing, and it deliberately carries no enhancement levels and no
+# ability levels — those come from the opt-in private-profile upload and have no
+# business on a public sheet. The canonicalisation rule lives in exactly one file,
+# SCLIRoster's optimizer/src/publish/loadout.js; nothing here recomputes it.
+COMBAT_OPTIONAL_HEADERS = {
+    7: ("equals", "Loadout Id"),
+    8: ("equals", "Loadout"),
 }
 
 # The TEN SKILLING buildings, hrid -> trial skill name, transcribed from the prose
