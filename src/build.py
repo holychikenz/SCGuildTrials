@@ -5141,8 +5141,27 @@ def _write_guild(
     # Each page's switch points at the other, carrying the other's level and total so
     # the reader can see what the alternative regime is worth before navigating. That
     # mutual reference is why both pages are written here rather than in the units.
+    # COMPACT, NOT PRETTY, AND THIS ONE FILE ONLY.
+    #
+    # trials.json is the only artefact here that a MEMBER'S BROWSER fetches, on
+    # every Guild > Trials open, through the userscript. The rest are read by us.
+    # Measured 2026-09-15, after the combat block began carrying recommended
+    # loadouts: indent=2 cost 357 KB on disk against 206 KB compact, and 19.9 KB
+    # on the wire against 14.4 KB gzipped. Nearly half the file was indentation,
+    # because a loadout nests triggers inside abilities inside objects and every
+    # level of that pays the indent again.
+    #
+    # 19.9 KB breached the 15 KB ceiling the loadout plan set for this file, and
+    # this is the whole of the fix: the loadouts themselves cost only ~4 KB
+    # gzipped. The raw number matters as much as the wire number — it is
+    # JSON.parse on a phone inside a game tab, once per panel open.
+    #
+    # Nothing reads this file as text. Our own tests json.loads it; so does the
+    # userscript. Whitespace was never part of the contract, and a reader who
+    # wants it pretty has `python -m json.tool`.
     (out / TRIALS_JSON).write_text(
-        json.dumps(week, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(week, separators=(",", ":"), ensure_ascii=False),
+        encoding="utf-8",
     )
     (out / TRIALS_PAGE).write_text(
         _render_trials_html(
