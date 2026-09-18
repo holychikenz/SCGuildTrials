@@ -1674,9 +1674,9 @@ BUILDINGS_SENTINEL_HEADERS = {
 # recommended teams — one row per seated member — through the same Apps Script
 # endpoint in apps-script/ that the sign-up and buildings blocks use, to a per-guild
 # tab of the public sheet. Header (seven REQUIRED columns guarded by equals below,
-# plus two OPTIONAL appended ones — see COMBAT_OPTIONAL_HEADERS):
+# plus three OPTIONAL appended ones — see COMBAT_OPTIONAL_HEADERS):
 #   Member | Trial Hrid | Team | Role | Slot | Guild Id | Generated At
-#                                                       [| Loadout Id | Loadout]
+#                                      [| Loadout Id | Loadout [| Loadout Name]]
 # Parsed by src/combat.py and attached to trials.json as a top-level `combat` key, for
 # the in-game userscript that glows a member's assigned tiles. NON-REQUIRED: any failure
 # degrades to `available: false` with the reason, and never stops the deploy — SC is
@@ -1717,11 +1717,21 @@ COMBAT_SENTINEL_HEADERS = {
 # seven columns, no loadout — still validates and still publishes, and this reader
 # could therefore ship before the writer did.
 #   Member | Trial Hrid | Team | Role | Slot | Guild Id | Generated At |
-#                                                       Loadout Id | Loadout
-# Checked by combat._validate_combat_header ONLY when the header is wider than seven,
-# and then by equals, exactly as the required cells are: a NINE-wide tab whose eighth
-# cell is not 'Loadout Id' is a drifted writer, not an old one, and guessing which is
-# how the wrong JSON gets attributed to the wrong column.
+#                                     Loadout Id | Loadout | Loadout Name
+# `Loadout Name` was appended on 2026-09-18 and is the template's curated label for
+# the recommendation — "Fire DPS (Blazing)", not a titlecased role. It rides on the
+# ROW rather than inside the loadout blob because two different templates can hash to
+# one loadout id, and then one id would carry two rightful names.
+#
+# Checked by combat._validate_combat_header ONLY for the columns the header ACTUALLY
+# HAS, and only when the header is wider than seven — an entry declared here for a
+# column a narrower supported tab does not carry is skipped, not failed, because
+# otherwise declaring col 9 would refuse the nine-wide tab that is live today. What
+# still refuses a drifted writer is that the columns that ARE present are checked by
+# equals, exactly as the required cells are: a NINE-wide tab whose eighth cell is not
+# 'Loadout Id' is a drifted writer, not an old one, and guessing which is how the
+# wrong JSON gets attributed to the wrong column. What refuses a TORN writer is
+# COMBAT_ACCEPTED_WIDTHS below.
 #
 # `Loadout Id` is a content-derived 'ld_' + 12 hex digits; `Loadout` is the canonical
 # JSON of the recommendation itself. It is THE RECOMMENDATION, never an observation of
@@ -1732,7 +1742,18 @@ COMBAT_SENTINEL_HEADERS = {
 COMBAT_OPTIONAL_HEADERS = {
     7: ("equals", "Loadout Id"),
     8: ("equals", "Loadout"),
+    9: ("equals", "Loadout Name"),
 }
+
+# The widths the writer has ever emitted: seven (pre-2026-09-15), nine (the loadout
+# pair) and ten (the loadout NAME, 2026-09-18). Checked as an ALLOW-LIST rather than
+# as a maximum, because the interesting failure is not a tab that is too wide — it is
+# a tab that is EIGHT wide, which is not an old writer but a torn one, and accepting
+# it would attribute a loadout id to a column with no JSON beside it.
+#
+# Seven never reaches the check at all (the branch is width-gated above seven); it is
+# named here as documentation of the supported set rather than as a live test.
+COMBAT_ACCEPTED_WIDTHS = (7, 9, 10)
 
 # The TEN SKILLING buildings, hrid -> trial skill name, transcribed from the prose
 # list above GUILD_BUILDING_LEVELS. Nothing else belongs here: the seven combat
