@@ -533,6 +533,66 @@ Three caveats worth stating plainly:
 Setting `config.REGISTER_CARRIES_WEEK = False` is the one-line rollback: no `week`
 key, no `trial` keys, no `Trial` column, and `data.json`'s key set exactly as it was.
 
+### Combat seats on the trials page
+
+`trials.html` is the skilling page, and it was the *only* page — combat was read,
+parsed, published into `trials.json` and rendered nowhere. A member who wanted to
+know which combat team they were in had to open the spreadsheet or install the
+in-game userscript. Since 2026-09-18 the **search panel** and the **pinned-members
+panel** answer it:
+
+```
+[ ☆ ]  CCTV3          Cooking
+       banked at 2840s · level 94
+       ── Combat ──────────────
+       Hedgehog · SC Team 1
+       cursed 1 · "Cursed"
+```
+
+The quoted label is the optimiser's **recommended loadout**, by the template's own
+curated name — `Fire DPS (Blazing)`, not a titlecased role. It arrives on the tenth
+column of the Combat Teams tab (`Loadout Name`) and rides on each seat as
+`loadout_name`. A seat read off a **nine-wide** tab has no label and the block shows
+one line instead of two; `""` is the only degradation there is, and it is never
+guessed at from `role`.
+
+Four decisions worth keeping:
+
+- **The combat fields ride inside the existing `#assign-data` island**, on the
+  entries that already exist, under two-character keys prefixed `c` (`cb`oss,
+  `ct`eam, `cs`lot, `cl`oadout). The whole index ships inline in every page, so
+  `"loadout_name"` spelled out once per seat on a hundred members is kilobytes.
+  There is **no second island, no second `JSON.parse`, no new fetch and no new
+  global** — `_TRIALS_JS` still depends only on `#assign-data` and `data-*`.
+- **A member with no combat seat carries no combat keys at all**, rather than four
+  empty ones. `if (h.cb)` then means "this member has a combat seat", where
+  `h.cb === ""` would mean "has a seat with no boss", which is not a state that
+  exists. `cl` is omitted independently, for the nine-wide case above.
+- **A combat-only member is appended to the index**, as `"t": "Combat only"` with
+  `"r": ""`. Someone seated in combat who is on no skilling roster and not on the
+  bench used to search their own name and be told *No member matches that name* —
+  a lie about somebody very much on this week's page. `"r": ""` is honest: there is
+  no roster row to jump to, and both jump affordances are guarded on it.
+- **`combat.available: false` is said, not swallowed**, once at the top of each
+  panel with the reason verbatim. `build._fetch_combat` degrades to that on any
+  failure and never stops the deploy, so a page that simply showed nothing would
+  tell a member their guild had not assigned them when the truth is that the page
+  could not read the tab.
+
+`signup.html` is deliberately **unchanged**. `_render_signup_html` takes the *plan*
+dict; the combat block is attached to the *week* dict and to nothing else, so giving
+it combat would mean threading a second argument in or attaching the block to a
+second dict — and a second place for the same fact is a second place to drift. The
+two pages also answer different questions: `trials.html` says *where am I this
+week*, `signup.html` says *did I sign up for the right thing*.
+
+**Follow-up, wanted and not built: combat team cards and seat tables.** The whole
+roster of each combat party, rendered the way the skilling parties are. The reason
+it is not here is that the search-and-pin panels already answer *where am I* for
+every member at a fraction of the page weight, and that is the question that was
+actually being asked. Equipment rendering is further out still and is explicitly
+not wanted yet.
+
 ## Sign-up optimiser (real sign-ups)
 
 `src/signup.py` reads each guild's sign-up tab (**SC Trial Signup** /

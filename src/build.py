@@ -1202,7 +1202,9 @@ def _stat_strip(week: dict) -> str:
     )
 
 
-def _render_trial_card(trial: dict, t_index: int, cap: int) -> tuple[str, list[dict]]:
+def _render_trial_card(
+    trial: dict, t_index: int, cap: int, combat_of: Optional[dict] = None
+) -> tuple[str, list[dict]]:
     """Render one trial's section and return (html, assignment_entries).
 
     ``assignment_entries`` maps each rostered member to this trial and to the
@@ -1210,7 +1212,14 @@ def _render_trial_card(trial: dict, t_index: int, cap: int) -> tuple[str, list[d
     its pinned-members panel. Keys are terse because the whole index ships inline
     in every page: ``n``ame, ``t``rial, ``r``ow id, ``l``evel, ``d``etail (what the
     trial scored), ``m``argin, ``b``and (the margin's colour class).
+
+    ``combat_of`` (from ``_combat_index``) adds, for a member who also holds a
+    COMBAT seat, ``cb``oss, ``ct``eam, ``cs``lot and — only when the tab carried one
+    — ``cl``oadout name. A member with no combat seat gets NO combat keys at all
+    rather than four empty ones: the wire cost is real on a hundred members, and
+    ``if (h.cb)`` on the client is then the honest test.
     """
+    combat_of = combat_of or {}
     skill = html.escape(trial["skill"])
     roster = _sorted_roster(trial)
     scored, margin, band = _assign_summary(trial)
@@ -1218,6 +1227,7 @@ def _render_trial_card(trial: dict, t_index: int, cap: int) -> tuple[str, list[d
         {
             "n": r["name"], "t": trial["skill"], "r": f"r-{t_index}-{i}",
             "l": r["level"], "d": scored, "m": margin, "b": band,
+            **combat_of.get(norm_name(r["name"]), {}),
         }
         for i, r in enumerate(roster)
     ]
@@ -1324,6 +1334,72 @@ _TRIALS_JS = r"""
     while (panel.firstChild) panel.removeChild(panel.firstChild);
   }
 
+  // ---------- Combat seats ----------
+  // Four terse keys ride on the entries that already exist — cb(oss), ct(eam),
+  // cs(lot), cl(oadout name) — and a member with no combat seat carries NONE of
+  // them. So `h.cb` is the honest test for "this member has a combat seat", where
+  // `h.cb === ""` would have meant "has a seat with no boss", which is not a state
+  // that exists. `cl` is omitted independently: a seat read off a nine-wide tab has
+  // no label, and then the block shows one line instead of two — a missing label,
+  // never an empty pair of quotation marks.
+  //
+  // Every string reaches the DOM by textContent. Nothing here builds markup.
+  function combatBlock(h, cls) {
+    if (!h || !h.cb) return null;
+    var box = document.createElement("div");
+    box.className = cls;
+
+    var rule = document.createElement("span");
+    rule.className = "combat-rule";
+    rule.textContent = "Combat";
+    box.appendChild(rule);
+
+    var where = document.createElement("span");
+    where.className = "combat-where";
+    where.textContent = h.ct ? h.cb + " \u00b7 " + h.ct : h.cb;
+    box.appendChild(where);
+
+    var seat = h.cs || "";
+    if (h.cl) {
+      seat = seat
+        ? seat + " \u00b7 \u201c" + h.cl + "\u201d"
+        : "\u201c" + h.cl + "\u201d";
+    }
+    if (seat) {
+      var who = document.createElement("span");
+      who.className = "combat-seat";
+      who.textContent = seat;
+      box.appendChild(who);
+    }
+    return box;
+  }
+
+  // Said ONCE at the top of each panel, and never per row: six copies of one
+  // sentence is not six times as informative. An empty attribute means combat is
+  // available — or that this page carries none at all — and nothing is rendered.
+  //
+  // A page that showed no combat in the unavailable case would be telling a member
+  // their guild has not assigned them, when the truth is that the page could not
+  // read the tab. _fetch_combat degrades to exactly that, with a human reason, on
+  // any failure, and never stops the deploy.
+  var COMBAT_UNAVAILABLE =
+    dataEl ? (dataEl.getAttribute("data-combat-unavailable") || "") : "";
+
+  function combatBanner() {
+    if (!COMBAT_UNAVAILABLE) return null;
+    var box = document.createElement("div");
+    box.className = "prov";
+    var label = document.createElement("span");
+    label.className = "prov-label prov-warn";
+    label.textContent = "Combat unavailable";
+    var body = document.createElement("span");
+    body.className = "prov-body";
+    body.textContent = COMBAT_UNAVAILABLE;
+    box.appendChild(label);
+    box.appendChild(body);
+    return box;
+  }
+
   function renderResults(q) {
     q = q.trim().toLowerCase();
     while (panel.firstChild) panel.removeChild(panel.firstChild);
@@ -1332,6 +1408,8 @@ _TRIALS_JS = r"""
       return d.n.toLowerCase().indexOf(q) !== -1;
     }).slice(0, 12);
     panel.hidden = false;
+    var banner = combatBanner();
+    if (banner) panel.appendChild(banner);
     if (!hits.length) {
       var empty = document.createElement("div");
       empty.className = "sr-empty";
@@ -1358,11 +1436,19 @@ _TRIALS_JS = r"""
       b.appendChild(name);
       b.appendChild(trial);
       b.addEventListener("click", function () {
-        jump(h.r);
+        // A COMBAT-ONLY member has no roster row to jump to, and `r` is "" for
+        // them. The row still renders — they are on this week's page and saying so
+        // is the whole point — it simply does not scroll anywhere. jump() already
+        // returns on a missing element; this is belt to that brace, and worth
+        // having because a control that does nothing when clicked is worse than
+        // no control.
+        if (h.r) jump(h.r);
         input.value = h.n;
         clearPanel();
       });
       item.appendChild(b);
+      var seat = combatBlock(h, "sr-combat");
+      if (seat) item.appendChild(seat);
       panel.appendChild(item);
     });
     syncStars();
@@ -1486,7 +1572,9 @@ _TRIALS_JS = r"""
       row.appendChild(margin);
     }
 
-    if (e) {
+    // `e.r` as well as `e`: a COMBAT-ONLY member resolves to an entry with no
+    // roster row, and a button that scrolls nowhere is worse than no button.
+    if (e && e.r) {
       var go = document.createElement("button");
       go.type = "button";
       go.className = "pin-jump";
@@ -1494,6 +1582,9 @@ _TRIALS_JS = r"""
       go.addEventListener("click", function () { jump(e.r); });
       row.appendChild(go);
     }
+
+    var seat = combatBlock(e, "pin-combat");
+    if (seat) row.appendChild(seat);
     return row;
   }
 
@@ -1505,6 +1596,8 @@ _TRIALS_JS = r"""
     // never pins anyone should not pay a box for the feature. The hint under the
     // search input is what advertises it.
     pinSection.hidden = pins.length === 0;
+    var banner = combatBanner();
+    if (banner) pinList.appendChild(banner);
     pins.forEach(function (name) { pinList.appendChild(pinRow(name)); });
     syncStars();
   }
@@ -2513,6 +2606,95 @@ def _render_buff_slider(week: dict, ladder: Optional[dict]) -> str:
   </div>"""
 
 
+def _pretty_boss(hrid: str) -> str:
+    """``'/guild_combat/hedgehog'`` -> ``'Hedgehog'``.
+
+    The last path segment, underscores to spaces, each word capitalised — the same
+    rule the userscript's ``prettyTrial`` applies, minus its "Trial " prefix, which
+    reads as noise beside a team name. Deliberately NOT a lookup table: a boss the
+    game adds next season must render as itself rather than as a blank.
+    """
+    boss = hrid.rsplit("/", 1)[-1].replace("_", " ").strip()
+    return " ".join(w[:1].upper() + w[1:] for w in boss.split())
+
+
+def _combat_index(week: dict) -> dict[str, dict]:
+    """Folded member name -> the four terse combat keys, for the search index.
+
+    ``{}`` when the week carries no ``combat`` key at all (``trials-maxbuff.html``
+    renders from ``week_maxbuff``, which has none, and ``COMBAT_SOURCE_ENABLED =
+    False`` is the same path), when the block is unavailable, or when it carries no
+    trials. All three degrade to exactly today's page, which is the property that
+    keeps the one-line rollback byte-identical.
+
+    Keys are TWO CHARACTERS and prefixed ``c`` so they read as a group, for the same
+    reason ``_render_trial_card``'s are terse: the whole index ships inline in every
+    page, and four spelled-out names on a hundred members is kilobytes of
+    ``"loadout_name"`` repeated once per seat.
+
+    The join is by folded name, the way the rest of the pipeline joins names; the
+    DISPLAYED name stays the index's own, so the page never renders the combat tab's
+    spelling of somebody.
+    """
+    block = week.get("combat")
+    if not block or not block.get("available"):
+        return {}
+    out: dict[str, dict] = {}
+    for trial in block.get("trials") or []:
+        boss = _pretty_boss(trial.get("hrid") or "")
+        team = trial.get("team") or ""
+        for seat in trial.get("roster") or []:
+            name = seat.get("name") or ""
+            if not name:
+                continue
+            entry = {"cb": boss, "ct": team, "cs": seat.get("slot") or ""}
+            # OMITTED rather than empty, independently of the other three: a seat
+            # whose tab was nine wide has no label, and the panel must then show one
+            # line instead of two. `if (h.cl)` on the client then means "there is a
+            # label", where `h.cl === ""` would mean "there is a label and it is
+            # blank", which is not a state that exists.
+            label = seat.get("loadout_name") or ""
+            if label:
+                entry["cl"] = label
+            out[norm_name(name)] = entry
+    return out
+
+
+def _combat_only(
+    week: dict, combat_of: dict, seen: set[str]
+) -> list[tuple[str, dict]]:
+    """Members with a combat seat and no entry anywhere else in the index.
+
+    The join fails in BOTH directions and only one of them was already answered. A
+    pinned name that resolves to neither is handled — ``pinRow`` renders it stale and
+    says so. A member seated in combat who is on no skilling roster and not on the
+    bench was not: they exist in the combat tab and nowhere here, so the search said
+    "No member matches that name", which is a lie about somebody who is very much on
+    this week's page.
+
+    The DISPLAY name comes from the combat tab, because for these members it is the
+    only name the page has. Order is the tab's own, so the index is stable between
+    builds. Returns pairs so the caller keeps the entry shape in one place.
+    """
+    block = week.get("combat")
+    if not block or not block.get("available"):
+        return []
+    out: list[tuple[str, dict]] = []
+    taken = set(seen)
+    for trial in block.get("trials") or []:
+        for seat in trial.get("roster") or []:
+            name = seat.get("name") or ""
+            folded = norm_name(name)
+            if not name or folded in taken:
+                continue
+            entry = combat_of.get(folded)
+            if not entry:
+                continue
+            taken.add(folded)
+            out.append((name, entry))
+    return out
+
+
 def _render_trials_html(
     week: dict,
     site: "GuildSite",
@@ -2547,8 +2729,12 @@ def _render_trials_html(
 
     cards_parts: list[str] = []
     assign_index: list[dict] = []
+    # {} when the week carries no `combat` key — trials-maxbuff.html renders from a
+    # dict that has none, and COMBAT_SOURCE_ENABLED = False is the same path — and
+    # then every branch below adds nothing and the page is today's page exactly.
+    combat_of = _combat_index(week)
     for t_index, t in enumerate(week["trials"]):
-        card_html, entries = _render_trial_card(t, t_index, week["cap"])
+        card_html, entries = _render_trial_card(t, t_index, week["cap"], combat_of)
         cards_parts.append(card_html)
         assign_index.extend(entries)
     cards = "".join(cards_parts)
@@ -2570,14 +2756,54 @@ def _render_trials_html(
         {
             "n": n, "t": "Bench", "r": "bench-section", "l": None,
             "d": "Not assigned to a trial this week", "m": "", "b": "",
+            # A benched member can hold a combat seat, and that is exactly the member
+            # most in need of the answer: "am I in this week?" is what the bench
+            # section is for, and for them the honest answer is "yes, in combat".
+            **combat_of.get(norm_name(n), {}),
         }
         for n in bench
+    )
+
+    # A member in a combat team who is on no skilling roster and not on the bench
+    # exists in the combat tab and NOWHERE in this index, so searching their name
+    # returns "No member matches that name" — which is false. They are appended in
+    # the shape the bench entries use, with "r": "" because there is no roster row
+    # to jump to; the client guards both jump affordances on it.
+    seen = {norm_name(e["n"]) for e in assign_index}
+    assign_index.extend(
+        {
+            "n": name, "t": "Combat only", "r": "", "l": None,
+            "d": "Not on a skilling trial or the bench this week.",
+            "m": "", "b": "",
+            **entry,
+        }
+        for name, entry in _combat_only(week, combat_of, seen)
     )
 
     # Embedded, self-contained assignment data for the player search. Escape
     # "<" so the JSON can never break out of the <script> element.
     assign_json = json.dumps(assign_index, ensure_ascii=False).replace(
         "<", "\\u003c"
+    )
+
+    # §3.4: `available: false` is SAID, not swallowed. _fetch_combat degrades to it
+    # with a human reason on any failure and never stops the deploy, so a page that
+    # simply shows no combat would tell a member their guild has not assigned them
+    # when the truth is that the page could not read the tab.
+    #
+    # It rides as a data-* attribute on the SAME #assign-data element that
+    # data-pin-key already uses, which keeps _TRIALS_JS's one property intact: it
+    # depends on #assign-data and data-* attributes and on nothing else. No second
+    # island, no second fetch, no new global.
+    #
+    # A DIFFERENT SINK from the JSON above, and it needs its own escape: this is HTML
+    # attribute context, so html.escape(..., quote=True), as every other attribute on
+    # this element does. Empty when combat is available, or absent altogether.
+    _cblock = week.get("combat") or {}
+    combat_unavailable = (
+        html.escape(str(_cblock.get("unavailable") or ""), quote=True)
+        if _cblock and not _cblock.get("available")
+        else ""
     )
 
     upgrades_section = _render_upgrades_section(week)
@@ -2804,6 +3030,23 @@ def _render_trials_html(
                 font-size: .85rem; color: var(--accent); cursor: pointer;
                 text-decoration: underline; }}
   .pin-hint {{ margin: -.9rem 0 1.25rem; }}
+  /* --- Combat seat, in the search panel and the pinned list ------------- */
+  /* One block, two homes. It takes the whole width of its flex parent so it drops
+     onto its own line under the name, and the rule reads as a heading for the two
+     lines beneath it rather than as a third fact on the same line. No new colour:
+     --muted, --accent and --line are the page's own. */
+  .sr-combat, .pin-combat {{
+    flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: .15rem .5rem; padding: .1rem 0 .35rem; font-size: .85rem;
+  }}
+  .sr-combat {{ padding-left: 1.2rem; }}
+  .combat-rule {{
+    color: var(--muted); text-transform: uppercase; letter-spacing: .4px;
+    font-size: .72rem; font-weight: 700;
+    border-top: 1px solid var(--line); padding-top: .25rem;
+  }}
+  .combat-where {{ color: var(--accent); font-weight: 600; }}
+  .combat-seat {{ color: var(--muted); }}
   .bench-name {{ display: inline-flex; align-items: center; white-space: nowrap;
                  margin: 0 .8rem .3rem 0; }}
   /* --- Sortable headers ----------------------------------------------- */
@@ -3010,7 +3253,8 @@ def _render_trials_html(
      Static build from the public guild sheet; no credentials, read-only.</p>
 </footer>
 <script id="assign-data" type="application/json"
-        data-pin-key="guild-trials.pins.{site.key}">{assign_json}</script>
+        data-pin-key="guild-trials.pins.{site.key}"
+        data-combat-unavailable="{combat_unavailable}">{assign_json}</script>
 {levels_script}
 <script>{_TRIALS_JS}</script>
 </body>
