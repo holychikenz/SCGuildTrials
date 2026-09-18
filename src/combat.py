@@ -106,11 +106,15 @@ COL_ROLE = 3
 COL_SLOT = 4
 COL_GUILD_ID = 5
 COL_GENERATED_AT = 6
-# Appended 2026-09-15, and OPTIONAL: guarded by config.COMBAT_OPTIONAL_HEADERS only
-# when the header is wider than seven. Indices 0-6 above are untouched by design, so
-# any reader slicing [:7] — this one included, before that date — is unaffected.
+# Appended 2026-09-15 (the pair) and 2026-09-18 (the name), and all OPTIONAL: guarded
+# by config.COMBAT_OPTIONAL_HEADERS only when the header is wider than seven, and only
+# for the columns the header actually has. Indices 0-6 above are untouched by design,
+# so any reader slicing [:7] — this one included, before that date — is unaffected.
 COL_LOADOUT_ID = 7
 COL_LOADOUT = 8
+# Appended 2026-09-18. Same rules, one exception: it has no pairing invariant of its
+# own — it is an independent label that is either there or "".
+COL_LOADOUT_NAME = 9
 
 # Every Trial Hrid must start with this. A structural guard a display name could not
 # admit, and the reason §3.1 of the plan publishes the hrid rather than "Swarm": it is
@@ -144,6 +148,21 @@ class CombatSeat:
     # build one for this member. A consumer resolves it or shows nothing; there is no
     # third outcome.
     loadout_id: str = ""
+    # The template's CURATED label for that recommendation — "Fire DPS (Blazing)",
+    # "Healer (Blooming)", "Cursed". Thirteen such strings exist and they live in
+    # exactly one place, SCLIRoster's data/templates/*.json; none of them is derivable
+    # by titlecasing `role`, which is why they travel rather than being reconstructed.
+    #
+    # "" when the tab is seven or nine wide, or when the writer carried none. A
+    # missing name degrades to "" and is NEVER guessed at — not from `role`, not from
+    # the loadout, not from anywhere. A seat with no loadout already publishes "" for
+    # its pair; the name degrades exactly the same way.
+    #
+    # It hangs on the SEAT and not in GuildCombat.loadouts because two different
+    # templates can produce an identical DTO — the id is a hash of content — and then
+    # one id would carry two rightful names, which _parse_loadout would refuse as a
+    # conflict. On the seat there is no conflict to resolve.
+    loadout_name: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -151,6 +170,7 @@ class CombatSeat:
             "role": self.role,
             "slot": self.slot,
             "loadout_id": self.loadout_id,
+            "loadout_name": self.loadout_name,
         }
 
 
@@ -272,7 +292,7 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
     the only way "the tab does not exist" can reach this module — fails on cell 0: the
     officers' first tab opens with a blank cell, not "Member".
 
-    The two OPTIONAL loadout cells are checked only when the header is WIDER than the
+    The OPTIONAL loadout cells are checked only when the header is WIDER than the
     required seven, and only once the required seven have all matched. Both halves of
     that are deliberate:
 
@@ -281,9 +301,24 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
         reader could ship first). Requiring nine would turn a rollback of the writer
         into a broken build.
       * Only after the required seven pass, because a wrong-tab serve is nineteen
-        columns of officers' prose: checking the optional pair against that would add
-        two more mismatches to a message that is already naming the real problem, and
+        columns of officers' prose: checking the optional cells against that would add
+        more mismatches to a message that is already naming the real problem, and
         the message's job is to say "this is not the combat tab", once.
+
+    Since 2026-09-18 the writer emits a TENTH cell, ``Loadout Name``, and this reader
+    must accept seven, nine AND ten. Two guards do that between them, and BOTH are
+    needed:
+
+      * A column declared in ``COMBAT_OPTIONAL_HEADERS`` that the header does not
+        reach is SKIPPED rather than failed. Without that, declaring col 9 would
+        refuse the nine-wide tab that is live today — ``_cell`` returns "" for a
+        column that is not there, and "" is not "Loadout Name". That would be a
+        self-inflicted outage on the first repository in the ship order.
+      * The width must be one of ``config.COMBAT_ACCEPTED_WIDTHS``. Skipping absent
+        columns alone would silently accept an EIGHT-wide tab, which is not an old
+        writer but a torn one: a ``Loadout Id`` with no JSON beside it, whose loadout
+        would then be attributed from nothing. Seven never reaches this branch, and is
+        named in that tuple as documentation rather than as a check.
     """
     mismatches = []
     for col, (mode, expected) in config.COMBAT_SENTINEL_HEADERS.items():
@@ -295,7 +330,14 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
             )
 
     if not mismatches and len(header) > len(config.COMBAT_SENTINEL_HEADERS):
+        if len(header) not in config.COMBAT_ACCEPTED_WIDTHS:
+            mismatches.append(
+                f"header is {len(header)} cells wide; the writer emits one of "
+                f"{config.COMBAT_ACCEPTED_WIDTHS}"
+            )
         for col, (mode, expected) in config.COMBAT_OPTIONAL_HEADERS.items():
+            if col >= len(header):
+                continue  # a narrower SUPPORTED width, not a mismatch
             actual = _cell(header, col)
             ok = actual == expected if mode == "equals" else expected in actual
             if not ok:
@@ -491,6 +533,12 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
             stamps.append(stamp)
 
         loadout_id = _parse_loadout(raw, loadouts, tab, row_no)
+        # Deliberately NOT inside _parse_loadout: that function owns a pairing
+        # invariant (id and blob together or neither, SheetStructureError on half a
+        # pair) and the name has no such invariant — it is an independent label that
+        # is either there or "". _cell is bounds-safe, so a seven- or nine-wide row
+        # yields "" with no branch at all.
+        loadout_name = _cell(raw, COL_LOADOUT_NAME)
 
         key = (hrid, team)
         if key not in teams:
@@ -501,6 +549,7 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
                 role=_cell(raw, COL_ROLE),
                 slot=_cell(raw, COL_SLOT),
                 loadout_id=loadout_id,
+                loadout_name=loadout_name,
             )
         )
 

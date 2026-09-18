@@ -130,11 +130,12 @@ def test_parses_a_machine_written_tab():
         "team": "SC Team 1",
         "party_size": 3,
         "roster": [
-            {"name": "Yedic", "role": "tank", "slot": "tank 1", "loadout_id": ""},
+            {"name": "Yedic", "role": "tank", "slot": "tank 1",
+             "loadout_id": "", "loadout_name": ""},
             {"name": "Pipsqueak", "role": "cursed", "slot": "cursed 1",
-             "loadout_id": ""},
+             "loadout_id": "", "loadout_name": ""},
             {"name": "jodend", "role": "healer_blooming", "slot": "healer_blooming 1",
-             "loadout_id": ""},
+             "loadout_id": "", "loadout_name": ""},
         ],
     }
     # party_size is derived, never carried: it cannot disagree with the roster.
@@ -321,6 +322,165 @@ def _csv9(*rows, header=None):
 
 def _row9(name, team="SC Team 1", slot="tank 1", ld_id=LOADOUT_ID, blob=LOADOUT_JSON):
     return [name, "/guild_combat/swarm", team, "tank", slot, "4", AT, ld_id, blob]
+
+
+# -----------------------------------------------------------------------------
+# TEN WIDE — the curated loadout NAME, appended 2026-09-18
+# -----------------------------------------------------------------------------
+# The reader must now accept SEVEN, NINE and TEN, and it must go on accepting nine
+# while col 9 is declared in COMBAT_OPTIONAL_HEADERS — that is the trap this block
+# exists for, because declaring the tenth cell without a presence guard would refuse
+# the nine-wide tab that is LIVE, on the first repository in the ship order. Eight
+# and eleven are refused on purpose: eight is not an old writer but a torn one.
+
+TEN_HEADER = NINE_HEADER + ["Loadout Name"]
+
+# A value with a space and parentheses, through real CSV, because that is what the
+# curated names actually look like. `dps_fire` is "Fire DPS (Blazing)": no titlecasing
+# of `role` produces it, which is the whole reason the name travels rather than being
+# reconstructed on this side.
+LOADOUT_NAME = "Fire DPS (Blazing)"
+
+
+def _csv10(*rows, header=None):
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    w.writerow(header or TEN_HEADER)
+    for r in rows:
+        w.writerow(r)
+    return buf.getvalue()
+
+
+def _row10(name, team="SC Team 1", slot="tank 1", ld_id=LOADOUT_ID,
+           blob=LOADOUT_JSON, lname=LOADOUT_NAME):
+    return _row9(name, team=team, slot=slot, ld_id=ld_id, blob=blob) + [lname]
+
+
+def test_a_seven_wide_tab_carries_neither_id_nor_name():
+    """The oldest supported width. Both optional halves degrade to "", not to a guess."""
+    g = combat.parse_combat(LIVE_SHAPE_CSV, "sc", tab="SC Combat Teams")
+    seats = [s for t in g.teams for s in t.roster]
+    assert seats, "the fixture must actually have seats"
+    assert all(s.loadout_id == "" for s in seats)
+    assert all(s.loadout_name == "" for s in seats)
+
+
+def test_a_nine_wide_tab_still_parses_once_col_nine_is_declared():
+    """THE regression this whole change is shaped around.
+
+    COMBAT_OPTIONAL_HEADERS now declares col 9, and `_cell` returns "" for a column a
+    row does not have — so a validator that checked every declared entry regardless of
+    width would refuse today's live tab with "col 9: expected equals 'Loadout Name',
+    got ''". The presence guard is what makes nine a narrower SUPPORTED width rather
+    than a mismatch.
+    """
+    assert 9 in config.COMBAT_OPTIONAL_HEADERS, "or this test is asserting nothing"
+    g = combat.parse_combat(
+        _csv9(_row9("Yedic"), _row9("IronOwl", slot="tank 2")),
+        "sc",
+        tab="SC Combat Teams",
+    )
+    assert g.observed is True
+    assert [s.loadout_id for s in g.teams[0].roster] == [LOADOUT_ID, LOADOUT_ID]
+    assert [s.loadout_name for s in g.teams[0].roster] == ["", ""]
+    assert set(g.loadouts) == {LOADOUT_ID}
+
+
+def test_a_ten_wide_tab_carries_the_curated_name():
+    """A space and parentheses, through the real csv module."""
+    g = combat.parse_combat(
+        _csv10(_row10("Yedic"), _row10("IronOwl", slot="tank 2", lname="Cursed")),
+        "sc",
+        tab="SC Combat Teams",
+    )
+    assert [s.loadout_name for s in g.teams[0].roster] == [LOADOUT_NAME, "Cursed"]
+    # On the SEAT and not in `loadouts` — two seats sharing one id may rightfully
+    # carry two names, and putting the name in the blob would make that a conflict.
+    assert set(g.loadouts) == {LOADOUT_ID}
+    assert "loadout_name" not in json.dumps(g.loadouts)
+    assert g.to_dict()["teams"][0]["roster"][0]["loadout_name"] == LOADOUT_NAME
+
+
+def test_two_seats_on_one_loadout_may_carry_different_names():
+    """The §2.2 case, on the reader's side: one id, two rightful labels, no error."""
+    g = combat.parse_combat(
+        _csv10(_row10("Yedic", lname="Fire DPS (Blazing)"),
+               _row10("IronOwl", slot="tank 2", lname="Nature DPS")),
+        "sc",
+        tab="SC Combat Teams",
+    )
+    assert set(g.loadouts) == {LOADOUT_ID}
+    assert [s.loadout_name for s in g.teams[0].roster] == [
+        "Fire DPS (Blazing)", "Nature DPS"
+    ]
+
+
+def test_a_blank_name_on_a_seated_loadout_is_not_an_error():
+    """"" is the only degradation, and it is never guessed at from `role`."""
+    g = combat.parse_combat(
+        _csv10(_row10("Yedic", lname="")), "sc", tab="SC Combat Teams"
+    )
+    seat = g.teams[0].roster[0]
+    assert seat.loadout_name == ""
+    assert seat.loadout_id == LOADOUT_ID, "the loadout was lost with the label"
+    assert seat.role == "tank", "the role must not have been borrowed as a name"
+
+
+def test_a_blank_name_and_a_blank_pair_is_a_bare_seat():
+    """The seat still publishes. The three optional cells degrade together."""
+    g = combat.parse_combat(
+        _csv10(_row10("Yedic", ld_id="", blob="", lname="")),
+        "sc",
+        tab="SC Combat Teams",
+    )
+    seat = g.teams[0].roster[0]
+    assert (seat.loadout_id, seat.loadout_name) == ("", "")
+    assert g.loadouts == {}
+
+
+def test_an_eight_wide_tab_is_refused_by_the_allow_list():
+    """Not an old writer — a TORN one: a Loadout Id with no JSON beside it.
+
+    This is why the width is an allow-list and not a maximum. Skipping absent optional
+    columns alone would accept eight quite happily, and then attribute a loadout to a
+    column that was never written.
+    """
+    eight = NINE_HEADER[:8]
+    rows = [_row9("Yedic")[:8]]
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    w.writerow(eight)
+    for r in rows:
+        w.writerow(r)
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(buf.getvalue(), "sc", tab="SC Combat Teams")
+    msg = str(exc.value)
+    assert "header is 8 cells wide" in msg
+    assert str(config.COMBAT_ACCEPTED_WIDTHS) in msg
+
+
+def test_an_eleven_wide_tab_is_refused_by_the_allow_list():
+    """A column nobody on this side knows about. Refused, not ignored."""
+    eleven = TEN_HEADER + ["Something New"]
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv10(_row10("Yedic") + ["x"], header=eleven),
+            "sc",
+            tab="SC Combat Teams",
+        )
+    assert "header is 11 cells wide" in str(exc.value)
+
+
+def test_a_mistyped_tenth_header_raises_naming_col_nine():
+    """Ten wide with a drifted tenth cell is a broken writer, not an old one."""
+    bad = list(TEN_HEADER)
+    bad[9] = "Loadout name"  # lowercase n — the exact drift a human would introduce
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(
+            _csv10(_row10("Yedic"), header=bad), "sc", tab="SC Combat Teams"
+        )
+    assert "col 9: expected equals 'Loadout Name', got 'Loadout name'" in str(exc.value)
+
 
 
 def test_a_nine_wide_tab_parses_and_dedupes():
@@ -729,7 +889,7 @@ def test_write_guild_attaches_the_block_on_both_guilds(tmp_path, monkeypatch):
         ]
         assert all(t["party_size"] == len(t["roster"]) for t in block["trials"])
         assert all(
-            set(r) == {"name", "role", "slot", "loadout_id"}
+            set(r) == {"name", "role", "slot", "loadout_id", "loadout_name"}
             for t in block["trials"]
             for r in t["roster"]
         )

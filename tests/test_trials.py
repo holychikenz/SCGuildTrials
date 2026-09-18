@@ -2362,3 +2362,261 @@ def test_a_cap_below_the_guild_fallback_still_prices_the_first_level():
     assert u.next_level_cost == config.GUILD_SHRINE_POINT_COSTS[1]
     assert u.points_gained_immediate == 0.0
     assert u.points_gained_at_full_adoption == 0.0
+
+
+# -----------------------------------------------------------------------------
+# Combat seats on the trials page (2026-09-18)
+# -----------------------------------------------------------------------------
+# The combat block has been read, parsed and published into trials.json since
+# 2026-09-09 and rendered NOWHERE. These are the two panels that render it, and
+# the properties that keep the rest of the page exactly as it was.
+
+
+def _combat_week(*, available=True, unavailable="", seats=None):
+    """A `combat` block in the shape `_combat_block` actually emits.
+
+    Seats are (name, boss, team, slot, loadout_name); a loadout_name of None omits
+    the key entirely, which is the NINE-wide tab's shape and therefore the
+    degradation case this whole feature has to survive.
+    """
+    trials_out: dict = {}
+    for name, boss, team, slot, lname in seats or []:
+        key = (boss, team)
+        seat = {"name": name, "role": "tank", "slot": slot, "loadout_id": "ld_x"}
+        if lname is not None:
+            seat["loadout_name"] = lname
+        trials_out.setdefault(
+            key, {"hrid": boss, "team": team, "party_size": 0, "roster": []}
+        )["roster"].append(seat)
+    for t in trials_out.values():
+        t["party_size"] = len(t["roster"])
+    return {
+        "available": available,
+        "unavailable": unavailable,
+        "source": "SC Combat Teams",
+        "generated_at": "2026-09-18T06:00:00.000Z",
+        "loadout_schema": 1,
+        "loadouts": {"shape": "engine-dto", "by_id": {}},
+        "trials": list(trials_out.values()),
+    }
+
+
+def _seated(week):
+    """The first member the optimiser actually seated, by name."""
+    for t in week["trials"]:
+        for r in t["roster"]:
+            return r["name"]
+    raise AssertionError("the fixture seated nobody")
+
+
+def test_a_combat_seat_reaches_the_search_index_under_terse_keys():
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    who = _seated(base)
+    base["combat"] = _combat_week(seats=[
+        (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
+    ])
+    entry = next(e for e in _pin_index(build._render_trials_html(
+        base, build.GUILD_SITES[0])) if e["n"] == who)
+
+    # Prettified from the hrid, not carried as one: a member reads "Hedgehog".
+    assert entry["cb"] == "Hedgehog"
+    assert entry["ct"] == "SC Team 1"
+    assert entry["cs"] == "cursed 1"
+    assert entry["cl"] == "Cursed"
+    # The skilling half of the entry is untouched — that is the whole claim.
+    assert entry["t"] and entry["r"].startswith("r-")
+
+
+def test_a_member_with_no_combat_seat_carries_NO_combat_key_at_all():
+    """Omitted, not empty. Asserted on the parsed JSON rather than on a substring:
+    `"cb":""` would satisfy a substring check and is exactly the thing forbidden.
+
+    `if (h.cb)` on the client then means "this member has a combat seat", where
+    `h.cb === ""` would mean "has a seat with no boss", which is not a state that
+    exists — and four empty keys on a hundred members is wire cost for nothing.
+    """
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    who = _seated(base)
+    base["combat"] = _combat_week(seats=[
+        (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
+    ])
+    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    others = [e for e in entries if e["n"] != who]
+    assert others, "the fixture must have somebody without a seat"
+    for e in others:
+        assert "cb" not in e and "ct" not in e and "cs" not in e and "cl" not in e
+
+
+def test_a_nine_wide_seat_omits_the_label_independently():
+    """No `loadout_name` on the seat -> no `cl`, and the other three still ride.
+
+    That is the nine-wide/ten-wide degradation reaching the reader: the panel shows
+    one line instead of two, and it must look like a MISSING label rather than an
+    empty pair of quotation marks.
+    """
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    who = _seated(base)
+    base["combat"] = _combat_week(seats=[
+        (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", None),
+    ])
+    entry = next(e for e in _pin_index(build._render_trials_html(
+        base, build.GUILD_SITES[0])) if e["n"] == who)
+    assert entry["cb"] == "Hedgehog" and entry["cs"] == "cursed 1"
+    assert "cl" not in entry
+
+
+def test_a_benched_member_keeps_their_combat_seat():
+    """The member most in need of the answer: "am I in this week?" is what the
+    bench section is for, and for them the honest answer is "yes, in combat"."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    base["bench"] = ["Benchy"]
+    base["combat"] = _combat_week(seats=[
+        ("Benchy", "/guild_combat/swarm", "SC Team 2", "tank 1", "Tank"),
+    ])
+    entry = next(e for e in _pin_index(build._render_trials_html(
+        base, build.GUILD_SITES[0])) if e["n"] == "Benchy")
+    assert entry["t"] == "Bench" and entry["r"] == "bench-section"
+    assert entry["cb"] == "Swarm" and entry["cl"] == "Tank"
+
+
+def test_a_combat_only_member_is_appended_with_an_empty_row_id():
+    """They exist in the combat tab and nowhere else, so the search used to answer
+    "No member matches that name" — a lie about somebody on this week's page.
+
+    `"r": ""` is the honest value: there IS no roster row to jump to, and both jump
+    affordances are guarded on it rather than left to scroll nowhere.
+    """
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    base["combat"] = _combat_week(seats=[
+        ("Stranger", "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
+    ])
+    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entry = next(e for e in entries if e["n"] == "Stranger")
+    assert entry["t"] == "Combat only"
+    assert entry["r"] == ""
+    assert entry["l"] is None
+    assert "combat" in entry["d"].lower() or "skilling" in entry["d"].lower()
+    assert entry["cb"] == "Hedgehog" and entry["ct"] == "SC Team 1"
+    # Exactly once, however many seats they hold.
+    assert len([e for e in entries if e["n"] == "Stranger"]) == 1
+
+
+def test_a_seated_member_is_not_duplicated_as_combat_only():
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    who = _seated(base)
+    base["combat"] = _combat_week(seats=[
+        (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
+    ])
+    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    assert len([e for e in entries if e["n"] == who]) == 1
+    assert not any(e["t"] == "Combat only" for e in entries)
+
+
+def test_available_false_is_said_with_its_reason_and_not_swallowed():
+    """A page that showed nothing would tell a member their guild has not assigned
+    them, when the truth is that the page could not read the tab."""
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    base["combat"] = _combat_week(
+        available=False,
+        unavailable="the 'SC Combat Teams' tab could not be read: HTTP 403",
+    )
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    assert 'data-combat-unavailable="the &#x27;SC Combat Teams&#x27; tab could not ' \
+           'be read: HTTP 403"' in page
+    # An unavailable block contributes no index keys either.
+    assert all("cb" not in e for e in _pin_index(page))
+
+
+def test_an_available_block_leaves_the_attribute_empty():
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    base["combat"] = _combat_week(seats=[
+        (_seated(base), "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
+    ])
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    assert 'data-combat-unavailable=""' in page
+
+
+def test_a_week_with_no_combat_key_renders_exactly_todays_page():
+    """R7: trials-maxbuff.html is rendered by this same function from a dict that
+    has NO `combat` key, and `COMBAT_SOURCE_ENABLED = False` is the same path. The
+    one-line rollback has to be byte-for-byte, so this compares the whole page.
+    """
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    assert "combat" not in base
+    before = build._render_trials_html(base, build.GUILD_SITES[0])
+
+    base_with = dict(base)
+    base_with["combat"] = _combat_week(seats=[
+        (_seated(base), "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
+    ])
+    after = build._render_trials_html(base_with, build.GUILD_SITES[0])
+    assert before != after, "the fixture must actually change something"
+
+    # And the empty-attribute page is the same as the no-key page but for that one
+    # attribute, which is the only difference a combat-less week may cost.
+    assert before.replace(
+        'data-pin-key="guild-trials.pins.sc">',
+        'data-pin-key="guild-trials.pins.sc"\n'
+        '        data-combat-unavailable="">',
+    ) == before, "sanity: the attribute is already on the no-key page"
+    assert 'data-combat-unavailable=""' in before
+    assert all("cb" not in e for e in _pin_index(before))
+
+
+def test_a_combat_name_containing_a_left_angle_bracket_cannot_become_markup():
+    """R6. The `<` escape runs over the SERIALISED JSON, after json.dumps, so it
+    catches every `<` from every field including this one — and `<` inside a JSON
+    string parses back to `<`, so the value reaches JavaScript intact.
+    """
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    base["combat"] = _combat_week(seats=[
+        ("Stranger", "/guild_combat/hedgehog", "SC Team 1", "cursed 1",
+         "</script><img src=x onerror=alert(1)>"),
+    ])
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    blob = page.split('id="assign-data"', 1)[1].split(">", 1)[1].split("</script>", 1)[0]
+    assert "<" not in blob, "a raw < reached the script element"
+    assert "\\u003c/script" in blob
+    # …and it survives the round trip as itself, so the DOM gets the literal text.
+    entry = next(e for e in _pin_index(page) if e["n"] == "Stranger")
+    assert entry["cl"] == "</script><img src=x onerror=alert(1)>"
+
+
+def test_the_client_reads_only_assign_data_and_data_attributes():
+    """_TRIALS_JS must keep depending on #assign-data and data-* and nothing else.
+    No new fetch, no new global, no second island."""
+    from src import build
+
+    js = build._TRIALS_JS
+    assert "fetch(" not in js
+    assert "XMLHttpRequest" not in js
+    assert "getElementById(\"assign-data\")" in js
+    assert "data-combat-unavailable" in js
+    # Every combat string reaches the DOM by textContent. The page's one innerHTML
+    # is the sortable table's own markup, built from cells this module wrote; no
+    # NAME goes anywhere near it, so the assertion is scoped to the two functions
+    # that render a member's combat seat rather than to the whole file.
+    combat_src = js.split("function combatBlock(", 1)[1].split("function renderResults", 1)[0]
+    assert "combatBanner" in combat_src, "the slice must cover both helpers"
+    assert "innerHTML" not in combat_src
+    assert combat_src.count("textContent") >= 5
