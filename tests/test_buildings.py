@@ -266,3 +266,9 @@ def test_to_dict_is_json_serializable_and_copies():
     json.dumps(d)                        # must not raise
     d["skill_levels"]["Enhancing"] = 99  # a copy, not the live dict
     assert g.skill_levels["Enhancing"] == 1
+
+
+def test_the_live_tab_reports_its_skilling_encampment_level():
+    """The seat cap reads this row (config.derived_party_cap): SC stands at 4."""
+    obs = buildings.parse_buildings(LIVE_SC_CSV, "sc", tab="SC Buildings")
+    assert obs.skilling_encampment_level == 4

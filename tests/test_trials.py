@@ -1772,20 +1772,23 @@ def test_pin_controls_reach_every_page_the_reader_can_land_on():
 # Per-guild party cap (config.TRIAL_PARTY_CAPS, split 2026-08-21)
 # ---------------------------------------------------------------------------
 def test_every_guild_site_resolves_its_own_party_cap():
-    """Each shipped guild has a cap of its own, and SC's is the larger.
+    """Each shipped guild resolves a FALLBACK cap of its own.
 
-    The cap was ONE constant for both guilds until the guilds diverged. This
-    pins the two facts a silent regression would break: that every GuildSite
-    resolves (rather than raising, or falling through to the guild-less
-    default), and that the two guilds are genuinely different — so a future
-    edit that collapses the map back into one number fails here.
+    The cap was ONE constant for both guilds until the guilds diverged
+    (2026-08-21). Since 2026-09-26 the live cap is read off each guild's
+    Skilling Encampment and these are only its fallback, now equal because both
+    guilds stand at level 4. What this still pins is that every GuildSite
+    resolves rather than raising or falling through to the guild-less default.
     """
     from src import build
 
     caps = {site.key: site.party_cap for site in build.GUILD_SITES}
-    assert caps == {"sc": 28, "li": 26}
+    # The FALLBACK constants since 2026-09-26, when the live cap moved to the
+    # Skilling Encampment level (config.derived_party_cap). LI's 26 was hand-set
+    # while it stood at level 3; it built level 4 on 2026-09-21 and seats 28 in game.
+    assert caps == {"sc": 28, "li": 28}
     assert config.party_cap("sc") == 28
-    assert config.party_cap("li") == 26
+    assert config.party_cap("li") == 28
 
 
 def test_an_unknown_guild_key_raises_rather_than_defaulting():
@@ -1800,7 +1803,10 @@ def test_the_compute_unit_plans_at_the_guilds_own_cap():
 
     ``_unit_jobs`` resolves each guild's cap in the parent and ``_compute_unit``
     hands it to ``run_week``; if either link is dropped the week silently
-    reverts to config.TRIAL_PARTY_CAP and only SC's page would be wrong.
+    reverts to config.TRIAL_PARTY_CAP. The job carries 24, a cap no constant
+    holds (both guilds' constants and the default are 28 since 2026-09-26), so a
+    dropped link fails here rather than passing by coincidence. The sign-up plan
+    runs in the same unit and must be built at the same cap.
 
     The shrine caps ride the same contract for the same reason (R7), and are
     checked the same way: they are resolved in the parent, shipped as data, and
@@ -1809,24 +1815,28 @@ def test_the_compute_unit_plans_at_the_guilds_own_cap():
     from src import build
 
     members = [_member(f"M{i}", {"Foraging": 100}) for i in range(40)]
+    cap = 24
+    assert cap not in set(config.TRIAL_PARTY_CAPS.values()) | {config.TRIAL_PARTY_CAP}
     for site in build.GUILD_SITES:
         job = {
             "site_key": site.key,
             "members": members,
             "skills": ["Foraging"],
             "min_levels": {},
-            "cap": site.party_cap,
+            "cap": cap,
             "shrine_caps": site.shrine_caps,
             # This guild's live building levels ride the same contract (2026-09-09):
             # resolved in the parent, shipped as data. Bound around the whole unit,
             # so the WeekResult must record what the race actually ran under.
             "building_levels": {"Foraging": 3},
             "level": 1,
-            "picks": None,
+            # Not None, so the unit also builds the sign-up plan, at the job's cap.
+            "picks": {},
         }
         out = build._compute_unit(job)
-        assert out["week"]["cap"] == site.party_cap
-        assert len(out["week"]["trials"][0]["roster"]) <= site.party_cap
+        assert out["week"]["cap"] == cap
+        assert len(out["week"]["trials"][0]["roster"]) <= cap
+        assert out["plan"]["cap"] == cap
         assert out["week"]["guild_shrine_caps"] == config.shrine_caps(site.key)
         assert out["week"]["guild_building_levels"] == {
             "Foraging": 3 * config.GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL

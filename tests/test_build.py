@@ -223,3 +223,274 @@ def test_the_combat_block_always_carries_both_loadout_keys():
         "available", "unavailable", "source", "generated_at",
         "loadout_schema", "loadouts", "trials",
     }
+
+
+# ---------------------------------------------------------------------------
+# the party cap, read off the Skilling Encampment (2026-09-26)
+# ---------------------------------------------------------------------------
+def _observation(encampment_level=None, observed=True):
+    from src import buildings as buildings_model
+
+    other = (
+        {config.SKILLING_ENCAMPMENT_HRID: encampment_level}
+        if encampment_level is not None
+        else {}
+    )
+    return buildings_model.GuildBuildings(
+        tab="LI Buildings",
+        guild_key="li",
+        observed=observed,
+        captured_at="2026-09-26T08:52:00.000Z" if observed else "",
+        other_levels=other if observed else {},
+    )
+
+
+def test_encampment_level_four_seats_twenty_eight():
+    """The measured point: both guilds at level 4, and both seat 28 in game."""
+    cap = config.derived_party_cap("li", 4)
+    assert cap.cap == 28
+    assert cap.encampment_level == 4
+    assert cap.warning == ""
+    assert cap.source == "encampment L4"
+
+
+def test_the_seats_are_base_plus_the_games_increment_per_level():
+    """seats = SKILLING_ENCAMPMENT_BASE_SEATS + SLOTS_PER_LEVEL x level, anchored on
+    the measured L4 = 28 and the client data's skillingTrialSlotsPerLevel = 2."""
+    assert config.SKILLING_ENCAMPMENT_SLOTS_PER_LEVEL == 2
+    assert config.SKILLING_ENCAMPMENT_BASE_SEATS == 20
+    for level, seats in {1: 22, 3: 26, 4: 28, 5: 30}.items():
+        cap = config.derived_party_cap("sc", level)
+        assert cap.cap == seats
+        assert cap.source == f"encampment L{level}"
+        assert cap.warning == ""
+
+
+def test_the_seat_table_and_its_clamp_are_gone():
+    """One rule, not a table beside it: a second source of seats would drift."""
+    assert not hasattr(config, "SKILLING_ENCAMPMENT_SEATS")
+
+
+def test_no_encampment_level_falls_back_to_the_constant_and_says_so():
+    """An unobserved tab has no level, and the fallback must be loud, not silent."""
+    cap = config.derived_party_cap("li", None)
+    assert cap.cap == config.party_cap("li")
+    assert cap.encampment_level is None
+    assert cap.warning
+    assert cap.source.startswith("FALLBACK constant")
+
+
+@pytest.mark.parametrize("level", [0, -1, -5])
+def test_a_zero_or_negative_level_is_an_unread_cell_not_level_zero(level):
+    """buildings._clamp_level reads a blank, garbled or negative cell as 0, and no
+    guild has a level-0 encampment on a written tab. So 0 is "not read": the
+    fallback constant, with a warning, never base + 0 = 20 seats."""
+    cap = config.derived_party_cap("li", level)
+    assert cap.cap == config.party_cap("li")
+    assert cap.source.startswith("FALLBACK constant")
+    assert "invalid" in cap.source
+    assert "invalid" in cap.warning
+
+
+def test_resolve_party_cap_reads_the_encampment_off_the_observation(capsys):
+    site = build.GUILD_SITES[1]
+    cap = build._resolve_party_cap(site, _observation(4))
+    assert cap.cap == 28
+    assert cap.source == "encampment L4"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_the_fallback_warnings_tell_the_three_causes_apart(capsys):
+    """An empty or unread tab, a tab with no encampment row, and an invalid level
+    cell each have a different remedy, so each says which it is."""
+    site = build.GUILD_SITES[1]
+    reasons = {}
+    for name, obs in {
+        "unread": None,
+        "empty": _observation(observed=False),
+        "no row": _observation(None),
+        "invalid": _observation(0),
+    }.items():
+        cap = build._resolve_party_cap(site, obs)
+        err = capsys.readouterr().err
+        assert cap.cap == config.party_cap(site.key)
+        assert cap.source.startswith("FALLBACK constant")
+        assert f"WARNING ({site.key})" in err
+        reasons[name] = (cap.source, err)
+
+    assert "not read" in reasons["unread"][0]
+    assert "empty" in reasons["empty"][0]
+    assert "no Skilling Encampment row" in reasons["no row"][0]
+    assert "invalid" in reasons["invalid"][0]
+    assert len({src for src, _ in reasons.values()}) == 4
+    assert len({err for _, err in reasons.values()}) == 4
+
+
+def test_unit_jobs_ship_the_derived_cap_not_the_constant():
+    """The guild's jobs plan at the cap derived from ITS encampment. 24 is a value
+    no constant holds, so a job that reverted to site.party_cap fails here."""
+    from src import draw as draw_model
+
+    site = build.GUILD_SITES[1]
+    derived = config.PartyCap(
+        cap=24, source="encampment L2", encampment_level=2,
+    )
+    inputs = build._GuildInputs(
+        site_key=site.key,
+        members=[_member("M0", 100)],
+        register={"member_count": 1, "skills": []},
+        picks=None,
+        party_cap=derived,
+    )
+    week_draw = draw_model.TrialDraw(skills=["Foraging"], date="", min_levels={})
+    for job in build._unit_jobs(site, inputs, week_draw):
+        assert job["cap"] == 24
+
+
+def test_unit_jobs_without_a_derived_cap_use_the_guild_constant():
+    """Inputs built without one (older tests, direct callers) keep the old answer."""
+    from src import draw as draw_model
+
+    site = build.GUILD_SITES[1]
+    inputs = build._GuildInputs(
+        site_key=site.key,
+        members=[_member("M0", 100)],
+        register={"member_count": 1, "skills": []},
+        picks=None,
+    )
+    week_draw = draw_model.TrialDraw(skills=["Foraging"], date="", min_levels={})
+    for job in build._unit_jobs(site, inputs, week_draw):
+        assert job["cap"] == site.party_cap
+
+
+def test_the_cap_source_is_in_provenance_and_the_summary():
+    """A wrong seat count must be visible: in trials.json and in the CI line."""
+    from src import draw as draw_model
+
+    derived = config.derived_party_cap("li", 4)
+    inputs = _summary_inputs(site_key="li", party_cap=derived)
+    prov = build._provenance_block(inputs)
+    assert prov["party_cap"] == 28
+    assert prov["party_cap_source"] == "encampment L4"
+
+    line = build._summary_line(
+        build.GUILD_SITES[1],
+        inputs,
+        _summary_week({"Enhancing": 0}),
+        None,
+        draw_model.TrialDraw(skills=["Enhancing"], date="", min_levels={}),
+    )
+    assert "seats 28 (encampment L4)" in line
+
+
+def test_a_fallback_cap_says_so_and_why_in_provenance_and_the_summary():
+    from src import draw as draw_model
+
+    fallback = config.derived_party_cap("li", 0)
+    inputs = _summary_inputs(site_key="li", party_cap=fallback)
+    prov = build._provenance_block(inputs)
+    assert prov["party_cap_source"].startswith("FALLBACK constant")
+    assert "invalid" in prov["party_cap_source"]
+
+    line = build._summary_line(
+        build.GUILD_SITES[1],
+        inputs,
+        _summary_week({"Enhancing": 0}),
+        None,
+        draw_model.TrialDraw(skills=["Enhancing"], date="", min_levels={}),
+    )
+    assert f"seats {config.party_cap('li')} (FALLBACK constant" in line
+    assert "invalid" in line
+    assert "encampment L" not in line
+
+
+# --- _fetch_guild, end to end: the cap each Buildings path produces ------------
+def _stub_fetch_guild_for_cap(monkeypatch, scrape_buildings):
+    """Stub every network call _fetch_guild makes; the Buildings tab is the test's."""
+    from src import scraper
+
+    gd = scraper.GuildData(
+        tab="LI Member Data", fetched_at="t", member_count=1,
+        members=[_member("Yedic", 100)],
+    )
+    monkeypatch.setattr(config, "ROSTER_SOURCE_ENABLED", False)
+    monkeypatch.setattr(build, "scrape_member_tab", lambda tab: gd)
+    monkeypatch.setattr(build.signup_model, "fetch_signup_csv", lambda tab: "csv")
+    monkeypatch.setattr(
+        build.draw_model, "trial_columns", lambda csv, tab: ["Foraging"]
+    )
+    monkeypatch.setattr(
+        build.signup_model, "parse_signup", lambda csv, tab_label=None: {}
+    )
+    monkeypatch.setattr(build, "_fetch_combat", lambda site, csv: (None, "stub"))
+    monkeypatch.setattr(
+        build.buildings_model, "scrape_buildings_tab", scrape_buildings
+    )
+
+
+def _fetch_li():
+    from src import draw as draw_model
+
+    site = [s for s in build.GUILD_SITES if s.key == "li"][0]
+    return build._fetch_guild(
+        site, draw_model.TrialDraw(skills=["Foraging"], date="x")
+    )
+
+
+def test_fetch_guild_reads_the_cap_off_the_encampment(monkeypatch, capsys):
+    _stub_fetch_guild_for_cap(monkeypatch, lambda tab, key: _observation(4))
+    monkeypatch.setattr(config, "BUILDINGS_SOURCE_ENABLED", True)
+    inputs = _fetch_li()
+    assert inputs.party_cap.cap == 28
+    assert inputs.party_cap.source == "encampment L4"
+    assert "party cap" not in capsys.readouterr().err
+
+
+def test_fetch_guild_with_the_buildings_flag_off_falls_back(monkeypatch, capsys):
+    def never(tab, key):
+        raise AssertionError("the flag is off: the tab must not be fetched")
+
+    _stub_fetch_guild_for_cap(monkeypatch, never)
+    monkeypatch.setattr(config, "BUILDINGS_SOURCE_ENABLED", False)
+    inputs = _fetch_li()
+    assert inputs.party_cap.cap == config.party_cap("li")
+    assert inputs.party_cap.source.startswith("FALLBACK constant")
+    assert "not read" in inputs.party_cap.source
+    assert "BUILDINGS_SOURCE_ENABLED" in inputs.party_cap.source
+    assert "WARNING (li)" in capsys.readouterr().err
+
+
+def test_fetch_guild_with_an_unreadable_buildings_tab_falls_back(monkeypatch, capsys):
+    from src.reader import SheetStructureError
+
+    def boom(tab, key):
+        raise SheetStructureError("header changed")
+
+    _stub_fetch_guild_for_cap(monkeypatch, boom)
+    monkeypatch.setattr(config, "BUILDINGS_SOURCE_ENABLED", True)
+    inputs = _fetch_li()
+    assert inputs.party_cap.cap == config.party_cap("li")
+    assert inputs.party_cap.source.startswith("FALLBACK constant")
+    assert "not read" in inputs.party_cap.source
+    assert "unreadable" in inputs.party_cap.source
+    assert "party cap" in capsys.readouterr().err
+
+
+def test_fetch_guild_with_no_encampment_row_falls_back(monkeypatch, capsys):
+    _stub_fetch_guild_for_cap(monkeypatch, lambda tab, key: _observation(None))
+    monkeypatch.setattr(config, "BUILDINGS_SOURCE_ENABLED", True)
+    inputs = _fetch_li()
+    assert inputs.party_cap.cap == config.party_cap("li")
+    assert "no Skilling Encampment row" in inputs.party_cap.source
+    assert "no Skilling Encampment row" in capsys.readouterr().err
+
+
+def test_fetch_guild_with_an_invalid_level_cell_falls_back(monkeypatch, capsys):
+    """The parser reads a blank, garbled or negative cell as 0; so does this."""
+    _stub_fetch_guild_for_cap(monkeypatch, lambda tab, key: _observation(0))
+    monkeypatch.setattr(config, "BUILDINGS_SOURCE_ENABLED", True)
+    inputs = _fetch_li()
+    assert inputs.party_cap.cap == config.party_cap("li")
+    assert inputs.party_cap.source.startswith("FALLBACK constant")
+    assert "invalid" in inputs.party_cap.source
+    assert "invalid" in capsys.readouterr().err

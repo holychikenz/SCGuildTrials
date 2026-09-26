@@ -6,6 +6,8 @@ sheet layout changes, adjust the column map below and the structure guard in
 ``reader.py`` will catch the mismatch loudly.
 """
 
+from typing import NamedTuple, Optional
+
 # --- Source spreadsheet -----------------------------------------------------
 SHEET_ID = "1b5_zID6K4WRaFXnBMJijSEXr_4l2gi40eFKxuvRJQAE"
 GID = "0"
@@ -522,8 +524,13 @@ TRIAL_SKILLS_CURRENT = ["Enhancing", "Milking", "Cooking", "Brewing"]
 # Fixed seed for reproducibility. NEVER use unseeded randomness.
 TRIAL_RNG_SEED = 42
 # Skilling trial party cap, PER GUILD (research/trial-tabs.md §1: max 20 observed).
-# Tunable — parties may run larger than the 20 originally observed. Still magic
-# numbers; a later change will read them from the guild spreadsheet.
+# Tunable — parties may run larger than the 20 originally observed.
+#
+# SINCE 2026-09-26 THESE ARE THE FALLBACK, NOT THE LIVE CAP. The live cap is read off
+# each guild's Skilling Encampment level on its Buildings tab (derived_party_cap and
+# SKILLING_ENCAMPMENT_BASE_SEATS below; wired in build._resolve_party_cap). These
+# constants run only when that level was not read (tab off, unreadable or empty, no
+# encampment row, or an invalid level cell), and the build warns when they do.
 #
 # SPLIT PER GUILD 2026-08-21. It was one constant for both guilds, on the same
 # reasoning GUILD_BUILDING_LEVELS still shares one map — until the two diverged.
@@ -534,9 +541,15 @@ TRIAL_RNG_SEED = 42
 # tier's work target by 1%, so a cap that is too HIGH seats phantom contributors
 # and one that is too LOW leaves points banked (see build._marginal_seat_phrase).
 # Being wrong per guild is therefore a real error and no longer a shared one.
+#
+# LI 26 -> 28 on 2026-09-26. 26 was hand-set (b8faa75, 2026-08-21), never an observed
+# party size; it was live while LI's Skilling Encampment stood at level 3 in every
+# capture from 2026-08-28 to 2026-09-20 (guild id 240, cowstuff/tampermonkey/.captures). It reads 4 from 2026-09-21, the LI Buildings tab
+# says 4 (captured 2026-09-26T08:52Z), and the game shows LI 28 seats. A stale 26 is
+# the SAFE direction (points banked, no phantom seat) but it is still wrong.
 TRIAL_PARTY_CAPS = {
     "sc": 28,
-    "li": 26,
+    "li": 28,
 }
 
 # The cap for callers that name no guild: tests, direct library calls, and the
@@ -561,6 +574,96 @@ def party_cap(guild: str) -> int:
             f"no party cap configured for guild {guild!r}; "
             f"known guilds: {sorted(TRIAL_PARTY_CAPS)}"
         ) from None
+
+
+# --- The party cap, read off the Skilling Encampment (2026-09-26) ----------------
+#   seats = SKILLING_ENCAMPMENT_BASE_SEATS + SKILLING_ENCAMPMENT_SLOTS_PER_LEVEL x level
+#
+# THE INCREMENT is the game's own: guildBuildingDetailMap
+# ["/guild_buildings/skilling_encampment"].skillingTrialSlotsPerLevel == 2
+# (cowstuff/milkyway_client_info.json, gameVersion v1.20260814.0).
+#
+# THE BASE is not in the client data (it is held server-side and appears in no dump,
+# capture or note in this repo). 20 is solved from the ONE measured point, 28 seats at
+# level 4:
+#   SC: skilling_encampment 4 in every capture of guild 4 from 2026-08-28, and
+#       new_guild_skilling parties of exactly 28 participantIds on 2026-08-30, 09-13
+#       and 09-20 (never more).
+#   LI: Buildings tab level 4 (captured 2026-09-26T08:52Z), and the game shows 28.
+#
+# Every other level FOLLOWS FROM THE FORMULA; none is measured. Level 3 -> 26 in
+# particular is NOT a measurement: TRIAL_PARTY_CAPS["li"] = 26 was hand-set on
+# 2026-08-21 (b8faa75) while LI stood at level 3, and no party of exactly 26 was ever
+# observed. Level 1 -> 22 agrees with SC's hand-made 22-row seat grid beside a level-1
+# encampment (research/trial-tabs.md, research/trial-messages.md), which is
+# corroboration, not a measurement.
+#
+# NEVER GUESS UPWARD. A cap too HIGH seats phantom contributors (TRIAL_PARTY_CAPS).
+# The formula is exact wherever the game's increment and the L4 anchor both hold: a
+# game patch to skillingTrialSlotsPerLevel, or a base that differs by level, breaks it.
+# Re-check the client data on a game version bump, and re-anchor on a filled party at
+# a new level. A level that was NOT READ (see derived_party_cap) is never computed;
+# it falls back to TRIAL_PARTY_CAPS, with a warning.
+SKILLING_ENCAMPMENT_HRID = "/guild_buildings/skilling_encampment"
+SKILLING_ENCAMPMENT_SLOTS_PER_LEVEL = 2
+SKILLING_ENCAMPMENT_BASE_SEATS = 20
+
+
+class PartyCap(NamedTuple):
+    """One guild's seat cap and where it came from.
+
+    ``source`` is published in provenance and the CI line so a wrong seat count can
+    be traced: ``"encampment L<n>"`` for the formula, or ``"FALLBACK constant ..."``
+    and the reason. ``warning`` is non-empty whenever the cap is the fallback.
+    """
+
+    cap: int
+    source: str
+    encampment_level: Optional[int] = None
+    warning: str = ""
+
+
+def derived_party_cap(
+    guild: str,
+    encampment_level: Optional[int],
+    no_level_reason: str = "no Skilling Encampment level was read",
+) -> PartyCap:
+    """The seat cap for ``guild`` at Skilling Encampment ``encampment_level``.
+
+    A level of 1 or more returns BASE + SLOTS_PER_LEVEL x level. Anything else
+    returns party_cap(guild), the FALLBACK constant, with a warning:
+
+    * None: no level was read. ``no_level_reason`` says why (the caller knows
+      whether the tab was off, unreadable, empty, or carried no encampment row).
+    * 0 or negative: an invalid cell, NOT level 0. buildings._clamp_level reads a
+      blank, garbled or negative cell as 0, so 0 means "not read", and computing
+      BASE + 0 from it would plan a guess.
+
+    Raises KeyError on an unknown guild key, as party_cap does.
+    """
+    fallback = party_cap(guild)
+    if encampment_level is not None and encampment_level >= 1:
+        return PartyCap(
+            cap=SKILLING_ENCAMPMENT_BASE_SEATS
+            + SKILLING_ENCAMPMENT_SLOTS_PER_LEVEL * encampment_level,
+            source=f"encampment L{encampment_level}",
+            encampment_level=encampment_level,
+        )
+    if encampment_level is None:
+        reason = no_level_reason
+    else:
+        reason = (
+            f"invalid Skilling Encampment level cell (reads {encampment_level}: "
+            f"blank, garbled, negative or 0)"
+        )
+    return PartyCap(
+        cap=fallback,
+        source=f"FALLBACK constant TRIAL_PARTY_CAPS[{guild!r}]: {reason}",
+        warning=(
+            f"party cap is the fallback config.TRIAL_PARTY_CAPS[{guild!r}] = "
+            f"{fallback}, not read off the Skilling Encampment: {reason}."
+        ),
+    )
 
 # ===========================================================================
 # Guild Trials (Phase 2) — optimizer strategy + knobs (src/optimizer.py)
