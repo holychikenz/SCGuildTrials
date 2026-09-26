@@ -223,3 +223,158 @@ def test_the_combat_block_always_carries_both_loadout_keys():
         "available", "unavailable", "source", "generated_at",
         "loadout_schema", "loadouts", "trials",
     }
+
+
+# ---------------------------------------------------------------------------
+# the party cap, read off the Skilling Encampment (2026-09-26)
+# ---------------------------------------------------------------------------
+def _observation(encampment_level=None, observed=True):
+    from src import buildings as buildings_model
+
+    other = (
+        {config.SKILLING_ENCAMPMENT_HRID: encampment_level}
+        if encampment_level is not None
+        else {}
+    )
+    return buildings_model.GuildBuildings(
+        tab="LI Buildings",
+        guild_key="li",
+        observed=observed,
+        captured_at="2026-09-26T08:52:00.000Z" if observed else "",
+        other_levels=other if observed else {},
+    )
+
+
+def test_encampment_level_four_seats_twenty_eight():
+    """The measured point: both guilds at level 4, and both seat 28 in game."""
+    cap = config.derived_party_cap("li", 4)
+    assert cap.cap == 28
+    assert cap.encampment_level == 4
+    assert cap.warning == ""
+    assert "Skilling Encampment level 4" in cap.source
+
+
+def test_no_encampment_level_falls_back_to_the_constant_and_says_so():
+    """An unobserved tab has no level, and the fallback must be loud, not silent."""
+    cap = config.derived_party_cap("li", None)
+    assert cap.cap == config.party_cap("li")
+    assert cap.encampment_level is None
+    assert cap.warning
+    assert "TRIAL_PARTY_CAPS" in cap.source
+
+
+def test_an_unmapped_level_falls_back_to_the_constant_and_warns():
+    """Level 9 is not in the map: no extrapolation, the constant, and a warning."""
+    assert 9 not in config.SKILLING_ENCAMPMENT_SEATS
+    cap = config.derived_party_cap("sc", 9)
+    assert cap.cap == config.party_cap("sc")
+    assert cap.encampment_level == 9
+    assert "9" in cap.warning
+    assert "TRIAL_PARTY_CAPS" in cap.source
+
+
+def test_an_unmapped_level_below_the_map_never_guesses_upward():
+    """A cap too HIGH seats phantom contributors. Seats cannot fall as the level
+    rises (the game adds skillingTrialSlotsPerLevel per level), so an unmapped
+    level below a mapped one is capped at that mapped level's seats — never the
+    fallback constant when the constant is larger."""
+    lowest = min(config.SKILLING_ENCAMPMENT_SEATS)
+    cap = config.derived_party_cap("li", lowest - 1)
+    assert cap.cap <= config.SKILLING_ENCAMPMENT_SEATS[lowest]
+    assert cap.cap <= config.party_cap("li")
+    assert cap.warning
+
+
+def test_the_encampment_map_agrees_with_the_games_per_level_increment():
+    """Every mapped pair must step by the game's skillingTrialSlotsPerLevel (2).
+    A typo'd entry would break this before it broke a page."""
+    levels = sorted(config.SKILLING_ENCAMPMENT_SEATS)
+    seats = config.SKILLING_ENCAMPMENT_SEATS
+    for lo, hi in zip(levels, levels[1:]):
+        assert seats[hi] - seats[lo] == (
+            config.SKILLING_ENCAMPMENT_SLOTS_PER_LEVEL * (hi - lo)
+        )
+
+
+def test_resolve_party_cap_reads_the_encampment_off_the_observation(capsys):
+    site = build.GUILD_SITES[1]
+    cap = build._resolve_party_cap(site, _observation(4))
+    assert cap.cap == 28
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_resolve_party_cap_on_an_unobserved_tab_warns_in_the_build_output(capsys):
+    site = build.GUILD_SITES[1]
+    cap = build._resolve_party_cap(site, _observation(observed=False))
+    assert cap.cap == config.party_cap(site.key)
+    assert f"WARNING ({site.key})" in capsys.readouterr().err
+
+    # No observation at all (flag off, or the tab was unreadable): same answer.
+    cap = build._resolve_party_cap(site, None)
+    assert cap.cap == config.party_cap(site.key)
+    assert f"WARNING ({site.key})" in capsys.readouterr().err
+
+
+def test_resolve_party_cap_on_an_unmapped_level_warns_in_the_build_output(capsys):
+    site = build.GUILD_SITES[0]
+    cap = build._resolve_party_cap(site, _observation(9))
+    assert cap.cap == config.party_cap(site.key)
+    err = capsys.readouterr().err
+    assert f"WARNING ({site.key})" in err and "9" in err
+
+
+def test_unit_jobs_ship_the_derived_cap_not_the_constant():
+    """The guild's jobs plan at the cap derived from ITS encampment. 24 is a value
+    no constant holds, so a job that reverted to site.party_cap fails here."""
+    from src import draw as draw_model
+
+    site = build.GUILD_SITES[1]
+    derived = config.PartyCap(
+        cap=24, source="Skilling Encampment level 2 (test)", encampment_level=2,
+    )
+    inputs = build._GuildInputs(
+        site_key=site.key,
+        members=[_member("M0", 100)],
+        register={"member_count": 1, "skills": []},
+        picks=None,
+        party_cap=derived,
+    )
+    week_draw = draw_model.TrialDraw(skills=["Foraging"], date="", min_levels={})
+    for job in build._unit_jobs(site, inputs, week_draw):
+        assert job["cap"] == 24
+
+
+def test_unit_jobs_without_a_derived_cap_use_the_guild_constant():
+    """Inputs built without one (older tests, direct callers) keep the old answer."""
+    from src import draw as draw_model
+
+    site = build.GUILD_SITES[1]
+    inputs = build._GuildInputs(
+        site_key=site.key,
+        members=[_member("M0", 100)],
+        register={"member_count": 1, "skills": []},
+        picks=None,
+    )
+    week_draw = draw_model.TrialDraw(skills=["Foraging"], date="", min_levels={})
+    for job in build._unit_jobs(site, inputs, week_draw):
+        assert job["cap"] == site.party_cap
+
+
+def test_the_cap_source_is_in_provenance_and_the_summary():
+    """A wrong seat count must be visible: in trials.json and in the CI line."""
+    from src import draw as draw_model
+
+    derived = config.derived_party_cap("li", 4)
+    inputs = _summary_inputs(site_key="li", party_cap=derived)
+    prov = build._provenance_block(inputs)
+    assert prov["party_cap"] == 28
+    assert "Skilling Encampment level 4" in prov["party_cap_source"]
+
+    line = build._summary_line(
+        build.GUILD_SITES[1],
+        inputs,
+        _summary_week({"Enhancing": 0}),
+        None,
+        draw_model.TrialDraw(skills=["Enhancing"], date="", min_levels={}),
+    )
+    assert "seats 28 (encampment L4)" in line

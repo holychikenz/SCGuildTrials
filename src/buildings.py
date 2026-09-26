@@ -49,6 +49,7 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
+from typing import Optional
 from urllib.parse import quote
 
 import requests
@@ -106,6 +107,12 @@ class GuildBuildings:
     # Rows whose Kind is neither "building" nor "shrine": recorded so a new Kind is
     # visible in one grep rather than silently absent from the model.
     ignored_hrids: list[str] = field(default_factory=list)
+
+    @property
+    def skilling_encampment_level(self) -> Optional[int]:
+        """The Skilling Encampment level, which sets the trial seat cap
+        (config.derived_party_cap). None when the tab carries no such row."""
+        return self.other_levels.get(config.SKILLING_ENCAMPMENT_HRID)
 
     @property
     def built_skills(self) -> dict[str, int]:

@@ -6,6 +6,8 @@ sheet layout changes, adjust the column map below and the structure guard in
 ``reader.py`` will catch the mismatch loudly.
 """
 
+from typing import NamedTuple, Optional
+
 # --- Source spreadsheet -----------------------------------------------------
 SHEET_ID = "1b5_zID6K4WRaFXnBMJijSEXr_4l2gi40eFKxuvRJQAE"
 GID = "0"
@@ -522,8 +524,13 @@ TRIAL_SKILLS_CURRENT = ["Enhancing", "Milking", "Cooking", "Brewing"]
 # Fixed seed for reproducibility. NEVER use unseeded randomness.
 TRIAL_RNG_SEED = 42
 # Skilling trial party cap, PER GUILD (research/trial-tabs.md §1: max 20 observed).
-# Tunable — parties may run larger than the 20 originally observed. Still magic
-# numbers; a later change will read them from the guild spreadsheet.
+# Tunable — parties may run larger than the 20 originally observed.
+#
+# SINCE 2026-09-26 THESE ARE THE FALLBACK, NOT THE LIVE CAP. The live cap is read off
+# each guild's Skilling Encampment level on its Buildings tab (derived_party_cap and
+# SKILLING_ENCAMPMENT_SEATS below; wired in build._resolve_party_cap). These constants
+# run only when that level is unobserved or not in the map, and the build warns when
+# they do.
 #
 # SPLIT PER GUILD 2026-08-21. It was one constant for both guilds, on the same
 # reasoning GUILD_BUILDING_LEVELS still shares one map — until the two diverged.
@@ -534,9 +541,15 @@ TRIAL_RNG_SEED = 42
 # tier's work target by 1%, so a cap that is too HIGH seats phantom contributors
 # and one that is too LOW leaves points banked (see build._marginal_seat_phrase).
 # Being wrong per guild is therefore a real error and no longer a shared one.
+#
+# LI 26 -> 28 on 2026-09-26. 26 was right when it was set: LI's Skilling Encampment
+# stood at level 3 in every capture from 2026-08-28 to 2026-09-20 (guild id 240,
+# cowstuff/tampermonkey/.captures). It reads 4 from 2026-09-21, the LI Buildings tab
+# says 4 (captured 2026-09-26T08:52Z), and the game shows LI 28 seats. A stale 26 is
+# the SAFE direction (points banked, no phantom seat) but it is still wrong.
 TRIAL_PARTY_CAPS = {
     "sc": 28,
-    "li": 26,
+    "li": 28,
 }
 
 # The cap for callers that name no guild: tests, direct library calls, and the
@@ -561,6 +574,107 @@ def party_cap(guild: str) -> int:
             f"no party cap configured for guild {guild!r}; "
             f"known guilds: {sorted(TRIAL_PARTY_CAPS)}"
         ) from None
+
+
+# --- The party cap, read off the Skilling Encampment (2026-09-26) ----------------
+# The game's own rule, as far as the client data states it: guildBuildingDetailMap
+# ["/guild_buildings/skilling_encampment"].skillingTrialSlotsPerLevel == 2
+# (cowstuff/milkyway_client_info.json, gameVersion v1.20260814.0). The client data
+# carries the PER-LEVEL increment only; the base the increment sits on is held
+# server-side and appears in no dump, capture or note in this repo. So the seats are
+# NOT computed as base + 2 x level. Only the levels MEASURED are mapped, and every
+# other level falls back to TRIAL_PARTY_CAPS with a warning (derived_party_cap).
+#
+# The evidence, one line per entry:
+#   3 -> 26  LI, 2026-08-21 to 2026-09-20. TRIAL_PARTY_CAPS["li"] was set to 26 on
+#            2026-08-21 (commit b8faa75) while every capture of guild 240 from
+#            2026-08-28 to 2026-09-20 has skilling_encampment 3.
+#   4 -> 28  SC: skilling_encampment 4 in every capture of guild 4 from 2026-08-28,
+#            and new_guild_skilling parties of exactly 28 participantIds on
+#            2026-08-30, 09-13 and 09-20 (never more). LI: Buildings tab level 4
+#            (2026-09-26T08:52Z), and the game shows 28 seats.
+# The two entries differ by exactly 2 seats per level, which is the game's
+# increment, and a test pins that agreement (tests/test_build.py).
+#
+# NOT MAPPED, deliberately. Level 1 -> 22 is what the same rule would predict, and SC
+# was at level 1 on 2026-07-22 (research/trial-messages.md) beside a hand-made
+# 22-row seat grid (research/trial-tabs.md, 2026-07-31). But the grid was drawn by an
+# officer and the level is from nine days earlier, so it is corroboration, not a
+# measurement. Add an entry when a capture shows a party filled at a new level.
+SKILLING_ENCAMPMENT_HRID = "/guild_buildings/skilling_encampment"
+SKILLING_ENCAMPMENT_SLOTS_PER_LEVEL = 2
+SKILLING_ENCAMPMENT_SEATS = {
+    3: 26,
+    4: 28,
+}
+
+
+class PartyCap(NamedTuple):
+    """One guild's seat cap and where it came from.
+
+    ``source`` is published in provenance so a wrong seat count can be traced;
+    ``warning`` is non-empty whenever the cap is the fallback constant rather than
+    one read off the guild's encampment.
+    """
+
+    cap: int
+    source: str
+    encampment_level: Optional[int] = None
+    warning: str = ""
+
+
+def derived_party_cap(guild: str, encampment_level: Optional[int]) -> PartyCap:
+    """The seat cap for ``guild`` at Skilling Encampment ``encampment_level``.
+
+    A mapped level returns its measured seats. No level (the tab unobserved, or the
+    row absent) or an unmapped one returns party_cap(guild), with a warning.
+
+    NEVER ABOVE WHAT THE EVIDENCE ALLOWS. A cap that is too HIGH seats phantom
+    contributors (see TRIAL_PARTY_CAPS). The game ADDS seats per level, so seats
+    never fall as the level rises: a mapped level ABOVE an unmapped one bounds it
+    from above, and the fallback is clamped to that bound. The bound is not the
+    answer (level 2 under a mapped 3 -> 26 gets 26, where the game's rule would give
+    fewer), which is why this path warns. ABOVE the map the constant stands, and
+    there it can only be too LOW, the safe direction. Encampments are not demolished,
+    so in practice the unmapped levels are the ones above the map.
+
+    Raises KeyError on an unknown guild key, as party_cap does.
+    """
+    fallback = party_cap(guild)
+    if encampment_level is None:
+        return PartyCap(
+            cap=fallback,
+            source=f"config.TRIAL_PARTY_CAPS[{guild!r}] (no Skilling Encampment level read)",
+            warning=(
+                f"no Skilling Encampment level was read, so the party cap is the "
+                f"fallback config.TRIAL_PARTY_CAPS[{guild!r}] = {fallback}"
+            ),
+        )
+    seats = SKILLING_ENCAMPMENT_SEATS.get(encampment_level)
+    if seats is not None:
+        return PartyCap(
+            cap=seats,
+            source=f"Skilling Encampment level {encampment_level}",
+            encampment_level=encampment_level,
+        )
+    above = [s for lv, s in SKILLING_ENCAMPMENT_SEATS.items() if lv > encampment_level]
+    cap = min([fallback, *above])
+    return PartyCap(
+        cap=cap,
+        source=(
+            f"config.TRIAL_PARTY_CAPS[{guild!r}] (Skilling Encampment level "
+            f"{encampment_level} is not in SKILLING_ENCAMPMENT_SEATS)"
+        ),
+        encampment_level=encampment_level,
+        warning=(
+            f"Skilling Encampment level {encampment_level} is not in "
+            f"config.SKILLING_ENCAMPMENT_SEATS (known: "
+            f"{sorted(SKILLING_ENCAMPMENT_SEATS)}), so the party cap is the "
+            f"fallback {cap}"
+            + (f", clamped below the constant {fallback}" if cap < fallback else "")
+            + ". Add the level's measured seats to the map."
+        ),
+    )
 
 # ===========================================================================
 # Guild Trials (Phase 2) — optimizer strategy + knobs (src/optimizer.py)

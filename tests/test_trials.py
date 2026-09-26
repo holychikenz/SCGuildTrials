@@ -1772,20 +1772,23 @@ def test_pin_controls_reach_every_page_the_reader_can_land_on():
 # Per-guild party cap (config.TRIAL_PARTY_CAPS, split 2026-08-21)
 # ---------------------------------------------------------------------------
 def test_every_guild_site_resolves_its_own_party_cap():
-    """Each shipped guild has a cap of its own, and SC's is the larger.
+    """Each shipped guild resolves a FALLBACK cap of its own.
 
-    The cap was ONE constant for both guilds until the guilds diverged. This
-    pins the two facts a silent regression would break: that every GuildSite
-    resolves (rather than raising, or falling through to the guild-less
-    default), and that the two guilds are genuinely different — so a future
-    edit that collapses the map back into one number fails here.
+    The cap was ONE constant for both guilds until the guilds diverged
+    (2026-08-21). Since 2026-09-26 the live cap is read off each guild's
+    Skilling Encampment and these are only its fallback, now equal because both
+    guilds stand at level 4. What this still pins is that every GuildSite
+    resolves rather than raising or falling through to the guild-less default.
     """
     from src import build
 
     caps = {site.key: site.party_cap for site in build.GUILD_SITES}
-    assert caps == {"sc": 28, "li": 26}
+    # The FALLBACK constants since 2026-09-26, when the live cap moved to the
+    # Skilling Encampment level (config.derived_party_cap). LI's 26 was its
+    # level-3 cap; it built level 4 on 2026-09-21 and seats 28 in game.
+    assert caps == {"sc": 28, "li": 28}
     assert config.party_cap("sc") == 28
-    assert config.party_cap("li") == 26
+    assert config.party_cap("li") == 28
 
 
 def test_an_unknown_guild_key_raises_rather_than_defaulting():
