@@ -129,7 +129,7 @@ class GuildSite:
         Per guild since 2026-08-21. Since 2026-09-26 the live cap is read off the
         guild's Skilling Encampment level (_resolve_party_cap, carried on
         _GuildInputs.party_cap); this is what that falls back to, with a warning,
-        when the level is unobserved or unmapped. Either way the cap is passed
+        when the level was not read (config.derived_party_cap). Either way the cap is passed
         explicitly into every optimiser call for this guild, so no page is ever
         planned against the guild-less default in config.TRIAL_PARTY_CAP.
         """
@@ -212,7 +212,10 @@ def _party_cap(inputs: "_GuildInputs") -> config.PartyCap:
         return inputs.party_cap
     return config.PartyCap(
         cap=config.party_cap(inputs.site_key),
-        source=f"config.TRIAL_PARTY_CAPS[{inputs.site_key!r}]",
+        source=(
+            f"FALLBACK constant TRIAL_PARTY_CAPS[{inputs.site_key!r}]: inputs "
+            f"built outside _fetch_guild carry no derived cap"
+        ),
     )
 
 
@@ -228,6 +231,7 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
     member_count = inputs.register.get("member_count", len(inputs.members))
     prov = inputs.roster_provenance
     buildings_age = _capture_age_days(inputs.buildings_captured_at)
+    cap = _party_cap(inputs)
     out = {
         "enabled": bool(config.ROSTER_SOURCE_ENABLED),
         "source": "manual tab",
@@ -288,11 +292,11 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
         ),
         "buildings_unavailable": inputs.buildings_unavailable,
         # --- the seat cap (config.derived_party_cap, 2026-09-26) ----------------
-        # Which cap ran and why: "Skilling Encampment level N", or the fallback
-        # constant and the reason. A wrong seat count is indistinguishable from a
+        # Which cap ran and why: "encampment L<n>", or "FALLBACK constant" and the
+        # reason. A wrong seat count is indistinguishable from a
         # right one on the page, so its source is on the record here.
-        "party_cap": _party_cap(inputs).cap,
-        "party_cap_source": _party_cap(inputs).source,
+        "party_cap": cap.cap,
+        "party_cap_source": cap.source,
     }
     if prov is None:
         return out
@@ -1008,14 +1012,15 @@ def _marginal_seat_phrase(trial: dict, cap: int) -> str:
     delta of exactly zero — so being wrong about the party cap cost nothing
     measurable. It now costs points in WHICHEVER DIRECTION it is wrong. Since
     2026-09-26 the cap is read off each guild's Skilling Encampment level
-    (config.derived_party_cap). Level 4 -> 28 is measured: SC parties of exactly 28 in
-    the 2026-08/09 captures. Any other level falls back to config.TRIAL_PARTY_CAPS
-    with a build warning. ``cap`` is THIS guild's, taken from the week it rendered
-    (``week["cap"]``) rather than re-read from config, so the line quotes the number
-    the plan on the page was actually built with. If the real cap is 20 then every
-    tier, margin and probability on this page is optimistic by four phantom
-    contributors; if there is no cap at 24 the guild is leaving points on the table and
-    this tool is quietly telling it to. The line publishes that exposure rather than
+    (config.derived_party_cap: 20 + 2 x level, anchored on the measured level 4 -> 28,
+    SC parties of exactly 28 in the 2026-08/09 captures). A level not read falls back
+    to config.TRIAL_PARTY_CAPS with a build warning. ``cap`` is THIS guild's, taken
+    from the week it rendered (``week["cap"]``) rather than re-read from config, so
+    the line quotes the number the plan on the page was actually built with. If the
+    real cap were 20 (the largest party once observed, research/trial-tabs.md) then
+    every tier, margin and probability on a 28-seat page would be optimistic by eight
+    phantom contributors; if the game seats more than 28 the guild is leaving points
+    on the table and this tool is quietly telling it to. The line publishes that exposure rather than
     hiding it.
 
     Two decimals, unlike :func:`_pct`: both figures sit near 1%, and a single decimal
@@ -4887,22 +4892,33 @@ def _fetch_combat(
 
 
 def _resolve_party_cap(
-    site: "GuildSite", observation: Optional["buildings_model.GuildBuildings"]
+    site: "GuildSite",
+    observation: Optional["buildings_model.GuildBuildings"],
+    unread_reason: str = "unreadable",
 ) -> config.PartyCap:
     """This guild's seat cap from its Buildings observation (config.derived_party_cap).
 
     ``observation`` is the one _fetch_guild already holds, or None when the tab was
-    not read (flag off, or unreadable). An unobserved tab, a missing encampment row
-    or an unmapped level all fall back to site.party_cap, the configured constant,
-    and say so on stderr: a seat count planned from a guess must be visible in the
-    build log, not only in trials.json.
+    not read; ``unread_reason`` then says why (the flag off, or the tab unreadable).
+    Every path that does not yield a level of 1 or more falls back to site.party_cap,
+    the configured constant, and says which on stderr: a seat count planned from a
+    guess must be visible in the build log, not only in trials.json. The three
+    causes are kept apart because their remedies differ: a tab not read or empty
+    (the flag, the writer, or the sync module), a tab with no encampment row (the
+    writer's row set), and an invalid level cell (the cell itself).
     """
-    level = (
-        observation.skilling_encampment_level
-        if observation is not None and observation.observed
-        else None
-    )
-    cap = config.derived_party_cap(site.key, level)
+    level: Optional[int] = None
+    if observation is None:
+        why = f"Buildings tab not read ({unread_reason})"
+    elif not observation.observed:
+        why = f"{observation.tab or 'Buildings'} tab empty (never written)"
+    else:
+        level = observation.skilling_encampment_level
+        why = (
+            f"{observation.tab or 'Buildings'} tab has no Skilling Encampment row "
+            f"({config.SKILLING_ENCAMPMENT_HRID})"
+        )
+    cap = config.derived_party_cap(site.key, level, no_level_reason=why)
     if cap.warning:
         print(f"WARNING ({site.key}): {cap.warning}", file=sys.stderr)
     return cap
@@ -5004,7 +5020,11 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     buildings_captured_at = ""
     buildings_unavailable = ""
     observation: Optional[buildings_model.GuildBuildings] = None
+    # Why the tab was not read, for the seat cap's fallback note. Read only while
+    # observation is still None, i.e. the flag is off or the scrape raised.
+    buildings_unread = "config.BUILDINGS_SOURCE_ENABLED is off"
     if config.BUILDINGS_SOURCE_ENABLED:
+        buildings_unread = "unreadable"
         try:
             observation = buildings_model.scrape_buildings_tab(
                 site.buildings_tab, site.key
@@ -5045,7 +5065,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             "from config.GUILD_BUILDING_LEVELS rather than from the sheet."
         )
     # The seat cap rides the same observation: its Skilling Encampment row.
-    party_cap = _resolve_party_cap(site, observation)
+    party_cap = _resolve_party_cap(site, observation, buildings_unread)
 
     # --- The sign-up tab, and whether it is talking about THIS week --------------
     # A SheetStructureError here means this guild's sign-up tab no longer carries the
@@ -5285,14 +5305,10 @@ def _summary_line(
     else:
         combat_note = f"combat NONE — {inputs.combat_unavailable[:60]}"
 
-    # The seat cap and where it came from: "encampment L4", or FALLBACK when it is
-    # the configured constant. The one number every tier target scales with.
+    # The seat cap and where it came from: "encampment L4", or "FALLBACK constant"
+    # and the reason. The one number every tier target scales with.
     cap = _party_cap(inputs)
-    cap_note = f"seats {cap.cap} " + (
-        f"(encampment L{cap.encampment_level})"
-        if not cap.warning and cap.encampment_level is not None
-        else "(FALLBACK constant)"
-    )
+    cap_note = f"seats {cap.cap} ({cap.source})"
 
     dest = f"_site/{site.subdir}/" if site.subdir else "_site/"
     return (

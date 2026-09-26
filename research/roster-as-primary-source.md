@@ -43,6 +43,11 @@ seed `42`, cap 26, members 101, strategy `best`, buff level 1, shrines {'force':
 
 signup.json: keys ['budget_seconds', 'cap', 'enforced_credit_total', 'enforced_expected_total', 'enforced_step_total', 'enforced_total', 'gap', 'generated_at', 'min_slack_fraction', 'optimal_credit_total', 'optimal_expected_total', 'optimal_step_total', 'optimal_total', 'reachable_total', 'roster_count', 'safety_min_probability', 'safety_min_slack', 'signup_count', 'target_scale', 'week_date']
 
+> **Reproducing this baseline (note 2026-09-26).** It was run at LI's then-constant
+> cap of 26. `config.TRIAL_PARTY_CAPS["li"]` is 28 since 2026-09-26 (and the live cap
+> is read off the Skilling Encampment), so the default no longer reproduces it: pass
+> the cap explicitly (`cap=26`).
+
 ### Two features of the baseline worth carrying forward
 
 **LI Tailoring banks tier 11 on a coin flip.** `partial_fraction` 0.0002 —
