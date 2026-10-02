@@ -999,3 +999,39 @@ def test_roster_entry_defaults_to_manual_for_an_unmerged_member():
     assert entry.source == "manual"
     assert entry.tool_item is None
     assert entry.tool_source == "manual"
+
+
+def test_one_old_row_is_named_not_flagged_as_a_stale_guild():
+    """2026-10-02: one departed member's 18-day-old row outlined all of SC."""
+    html_ = build_model._render_provenance_strip(_prov_on(
+        captured_at="2026-09-14T08:56:34.944Z", age_days=18,
+        newest_captured_at="2026-09-30T10:00:00.000Z", newest_age_days=2,
+        stale_names=["Alopex"], stale=False,
+    ))
+    assert 'class="prov"' in html_
+    assert "2026-09-14 to 2026-09-30" in html_
+    assert "Alopex" in html_
+    assert "lagging reality" not in html_
+
+
+def test_staleness_counts_rows_rather_than_taking_the_oldest():
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    now = datetime.now(timezone.utc)
+    iso = lambda d: (now - timedelta(days=d)).isoformat().replace("+00:00", "Z")
+    prov = roster.Provenance(guild_key="sc", roster_backed=20)
+    prov.captures = {f"m{i}": iso(2) for i in range(19)} | {"old": iso(30)}
+    prov.captured_at, prov.newest_captured_at = iso(30), iso(2)
+    inputs = SimpleNamespace(
+        register={"member_count": 20}, members=[], roster_provenance=prov,
+        buildings_captured_at="", buildings_unavailable="", roster_unavailable="",
+        site_key="sc", party_cap=None,
+    )
+    out = build_model._provenance_block(inputs)
+    assert out["stale_names"] == ["old"]
+    assert out["stale"] is False
+    prov.captures |= {f"o{i}": iso(30) for i in range(5)}
+    assert build_model._provenance_block(inputs)["stale"] is True
+    prov.captures = {"m": iso(20)}
+    prov.newest_captured_at = iso(20)
+    assert build_model._provenance_block(inputs)["stale"] is True

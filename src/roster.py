@@ -392,6 +392,10 @@ class Provenance:
     reported_not_seated: list[str] = field(default_factory=list)
     gear_hidden: list[str] = field(default_factory=list)
     captured_at: str = ""          # OLDEST capture among the joined rows
+    newest_captured_at: str = ""   # NEWEST capture among the joined rows
+    # name -> capture stamp, for every seated row that carries one. The oldest
+    # stamp alone let one departed member's row flag a whole guild as stale.
+    captures: dict[str, str] = field(default_factory=dict)
     # field -> tag -> count, over every (member, skill) the merge resolved.
     fields: dict[str, dict[str, int]] = field(default_factory=dict)
     normalized_matches: list[str] = field(default_factory=list)
@@ -424,6 +428,7 @@ class Provenance:
             "reported_not_seated": list(self.reported_not_seated),
             "gear_hidden": list(self.gear_hidden),
             "captured_at": self.captured_at,
+            "newest_captured_at": self.newest_captured_at,
             "fields": {k: dict(v) for k, v in self.fields.items()},
             "normalized_matches": list(self.normalized_matches),
             "unmatched_members": list(self.unmatched_members),
@@ -638,6 +643,7 @@ def merge(
             prov.roster_backed += 1
             if row.captured_at:
                 captures.append(row.captured_at)
+                prov.captures[member.name] = row.captured_at
             if all(v is None for v in row.tools.values()):
                 prov.gear_hidden.append(member.name)
         else:
@@ -665,6 +671,7 @@ def merge(
             prov.admitted_names.append(row.name)
             if row.captured_at:
                 captures.append(row.captured_at)
+                prov.captures[row.name] = row.captured_at
             if all(v is None for v in row.tools.values()):
                 prov.gear_hidden.append(row.name)
     else:
@@ -672,4 +679,5 @@ def merge(
 
     prov.member_count = len(merged)
     prov.captured_at = min(captures) if captures else ""
+    prov.newest_captured_at = max(captures) if captures else ""
     return merged, prov

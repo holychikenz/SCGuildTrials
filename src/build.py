@@ -310,6 +310,7 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
             "admitted_names": list(prov.admitted_names),
             "reported_not_seated": list(prov.reported_not_seated),
             "captured_at": prov.captured_at,
+            "newest_captured_at": prov.newest_captured_at,
             "gear_hidden": len(prov.gear_hidden),
             "unmatched_roster": list(prov.unmatched_roster),
             "unmatched_members": list(prov.unmatched_members),
@@ -340,8 +341,17 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
             "gear_stats": gear_audit["stats"],
         })
     age = _capture_age_days(prov.captured_at)
+    newest_age = _capture_age_days(prov.newest_captured_at)
+    stale_names = sorted(
+        name for name, stamp in prov.captures.items()
+        if (a := _capture_age_days(stamp)) is not None and a > config.ROSTER_MAX_AGE_DAYS
+    )
     out["age_days"] = age
-    out["stale"] = age is not None and age > config.ROSTER_MAX_AGE_DAYS
+    out["newest_age_days"] = newest_age
+    out["stale_names"] = stale_names
+    out["stale"] = (
+        newest_age is not None and newest_age > config.ROSTER_MAX_AGE_DAYS
+    ) or len(stale_names) > config.ROSTER_MAX_STALE_SHARE * max(1, len(prov.captures))
     return out
 
 
@@ -468,13 +478,28 @@ def _render_provenance_strip(prov: dict) -> str:
         )
     else:
         age = prov["age_days"]
-        when = html.escape((prov["captured_at"] or "")[:10]) or "an unknown date"
-        ago = "" if age is None else f" ({age} day{'' if age == 1 else 's'} ago)"
+        newest_age = prov.get("newest_age_days")
+        oldest_day = (prov["captured_at"] or "")[:10]
+        newest_day = (prov.get("newest_captured_at") or "")[:10]
+        if newest_day and newest_day != oldest_day and newest_age is not None and age is not None:
+            when = f"{html.escape(oldest_day)} to {html.escape(newest_day)}"
+            ago = f" ({newest_age}&ndash;{age} days ago)"
+        else:
+            when = html.escape(oldest_day) or "an unknown date"
+            ago = "" if age is None else f" ({age} day{'' if age == 1 else 's'} ago)"
         bits.append(
             f"<strong>{total}</strong> members. "
             f"<strong>{prov['roster_backed']}</strong> roster-backed, captured "
             f"{when}{ago}."
         )
+        stale_names = prov.get("stale_names") or []
+        if stale_names and not prov.get("stale"):
+            bits.append(
+                f"{len(stale_names)} capture(s) older than "
+                f"{config.ROSTER_MAX_AGE_DAYS} days "
+                f"({html.escape(', '.join(stale_names))}) &mdash; only those "
+                f"members' numbers lag."
+            )
         if prov["manual_backed"]:
             bits.append(
                 f"{prov['manual_backed']} matched no roster row and keep the "

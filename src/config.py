@@ -307,6 +307,11 @@ ROSTER_MIN_JOIN_RATE = 0.90
 # BANNER THRESHOLD, NOT A CUTOFF: an old capture is still better data than the
 # assumption it replaces, and refusing it would silently restore the assumption.
 ROSTER_MAX_AGE_DAYS = 14
+# The member-data strip is outlined stale when the NEWEST capture is past
+# ROSTER_MAX_AGE_DAYS (nobody has refreshed the tab), or when more than this
+# share of the seated rows are. Below it the old rows are NAMED instead: one
+# departed member's row must not flag a freshly-captured guild as stale.
+ROSTER_MAX_STALE_SHARE = 0.10
 
 # An item the roster names that config.TOOL_STATS does not model: warn, count, and
 # fall back to the manual checkbox. True stops the build instead. Shipped False
