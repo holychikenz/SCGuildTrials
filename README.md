@@ -657,22 +657,13 @@ trials) are ignored by position. Parsing is guarded by the "User" sentinel
 
 ## Deploy (GitHub Actions)
 
-`.github/workflows/deploy.yml` builds and deploys on **every push to `main`**, on a
-**daily** schedule, and on manual dispatch, using `uv` (via `astral-sh/setup-uv`,
+`.github/workflows/deploy.yml` builds and deploys on **every push to `main`** and on
+**manual dispatch** (`workflow_dispatch`), using `uv` (via `astral-sh/setup-uv`,
 cached) and the artifact-based Pages flow (`actions/upload-pages-artifact` +
 `actions/deploy-pages`).
 
-**Push to `main` is the reliable path** when a refresh is actually needed: it
-rebuilds immediately. The cron is best-effort and GitHub defers it under load —
-every scheduled run on record has started 2h13m–4h00m late, which is why the cron
-asks for 01:00 UTC rather than the hour anyone wants (see the comment in the
-workflow). Do not read the cron as a promise of when the site refreshes.
-
-The schedule is daily rather than hourly because the **inputs** move daily at most —
-the draw is weekly and the member data is slow. It is *not* an Actions-minutes
-economy: this repository is public, and public repositories get standard
-GitHub-hosted runners free and unlimited (4-vCPU/16 GiB at that). The
-"~2000 minutes/month" figure this section used to cite never applied here.
+There is **no cron**. The daily schedule was retired on 2026-10-03; refreshes are
+now triggered manually (e.g. `gh workflow run deploy.yml`) by an external script.
 
 ### Where the run time goes
 
@@ -722,8 +713,8 @@ After pushing to GitHub, enable Pages:
 
 > **Settings → Pages → Build and deployment → Source: GitHub Actions**
 
-Then trigger the workflow once from the **Actions** tab (or wait for the daily
-schedule). Subsequent runs update the site automatically.
+Then trigger the workflow once from the **Actions** tab. Subsequent pushes to
+`main` update the site automatically; other refreshes are dispatched manually.
 
 ## Configuration
 

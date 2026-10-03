@@ -3,24 +3,8 @@ name: Build and deploy guild site
 on:
   push:
     branches: [main]
-  schedule:
-    # Daily. NOT for want of Actions minutes: this repository is PUBLIC, and public
-    # repositories get standard GitHub-hosted runners free and unlimited (and 4-vCPU
-    # ones at that). The "~2000 minutes/month" budget this comment used to cite was
-    # never a constraint here, and it should not be quoted as a reason again.
-    #
-    # Daily because the INPUTS move daily at most: the draw is weekly and the member
-    # data is slow. A push to main rebuilds immediately and is the reliable path when
-    # a refresh is actually needed.
-    #
-    # 01:00 UTC is chosen for the LAG, not the hour: GitHub queues scheduled
-    # workflows best-effort and defers them under load, and this repo's runs have
-    # started 2h13m-4h00m late every day on record (06:00 UTC cron -> 08:13-10:00
-    # UTC actual). Asking for 01:00 therefore lands the rebuild around 03:00-05:00
-    # UTC, i.e. before the guild stirs, instead of mid-morning. Do NOT read the
-    # cron as a promise of when the site refreshes; a push to main rebuilds
-    # immediately and is the reliable path when a refresh is actually needed.
-    - cron: "0 1 * * *"
+  # No cron: the daily schedule was retired on 2026-10-03. Rebuilds now come
+  # from a push to main or a manual dispatch (triggered by an external script).
   workflow_dispatch: {}
 
 permissions:
