@@ -531,6 +531,7 @@ def _stub_fetch_guild(monkeypatch, calls):
         return roster.parse(_roster_csv([{"name": "Yedic"}]))
 
     monkeypatch.setattr(build_model.roster_model, "scrape_roster_tab", fake_scrape_roster)
+    monkeypatch.setattr(build_model, "_fetch_building_value", lambda site: (None, "stub"))
     return gd
 
 

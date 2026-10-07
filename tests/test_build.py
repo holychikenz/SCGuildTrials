@@ -423,6 +423,7 @@ def _stub_fetch_guild_for_cap(monkeypatch, scrape_buildings):
         build.signup_model, "parse_signup", lambda csv, tab_label=None: {}
     )
     monkeypatch.setattr(build, "_fetch_combat", lambda site, csv: (None, "stub"))
+    monkeypatch.setattr(build, "_fetch_building_value", lambda site: (None, "stub"))
     monkeypatch.setattr(
         build.buildings_model, "scrape_buildings_tab", scrape_buildings
     )

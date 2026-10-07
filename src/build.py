@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import building_value as building_value_model
 from . import buildings as buildings_model
 from . import combat as combat_model
 from . import config
@@ -51,6 +52,9 @@ OUTPUT_DIR = Path("_site")
 # and still tested, one config line from returning.
 TRIALS_PAGE = "trials.html"
 TRIALS_JSON = "trials.json"
+# Every guild upgrade on one scale: combat buildings (the optimiser's tab), skilling
+# buildings and shrines (this repo's probes). See _buildings_artefact.
+BUILDINGS_JSON = "buildings.json"
 TRIALS_MAXBUFF_PAGE = "trials-maxbuffs.html"
 TRIALS_MAXBUFF_JSON = "trials-maxbuffs.json"
 
@@ -178,6 +182,13 @@ class GuildSite:
         `available: false` with the reason in words.
         """
         return config.COMBAT_TABS[self.key]
+
+    @property
+    def building_value_tab(self) -> str:
+        """This guild's machine-owned combat building-value tab
+        (config.BUILDING_VALUE_TABS), written by the same optimiser as combat_tab
+        and read by src/building_value.py. Created by hand and starts empty."""
+        return config.BUILDING_VALUE_TABS[self.key]
 
     @property
     def out_dir(self) -> Path:
@@ -4617,6 +4628,11 @@ class _GuildInputs:
     # the sign-up header, or the flag is off. The text is what trials.json publishes
     # verbatim, so the userscript can show the reason rather than an empty tile grid.
     combat_unavailable: str = ""
+    # The optimiser's combat building value (building_value.GuildBuildingValue), or
+    # None when not read; the reason is in building_value_unavailable. Published in
+    # buildings.json, never in trials.json (the userscript fetches that per open).
+    building_value: Optional["building_value_model.GuildBuildingValue"] = None
+    building_value_unavailable: str = ""
     # Filled by main() in the render phase from the published unit's result. Not an
     # input — it lives here so one object carries everything _write_guild needs.
     plan_dict: Optional[dict] = None
@@ -5155,6 +5171,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     # bosses must equal (as a set) the two the game put in this guild's own sign-up
     # columns F-G. Never stops the deploy — see _fetch_combat's docstring.
     combat, combat_unavailable = _fetch_combat(site, signup_csv)
+    building_value, building_value_unavailable = _fetch_building_value(site)
 
     return _GuildInputs(
         site_key=site.key,
@@ -5171,6 +5188,8 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
         party_cap=party_cap,
         combat=combat,
         combat_unavailable=combat_unavailable,
+        building_value=building_value,
+        building_value_unavailable=building_value_unavailable,
     )
 
 
@@ -5410,6 +5429,116 @@ def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
     }
 
 
+def _fetch_building_value(
+    site: "GuildSite",
+) -> tuple[Optional["building_value_model.GuildBuildingValue"], str]:
+    """Read this guild's combat building value; never stop the deploy over it.
+
+    The same contract as _fetch_combat: a structural problem (missing tab — gviz
+    serves another tab's content for that — a changed header, another guild's id)
+    comes back as ``(None, reason)`` and is printed; a network RuntimeError
+    propagates, as it does for every tab on this host.
+    """
+    if not config.BUILDING_VALUE_SOURCE_ENABLED:
+        return None, "config.BUILDING_VALUE_SOURCE_ENABLED is off."
+    try:
+        observed = building_value_model.scrape_building_value_tab(
+            site.building_value_tab, site.key
+        )
+    except SheetStructureError as exc:
+        reason = str(exc)
+        print(f"WARNING ({site.key}): combat building value withheld — {reason}",
+              file=sys.stderr)
+        return None, reason
+    if not observed.observed:
+        return observed, (
+            f"the {site.building_value_tab!r} tab has never been written: the combat "
+            f"optimiser posts it with `report --building-value --publish-combat`."
+        )
+    return observed, ""
+
+
+def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -> dict:
+    """buildings.json: every guild upgrade this build knows a price and a gain for.
+
+    THREE SOURCES, ONE SCALE. Every Guild Point figure is BASE trial points (no
+    Builder's Hall multiplier) and every payback is in WEEKS, so ``ranked`` can put
+    a combat building beside a skilling one:
+
+      * combat   — the optimiser's tab (building_value.py): simulated, with a 95%
+                   interval and a verdict; only rows with a payback are ranked.
+      * skilling — trials.probe_building_upgrade for THIS WEEK'S drawn skills: the
+                   levels needed to buy one more tier, their total cost, and
+                   weeks_to_return at config.TRIAL_WEEKS_BETWEEN_DRAWS.
+      * shrine   — trials' shrine probes; weeks_to_return is a BEST case (full
+                   adoption by every member), as the trials page says.
+
+    The source blocks are carried verbatim beside ``ranked`` so a reader who wants
+    the detail (intervals, tiers, adoption) does not need a second fetch.
+    """
+    bv = inputs.building_value
+    combat = {
+        "available": bool(bv is not None and bv.observed),
+        "unavailable": inputs.building_value_unavailable,
+        **(bv.to_dict() if bv is not None else {"tab": site.building_value_tab,
+                                                  "rows": []}),
+    }
+    skilling = week.get("building_upgrades") or []
+    shrines = week.get("shrine_upgrades") or []
+    between = config.TRIAL_WEEKS_BETWEEN_DRAWS
+
+    ranked: list[dict] = []
+    for r in combat["rows"] if combat["available"] else []:
+        if r.get("payback_weeks") is None:
+            continue
+        ranked.append({
+            "kind": "combat", "name": r["name"], "key": r["hrid"],
+            "from_level": r["level"], "to_level": r["next_level"],
+            "cost": r["cost"], "gain_gp_per_week": r["gain_gp_per_week"],
+            "payback_weeks": r["payback_weeks"],
+            "confidence": r["verdict"], "recommendation": r["recommendation"],
+        })
+    for u in skilling:
+        if u.get("weeks_to_return") is None:
+            continue
+        ranked.append({
+            "kind": "skilling", "name": u["building"], "key": u["skill"],
+            "from_level": u["from_level"], "to_level": u["to_level"],
+            "cost": u["total_cost"],
+            "gain_gp_per_week": u["points_gained"] / between if between else None,
+            "payback_weeks": u["weeks_to_return"],
+            "confidence": "modelled", "recommendation": None,
+        })
+    for u in shrines:
+        if u.get("weeks_to_return") is None:
+            continue
+        ranked.append({
+            "kind": "shrine", "name": u["name"], "key": u["shrine"],
+            "from_level": u["from_level"], "to_level": u["from_level"] + 1,
+            "cost": u["next_level_cost"],
+            "gain_gp_per_week": u["points_gained_at_full_adoption"],
+            "payback_weeks": u["weeks_to_return"],
+            "confidence": "best case (full adoption)", "recommendation": None,
+        })
+    ranked.sort(key=lambda x: (x["payback_weeks"], x["kind"], str(x["key"])))
+    for i, x in enumerate(ranked, start=1):
+        x["rank"] = i
+
+    return {
+        "schema_version": 1,
+        "guild": site.key,
+        "guild_id": config.GUILD_IDS.get(site.key),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "gp_basis": "base",
+        "payback_unit": "weeks",
+        "ranked": ranked,
+        "combat": combat,
+        "skilling": {"scope": "this week's drawn skills",
+                     "weeks_between_draws": between, "upgrades": skilling},
+        "shrines": {"scope": "best case: full adoption", "upgrades": shrines},
+    }
+
+
 def _write_guild(
     site: "GuildSite",
     inputs: _GuildInputs,
@@ -5474,6 +5603,18 @@ def _write_guild(
                 + ", ".join(stamped["unassigned"]),
                 file=sys.stderr,
             )
+
+    # --- Every guild upgrade, ranked by payback (buildings.json) ---------------
+    # Its own file, NOT a key on trials.json: the userscript fetches trials.json on
+    # every panel open and has no use for this. Gated: the flag off removes it.
+    if config.BUILDING_VALUE_SOURCE_ENABLED:
+        (out / BUILDINGS_JSON).write_text(
+            json.dumps(_buildings_artefact(site, inputs, week), indent=2,
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    else:
+        (out / BUILDINGS_JSON).unlink(missing_ok=True)
 
     # --- Member skill register (index.html + data.json) ---------------------
     (out / "data.json").write_text(
