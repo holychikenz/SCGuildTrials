@@ -1863,6 +1863,37 @@ COMBAT_OPTIONAL_HEADERS = {
 # named here as documentation of the supported set rather than as a live test.
 COMBAT_ACCEPTED_WIDTHS = (7, 9, 10)
 
+# ===========================================================================
+# Combat guild-building value (2026-10-07) — what the next level of each COMBAT
+# building is worth, measured by the combat optimiser in ~/pie/SCLIRoster
+# (`report --building-value --publish-combat`) and posted through the same Apps
+# Script endpoint as the combat teams. src/building_value.py reads it back and
+# build.py publishes it as buildings.json beside trials.json, together with this
+# repo's own SKILLING building and shrine upgrade probes, so one file answers
+# "which upgrade returns its Guild Points soonest". Every GP figure on the tab is
+# BASE trial points — the same basis as trials.upgrade_payback_* — and the cost is
+# the game's guildPointCosts.
+#
+# False is the one-line rollback: no fetch, no buildings.json.
+BUILDING_VALUE_SOURCE_ENABLED = True
+
+BUILDING_VALUE_TABS = {
+    "sc": "SC Building Value",
+    "li": "LI Building Value",
+}
+
+# Row 1, verbatim, all required. Must equal SCLIRoster
+# optimizer/src/publish/buildingTab.js HEADER, and col 0 must equal
+# apps-script/Code.gs's 'building_value' sentinel.
+BUILDING_VALUE_HEADERS = (
+    "Upgrade", "Hrid", "Level", "Next Level", "GP Cost",
+    "Gain GP Per Run", "Gain GP Lo", "Gain GP Hi",
+    "Gain Pct", "Gain Pct Lo", "Gain Pct Hi",
+    "Runs Per Week", "Gain GP Per Week", "Payback Runs", "Payback Weeks",
+    "GP Per Percent", "Verdict", "Rank", "Recommendation", "Seeds",
+    "Guild Id", "Cycle", "Generated At",
+)
+
 # The TEN SKILLING buildings, hrid -> trial skill name, transcribed from the prose
 # list above GUILD_BUILDING_LEVELS. Nothing else belongs here: the seven combat
 # buildings (dojo, armory, gym, archery_range, mystical_study, dining_room, library),

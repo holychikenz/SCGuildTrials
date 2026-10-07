@@ -24,6 +24,9 @@
  *     'signup'     col 0 = "User",     then one boolean tick per trial column
  *     'buildings'  col 0 = "Building", then Hrid, Kind, Level, Guild Id, Captured At
  *     'combat'     col 0 = "Member",   then Trial Hrid, Team, Role, Slot, Guild Id, Generated At
+ *     'building_value' col 0 = "Upgrade", then Hrid, Level, ... Payback Weeks, ... Generated At
+ *                  (SCLIRoster optimizer/src/publish/buildingTab.js HEADER; written
+ *                  by the same optimiser, with the same secret, as 'combat')
  * The 'combat' block is written by the OPTIMISER (~/pie/SCLIRoster, a Node CLI:
  * `report --publish-combat`) — NOT by the in-game module, which knows nothing
  * about it — and is read back by guild/src/combat.py, which hangs it on
@@ -89,6 +92,7 @@ var SHARED_SECRET = 'PASTE_A_LONG_RANDOM_SECRET_HERE';
 //   'signup'    header[0] = "User"      roster + trial sign-ups (guild-signup-sync)
 //   'buildings' header[0] = "Building"  guild building / shrine levels
 //   'combat'    header[0] = "Member"    the optimiser's combat teams (SCLIRoster)
+//   'building_value' header[0] = "Upgrade"  the optimiser's combat building value
 //   "SC …" — Survey Corps (guild id 4);  "LI …" — Lactose lntolerance (guild id 240)
 var TAB_FORMAT = {
   'chikenz-test':    'signup',
@@ -97,7 +101,9 @@ var TAB_FORMAT = {
   'SC Buildings':    'buildings',
   'LI Buildings':    'buildings',
   'SC Combat Teams': 'combat',
-  'LI Combat Teams': 'combat'
+  'LI Combat Teams': 'combat',
+  'SC Building Value': 'building_value',
+  'LI Building Value': 'building_value'
 };
 var ALLOWED_TABS = Object.keys(TAB_FORMAT);
 
@@ -139,7 +145,7 @@ function doPost(e) {
     }
     var format = formatOf_(header);
     if (!format) {
-      return json_({ ok: false, error: 'bad header: col 0 must be "User" (sign-ups), "Building" (levels) or "Member" (combat teams)' });
+      return json_({ ok: false, error: 'bad header: col 0 must be "User" (sign-ups), "Building" (levels), "Member" (combat teams) or "Upgrade" (building value)' });
     }
     if (TAB_FORMAT[tab] !== format) {
       return json_({ ok: false, error: 'format mismatch: a ' + format + ' block may not be written to "' + tab + '" (' + TAB_FORMAT[tab] + ' tab)' });
@@ -226,6 +232,7 @@ function formatOf_(header) {
   if (h0 === 'User') return 'signup';
   if (h0 === 'Building') return 'buildings';
   if (h0 === 'Member') return 'combat';
+  if (h0 === 'Upgrade') return 'building_value';
   return null;
 }
 

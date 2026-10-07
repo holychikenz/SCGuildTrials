@@ -73,6 +73,11 @@ The module lives in the sibling repo:
      first `report --publish-combat` fills them, and an empty tab is a normal
      state that the Python reader reports as "never written" rather than an
      error.
+   - **`SC Building Value`**, **`LI Building Value`** — what the next level of
+     each combat guild building is worth (cost, gain, payback, recommendation),
+     posted by the same optimiser run as `report --building-value
+     --publish-combat`. Empty tabs again; `src/building_value.py` reads them and
+     the build publishes `buildings.json`.
 
    There is deliberately **no buildings or combat test tab**. Neither block can
    reach a sign-up tab (format mismatch), so neither has anything to clobber —
@@ -155,7 +160,8 @@ Editing `Code.gs` does **not** change the live `/exec` behaviour until you
   `reader._to_bool` accepts. This applies to `signup` blocks only; a `buildings`
   block writes numbers as numbers (so `Level` is a real integer cell) and
   everything else as text.
-- **Machine-owned tabs.** `SC`/`LI Buildings` and `SC`/`LI Combat Teams` are
+- **Machine-owned tabs.** `SC`/`LI Buildings`, `SC`/`LI Combat Teams` and
+  `SC`/`LI Building Value` are
   rewritten from `A1` on every write. Anything typed into them is lost on the
   next write, and the Python reader refuses a hand-edited header
   (`src/buildings.py`, `src/combat.py`) rather than parse it — the guild's
