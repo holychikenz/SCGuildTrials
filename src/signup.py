@@ -241,6 +241,50 @@ def parse_signup(csv_text: str, tab_label: str = "sign-up") -> dict[str, set[str
     return picks
 
 
+
+# Below this share of the member pool matched on the roll, the roll is taken to be
+# broken (a rebuilt or test tab, a partial write) and nobody is dropped.
+ROLL_MIN_MATCH_FRACTION = 0.5
+
+
+def parse_roll(csv_text: str) -> list[str]:
+    """Every name in the sign-up tab's User column — the guild's CURRENT roll.
+
+    The game-written sign-up tab is rewritten WHOLE from ``guild_characters_updated``
+    (mwix guild-signup-sync), so unlike the member and roster tabs it never keeps a
+    row for someone who has left. Ticks are ignored; this is membership only.
+    Returns ``[]`` when the CSV is empty or column 0 is not "User".
+    """
+    rows = list(csv.reader(io.StringIO(csv_text or "")))
+    if not rows or "User" not in _cell(rows[0], 0):
+        return []
+    names: list[str] = []
+    for row in rows[1:]:
+        name = _cell(row, 0)
+        if name == "":
+            break
+        names.append(name)
+    return names
+
+
+def filter_departed(members: list, roll: list[str]) -> tuple[list, list[str], str]:
+    """Drop members absent from the game's roll (they have left the guild).
+
+    Returns ``(kept, departed_names, skipped_reason)``. When the roll is empty or
+    matches fewer than :data:`ROLL_MIN_MATCH_FRACTION` of ``members``, nothing is
+    dropped and ``skipped_reason`` says why.
+    """
+    if not roll:
+        return members, [], "no sign-up roll was read"
+    current = {norm_name(n) for n in roll}
+    kept = [m for m in members if norm_name(m.name) in current]
+    if len(kept) < ROLL_MIN_MATCH_FRACTION * len(members):
+        return members, [], (
+            f"the sign-up roll matched only {len(kept)} of {len(members)} members"
+        )
+    departed = [m.name for m in members if norm_name(m.name) not in current]
+    return kept, departed, ""
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------

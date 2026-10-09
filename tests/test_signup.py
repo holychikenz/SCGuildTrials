@@ -1044,3 +1044,27 @@ def test_the_safety_swap_list_is_not_silently_empty():
     # And the ladder must actually climb.
     assert p.safety_min_slack is not None
     assert p.safety_min_slack > p.min_slack_fraction
+
+
+# --- departed members (the game's roll in the User column) --------------------
+def test_parse_roll_reads_every_user_row():
+    csv_text = "User,Milking,Cooking,Woodcutting,Enhancing,Badger,Swarm\nAlpha,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE\nBravo,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE\n,,,\nJunk,\n"
+    assert signup.parse_roll(csv_text) == ["Alpha", "Bravo"]
+    assert signup.parse_roll("Member,x\nAlpha,1\n") == []
+    assert signup.parse_roll("") == []
+
+
+def test_filter_departed_drops_names_off_the_roll():
+    from types import SimpleNamespace as NS
+    members = [NS(name=n) for n in ("Alpha", "bravo", "zzzZap", "Delta")]
+    kept, departed, skipped = signup.filter_departed(members, ["alpha", "Bravo", "Delta"])
+    assert [m.name for m in kept] == ["Alpha", "bravo", "Delta"]
+    assert departed == ["zzzZap"] and skipped == ""
+
+
+def test_filter_departed_skips_a_broken_roll():
+    from types import SimpleNamespace as NS
+    members = [NS(name=n) for n in ("Alpha", "Bravo", "Charlie")]
+    for roll in ([], ["Alpha", "Stranger"]):
+        kept, departed, skipped = signup.filter_departed(members, roll)
+        assert kept == members and departed == [] and skipped

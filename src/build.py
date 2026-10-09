@@ -5173,6 +5173,26 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     combat, combat_unavailable = _fetch_combat(site, signup_csv)
     building_value, building_value_unavailable = _fetch_building_value(site)
 
+    # --- Departed members ----------------------------------------------------------
+    # The member and roster tabs keep a row for someone long after they leave; the
+    # game-written sign-up tab is rewritten whole from the game's roll, so it does
+    # not. The model pool keeps only names on that roll. The register (index.html)
+    # is left as the officers' tab, by the rule above.
+    members, departed, roll_skipped = signup_model.filter_departed(
+        members, signup_model.parse_roll(signup_csv)
+    )
+    if departed:
+        print(
+            f"NOTE ({site.key}): {len(departed)} member(s) not on the game's roll "
+            f"(left the guild), excluded: {', '.join(departed)}",
+            file=sys.stderr,
+        )
+    elif roll_skipped:
+        print(
+            f"WARNING ({site.key}): departed members not filtered — {roll_skipped}",
+            file=sys.stderr,
+        )
+
     return _GuildInputs(
         site_key=site.key,
         members=members,
