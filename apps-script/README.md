@@ -57,6 +57,40 @@ tab would wipe the roster the Python reader parses, and with three formats there
 are six wrong pairings rather than two. Every one is refused as a
 `format mismatch`.
 
+### Rename safety (2026-10): the characterId columns and the Name History block
+
+Display names change in-game; the numeric `characterId` never does, so it now
+travels with every name:
+
+- **Sign-up block:** an optional trailing column whose header is exactly
+  `characterId` (`User, …skills, …combat, characterId`). Code.gs writes it as a
+  **value** (`cell_`), never through `truthy_` — every other sign-up cell is still
+  coerced to a boolean. An old Code.gs coerces it to TRUE/FALSE, which every reader
+  treats as "no id" and falls back to the name.
+- **Combat block:** an 11th cell, `Character Id`, after `Loadout Name`. Written by
+  the optimiser and passed through `cell_` like the rest of the block.
+- **A fifth block, `name_history`** (`header[0] === "Character Id"`), from the same
+  `guild-signup-sync` module:
+
+```
+   │  every (characterId, name) pair on the roster, plus (id, previousName) when known
+   │  builds { tab, header:["Character Id","Name","Guild Id","First Seen","Last Seen"],
+   │           rows:[["102437","NewName","4",now,now], ["102437","OldName","4","",""], …] }
+   ▼  POST {secret, tab, header, rows}        UPSERT on (Character Id, Name), under a lock
+      Survey Corps        → "SC Name History"
+      Lactose lntolerance → "LI Name History"
+```
+
+  Unlike every other block this one is **merged, never rewritten**: an existing
+  (id, name) widens First Seen / Last Seen (min / max; `""` never overwrites a
+  timestamp) and takes a non-empty Guild Id; a new pair is appended. Rows with an
+  empty or non-numeric id, or an empty name, are skipped and counted (`rejected`).
+  All cells are written as text (`'@'`) so ids and timestamps are never
+  auto-parsed. The reply is `{ok:true, tab, format:"name_history", inserted,
+  updated, rejected, received, totalRows}`. `guild/src/identity.py` reads it back
+  via gviz (`&headers=1`, header verified cell for cell) to resolve an officer-typed
+  OLD name to the member's id.
+
 The module lives in the sibling repo:
 `~/pie/farm/cowstuff/tampermonkey/src/modules/guild-signup-sync/index.js`.
 
@@ -78,6 +112,10 @@ The module lives in the sibling repo:
      posted by the same optimiser run as `report --building-value
      --publish-combat`. Empty tabs again; `src/building_value.py` reads them and
      the build publishes `buildings.json`.
+   - **`SC Name History`**, **`LI Name History`** — every (characterId, name) pair
+     each guild's sync has seen. Empty tabs; the first post writes the header row.
+     Until they exist (or until Code.gs is redeployed) the module's history post
+     fails and is skipped, and the build behaves exactly as before.
 
    There is deliberately **no buildings or combat test tab**. Neither block can
    reach a sign-up tab (format mismatch), so neither has anything to clobber —

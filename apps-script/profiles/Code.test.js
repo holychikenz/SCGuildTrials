@@ -217,6 +217,21 @@ test("a sign-up payload sent here is refused, with a hint", (t) => {
     assert.match(res.error, /sign-up payload/, "the error should name the likely cause");
 });
 
+test("a sign-up payload carrying the new characterId column is still refused", (t) => {
+    // Rename safety (2026-10): the sign-up header now ends in "characterId", which
+    // would satisfy the KEY_COLUMN guard alone — col 0 "User" is what refuses it.
+    const sh = makeSheet();
+    const ctx = load({ "SC Roster": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Roster",
+        header: ["User", "Milking", "Crafting", "Alchemy", "Cooking", "characterId"],
+        rows: [["Patbowl", true, false, true, false, "102437"]],
+    });
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /sign-up payload/);
+    assert.strictEqual(sh.getLastRow(), 0);
+});
+
 test("sign-up tabs are not on this allowlist", (t) => {
     const ctx = load({ "SC Trial Signup": makeSheet() });
     const res = post(ctx, {

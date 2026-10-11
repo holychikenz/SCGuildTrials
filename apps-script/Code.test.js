@@ -48,6 +48,7 @@ const SECRET = "test-secret";
 
 function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
     const g = grid.map(r => r.slice());
+    const formats = [];
     const ensure = (rows, cols) => {
         while (g.length < rows) g.push(new Array(cols).fill(""));
         for (const r of g) while (r.length < cols) r.push("");
@@ -55,7 +56,9 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
 
     return {
         _grid: g,
+        _formats: formats,
         getMaxRows: () => maxRows,
+        insertRowsAfter: (_after, n) => { maxRows += n; },
         getMaxColumns: () => maxCols,
         getLastRow: () => {
             let last = 0;
@@ -87,6 +90,7 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
                         for (let j = 0; j < nc; j++) g[r - 1 + i][c - 1 + j] = vals[i][j];
                     }
                 },
+                setNumberFormat: (f) => { formats.push({ r, c, nr, nc, f }); },
                 clearContent: () => {
                     ensure(r + nr - 1, c + nc - 1);
                     for (let i = 0; i < nr; i++) {
@@ -98,9 +102,19 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
     };
 }
 
-function load(sheetsByName) {
+// `lock` lets a test simulate contention: { granted: false } makes tryLock fail
+// the way a concurrent write from another browser would (name_history only).
+function load(sheetsByName, { lock = {} } = {}) {
+    const { granted = true } = lock;
+    const lockCalls = { tried: 0, released: 0 };
     const ctx = {
         SpreadsheetApp: { openById: () => ({ getSheetByName: (n) => sheetsByName[n] || null }) },
+        LockService: {
+            getScriptLock: () => ({
+                tryLock: () => { lockCalls.tried++; return granted; },
+                releaseLock: () => { lockCalls.released++; },
+            }),
+        },
         ContentService: {
             MimeType: { JSON: "json" },
             createTextOutput: (s) => ({ _text: s, setMimeType() { return this; } }),
@@ -110,6 +124,7 @@ function load(sheetsByName) {
     vm.createContext(ctx);
     vm.runInContext(CODE, ctx);
     ctx.SHARED_SECRET = SECRET;
+    ctx._lockCalls = lockCalls;
     return ctx;
 }
 
@@ -237,7 +252,7 @@ test("a header naming neither format is refused before any tab is opened", (t) =
     // none of them must be refused BEFORE the tab is opened — this is the guard
     // that stands between a typo'd header and a clear-and-rewrite from A1.
     assert.match(res.error,
-        /col 0 must be "User" \(sign-ups\), "Building" \(levels\) or "Member" \(combat teams\)/);
+        /col 0 must be "User" \(sign-ups\), "Building" \(levels\), "Member" \(combat teams\), "Upgrade" \(building value\) or "Character Id" \(name history\)/);
     assert.strictEqual(sh.getLastRow(), 0);
 });
 
@@ -296,18 +311,19 @@ test("an unknown tab is refused before the format is even considered", (t) => {
     assert.match(res.error, /tab not allowed: Nope/);
 });
 
-test("doGet lists exactly the seven real tabs, with their formats", (t) => {
+test("doGet lists exactly the eleven real tabs, with their formats", (t) => {
     const ctx = load({});
     const res = JSON.parse(ctx.doGet()._text);
 
     assert.strictEqual(res.ok, true);
     assert.strictEqual(res.service, "guild-signup-sync");
-    assert.strictEqual(res.allowedTabs.length, 7,
-        "seven tabs: three sign-up, two buildings, two combat — there is NO " +
-        "buildings or combat test tab");
+    assert.strictEqual(res.allowedTabs.length, 11,
+        "eleven tabs: three sign-up, two buildings, two combat, two building value, " +
+        "two name history — there is NO buildings or combat test tab");
     assert.deepStrictEqual(res.allowedTabs.slice().sort(), [
-        "LI Buildings", "LI Combat Teams", "LI Trial Signup",
-        "SC Buildings", "SC Combat Teams", "SC Trial Signup", "chikenz-test",
+        "LI Building Value", "LI Buildings", "LI Combat Teams", "LI Name History",
+        "LI Trial Signup", "SC Building Value", "SC Buildings", "SC Combat Teams",
+        "SC Name History", "SC Trial Signup", "chikenz-test",
     ]);
     // doGet is the deployment's own health check: opening the /exec URL in a
     // browser is how the operator confirms a re-deploy actually took, so this
@@ -320,6 +336,10 @@ test("doGet lists exactly the seven real tabs, with their formats", (t) => {
         "LI Buildings": "buildings",
         "SC Combat Teams": "combat",
         "LI Combat Teams": "combat",
+        "SC Building Value": "building_value",
+        "LI Building Value": "building_value",
+        "SC Name History": "name_history",
+        "LI Name History": "name_history",
     });
 });
 
@@ -460,4 +480,184 @@ test("a null cell in a levels block lands blank, not as 0 or 'null'", (t) => {
     assert.strictEqual(res.ok, true, res.error);
     assert.strictEqual(sh._grid[1][3], "", "a null level must be blank, not a real 0");
     assert.strictEqual(sh._grid[1][5], "");
+});
+
+// --- 7. the sign-up characterId column (rename safety) ----------------------
+
+test("signup characterId column is written as a value, ticks stay booleans", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Trial Signup": sh });
+    const header = [...S_HEADER, "characterId"];
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Trial Signup", header,
+        rows: [
+            ["Patbowl", "TRUE", "FALSE", "FALSE", "FALSE", "TRUE", "FALSE", "102437"],
+            ["IronOwl", "FALSE", "FALSE", "TRUE", "FALSE", "FALSE", "TRUE", 55],
+            ["NoId", "FALSE", "FALSE", "FALSE", "FALSE", "FALSE", "FALSE", ""],
+        ],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.columns, 8);
+    assert.strictEqual(sh._grid[0][7], "characterId");
+    assert.strictEqual(sh._grid[1][7], "102437", "a string id is kept, not coerced to a boolean");
+    assert.strictEqual(sh._grid[2][7], 55, "a numeric id stays a number");
+    assert.strictEqual(sh._grid[3][7], "", "an empty id cell stays blank, not false");
+    assert.strictEqual(sh._grid[1][1], true, "ticks are still booleans");
+    assert.strictEqual(sh._grid[1][6], false);
+});
+
+test("a header cell that merely resembles characterId is still a tick", (t) => {
+    // The header match is EXACT per the contract, so a differently-cased cell is
+    // treated as an ordinary trial column and coerced by truthy_.
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Trial Signup": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Trial Signup", header: [...S_HEADER, "CharacterID"],
+        rows: [["Patbowl", "TRUE", "FALSE", "FALSE", "FALSE", "TRUE", "FALSE", "102437"]],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh._grid[1][7], false);
+});
+
+// --- 8. the Name History block: an UPSERT, not a rewrite (rename safety) ----
+
+const H_HEADER = ["Character Id", "Name", "Guild Id", "First Seen", "Last Seen"];
+const T1 = "2026-09-01T00:00:00.000Z";
+const T2 = "2026-09-10T00:00:00.000Z";
+const T0 = "2026-08-01T00:00:00.000Z";
+const T3 = "2026-10-01T00:00:00.000Z";
+
+test("a name history block on an EMPTY tab writes the header and every row as text", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Name History": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Name History", header: H_HEADER,
+        rows: [[102437, "NewName", 4, T3, T3], ["555", "Other", "4", T1, T2]],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.format, "name_history");
+    assert.strictEqual(res.tab, "SC Name History");
+    assert.strictEqual(res.inserted, 2);
+    assert.strictEqual(res.updated, 0);
+    assert.deepStrictEqual(sh._grid[0].slice(0, 5), H_HEADER);
+    assert.deepStrictEqual(sh._grid[1].slice(0, 5), ["102437", "NewName", "4", T3, T3]);
+    for (const row of sh._grid.slice(0, 3)) {
+        for (const c of row.slice(0, 5)) assert.strictEqual(typeof c, "string");
+    }
+    assert.ok(sh._formats.some(f => f.f === "@" && f.r === 1 && f.c === 1 && f.nr === 3 && f.nc === 5),
+        "the written range must be formatted as text before the values land");
+    assert.strictEqual(ctx._lockCalls.released, 1);
+});
+
+test("upsert: an existing (id, name) widens First/Last Seen, takes a new Guild Id, and appends new pairs", (t) => {
+    const other = ["555", "Other", "4", T1, T2];
+    const sh = makeSheet([H_HEADER, ["102437", "OldName", "4", T1, T2], other.slice()], { maxCols: 26 });
+    const ctx = load({ "SC Name History": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Name History", header: H_HEADER,
+        rows: [["102437", "OldName", "240", T0, T3], ["102437", "NewName", "4", T3, T3]],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.updated, 1);
+    assert.strictEqual(res.inserted, 1);
+    assert.deepStrictEqual(sh._grid[1].slice(0, 5), ["102437", "OldName", "240", T0, T3]);
+    assert.deepStrictEqual(sh._grid[2].slice(0, 5), other, "an untouched row stays byte-equal");
+    assert.deepStrictEqual(sh._grid[3].slice(0, 5), ["102437", "NewName", "4", T3, T3]);
+});
+
+test('upsert: "" never overwrites a timestamp or a Guild Id', (t) => {
+    const sh = makeSheet([H_HEADER, ["102437", "OldName", "4", T1, T2]], { maxCols: 26 });
+    const ctx = load({ "SC Name History": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Name History", header: H_HEADER,
+        rows: [["102437", "OldName", "", "", ""]],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.deepStrictEqual(sh._grid[1].slice(0, 5), ["102437", "OldName", "4", T1, T2]);
+});
+
+test("rows with an empty id, an empty name or a non-numeric id are skipped and counted", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Name History": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Name History", header: H_HEADER,
+        rows: [["", "A", "4", T1, T1], ["7", "", "4", T1, T1], ["Yedic", "Yedic", "4", T1, T1],
+               ["8", "Good", "4", T1, T1]],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(res.rejected, 3);
+    assert.strictEqual(res.inserted, 1);
+    assert.strictEqual(sh.getLastRow(), 2);
+    assert.deepStrictEqual(sh._grid[1].slice(0, 2), ["8", "Good"]);
+});
+
+test("a header mismatch on the existing tab is refused and the tab is untouched", (t) => {
+    const sh = makeSheet([["Character Id", "Name", "Guild", "First Seen", "Last Seen"], ["1", "A", "4", T1, T1]],
+                         { maxCols: 26 });
+    const before = JSON.stringify(sh._grid);
+    const ctx = load({ "SC Name History": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Name History", header: H_HEADER, rows: [["2", "B", "4", T1, T1]] });
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /header mismatch at column 3/);
+    assert.strictEqual(JSON.stringify(sh._grid), before);
+    assert.strictEqual(ctx._lockCalls.released, 1, "the lock is released on refusal too");
+});
+
+test("a payload header that is not exactly the five columns is refused", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Name History": sh });
+    const wide = post(ctx, { secret: SECRET, tab: "SC Name History", header: [...H_HEADER, "Extra"],
+                             rows: [["1", "A", "4", T1, T1, "x"]] });
+    assert.strictEqual(wide.ok, false);
+    assert.match(wide.error, /name history block is exactly/);
+    const swapped = post(ctx, { secret: SECRET, tab: "SC Name History",
+                                header: ["Character Id", "Guild Id", "Name", "First Seen", "Last Seen"],
+                                rows: [["1", "4", "A", T1, T1]] });
+    assert.strictEqual(swapped.ok, false);
+    assert.strictEqual(sh.getLastRow(), 0);
+});
+
+test("the name history interlock: no other block reaches it, and it reaches no other tab", (t) => {
+    const signup = makeSheet([S_HEADER, ...S_ROWS], { maxCols: S_HEADER.length });
+    const hist = makeSheet([H_HEADER, ["1", "A", "4", T1, T1]], { maxCols: 26 });
+    const combatTab = makeSheet([], { maxCols: 26 });
+    const sBefore = JSON.stringify(signup._grid);
+    const hBefore = JSON.stringify(hist._grid);
+    const ctx = load({ "SC Trial Signup": signup, "SC Name History": hist, "LI Name History": hist,
+                       "LI Combat Teams": combatTab });
+
+    const a = post(ctx, { secret: SECRET, tab: "SC Trial Signup", header: H_HEADER, rows: [["2", "B", "4", T1, T1]] });
+    assert.strictEqual(a.ok, false);
+    assert.match(a.error, /format mismatch/);
+    assert.strictEqual(JSON.stringify(signup._grid), sBefore);
+
+    const b = post(ctx, { secret: SECRET, tab: "SC Name History", header: S_HEADER, rows: S_ROWS });
+    assert.strictEqual(b.ok, false);
+    assert.match(b.error, /format mismatch/);
+    const c = post(ctx, { secret: SECRET, tab: "LI Name History", header: C_HEADER, rows: combatRows(240) });
+    assert.strictEqual(c.ok, false);
+    assert.match(c.error, /format mismatch/);
+    assert.strictEqual(JSON.stringify(hist._grid), hBefore);
+
+    const d = post(ctx, { secret: SECRET, tab: "LI Combat Teams", header: H_HEADER, rows: [["2", "B", "4", T1, T1]] });
+    assert.strictEqual(d.ok, false);
+    assert.strictEqual(combatTab.getLastRow(), 0);
+});
+
+test("a busy lock refuses without writing", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Name History": sh }, { lock: { granted: false } });
+    const res = post(ctx, { secret: SECRET, tab: "SC Name History", header: H_HEADER, rows: [["1", "A", "4", T1, T1]] });
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /busy/);
+    assert.strictEqual(sh.getLastRow(), 0);
+});
+
+test("the name history grows the sheet when it runs out of rows", (t) => {
+    const sh = makeSheet([H_HEADER], { maxRows: 2, maxCols: 26 });
+    const ctx = load({ "SC Name History": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Name History", header: H_HEADER,
+                            rows: [["1", "A", "4", T1, T1], ["2", "B", "4", T1, T1], ["3", "C", "4", T1, T1]] });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh.getLastRow(), 4);
 });

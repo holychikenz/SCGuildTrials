@@ -21,12 +21,17 @@
  * the guild's BUILDING & SHRINE LEVELS — a different block entirely, bound for
  * a different tab ("SC Buildings" / "LI Buildings"). A third block arrives from
  * a different program altogether (see the note under 'combat'):
- *     'signup'     col 0 = "User",     then one boolean tick per trial column
+ *     'signup'     col 0 = "User",     then one boolean tick per trial column,
+ *                  then an optional trailing "characterId" (a VALUE cell, not a tick)
  *     'buildings'  col 0 = "Building", then Hrid, Kind, Level, Guild Id, Captured At
  *     'combat'     col 0 = "Member",   then Trial Hrid, Team, Role, Slot, Guild Id, Generated At
  *     'building_value' col 0 = "Upgrade", then Hrid, Level, ... Payback Weeks, ... Generated At
  *                  (SCLIRoster optimizer/src/publish/buildingTab.js HEADER; written
  *                  by the same optimiser, with the same secret, as 'combat')
+ *     'name_history' col 0 = "Character Id", then Name, Guild Id, First Seen, Last Seen
+ *                  (guild-signup-sync; rename safety 2026-10). UPSERTED on
+ *                  (Character Id, Name) under a script lock — NEVER a whole-tab
+ *                  rewrite — and every cell is written as TEXT.
  * The 'combat' block is written by the OPTIMISER (~/pie/SCLIRoster, a Node CLI:
  * `report --publish-combat`) — NOT by the in-game module, which knows nothing
  * about it — and is read back by guild/src/combat.py, which hangs it on
@@ -64,6 +69,9 @@
  *         "LI Combat Teams"  / NEW, and empty is fine; the first optimiser
  *                              publish fills them. MACHINE-OWNED: nobody types
  *                              in them; every publish rewrites them from A1.
+ *         "SC Name History"  \ every (characterId, name) pair each guild's sync
+ *         "LI Name History"  / has seen — empty is fine; the first post writes the
+ *                              header. Upserted, never rewritten.
  *      There is deliberately NO buildings or combat test tab: neither block can
  *      reach a sign-up tab (format mismatch), so neither has anything to
  *      clobber, and the first write of each goes straight to its per-guild tab.
@@ -93,6 +101,7 @@ var SHARED_SECRET = 'PASTE_A_LONG_RANDOM_SECRET_HERE';
 //   'buildings' header[0] = "Building"  guild building / shrine levels
 //   'combat'    header[0] = "Member"    the optimiser's combat teams (SCLIRoster)
 //   'building_value' header[0] = "Upgrade"  the optimiser's combat building value
+//   'name_history' header[0] = "Character Id"  (id, name) pairs ever seen (upsert)
 //   "SC …" — Survey Corps (guild id 4);  "LI …" — Lactose lntolerance (guild id 240)
 var TAB_FORMAT = {
   'chikenz-test':    'signup',
@@ -103,7 +112,9 @@ var TAB_FORMAT = {
   'SC Combat Teams': 'combat',
   'LI Combat Teams': 'combat',
   'SC Building Value': 'building_value',
-  'LI Building Value': 'building_value'
+  'LI Building Value': 'building_value',
+  'SC Name History': 'name_history',
+  'LI Name History': 'name_history'
 };
 var ALLOWED_TABS = Object.keys(TAB_FORMAT);
 
@@ -113,9 +124,24 @@ var ALLOWED_TABS = Object.keys(TAB_FORMAT);
 // 6, a combat block a fixed 7 — but neither width is asserted here, because the
 // PYTHON readers guard their own headers cell by cell and a width check here
 // would be a second, drifting copy of that contract. The only hard invariant is
-// that col 0 names the format ("User", "Building" or "Member"); this floor just
-// rejects an obviously-truncated payload.
+// that col 0 names the format ("User", "Building", "Member", "Upgrade" or
+// "Character Id"); this floor just rejects an obviously-truncated payload. The one
+// exception is 'name_history', whose five cells ARE checked here (upsertNameHistory_),
+// because it merges into the tab rather than rewriting it.
 var MIN_COLS = 3;
+
+// The sign-up block's optional trailing id column (rename safety, 2026-10). The
+// header text is EXACT (case-sensitive) per the cross-repo contract: a cell under
+// it is the member's numeric game characterId, written as a VALUE via cell_, never
+// coerced by truthy_ (which would turn every id into TRUE). Every other sign-up
+// cell keeps its boolean coercion.
+var SIGNUP_ID_HEADER = 'characterId';
+
+// The Name History block (rename safety, 2026-10): exactly these five cells, in this
+// order, on the payload AND on the tab. guild/src/config.py NAME_HISTORY_HEADER and
+// SCLIRoster's nameHistory.js verify the same row when reading it back via gviz.
+var NAME_HISTORY_HEADER = ['Character Id', 'Name', 'Guild Id', 'First Seen', 'Last Seen'];
+var LOCK_WAIT_MS = 30000;
 
 function doPost(e) {
   try {
@@ -145,7 +171,7 @@ function doPost(e) {
     }
     var format = formatOf_(header);
     if (!format) {
-      return json_({ ok: false, error: 'bad header: col 0 must be "User" (sign-ups), "Building" (levels), "Member" (combat teams) or "Upgrade" (building value)' });
+      return json_({ ok: false, error: 'bad header: col 0 must be "User" (sign-ups), "Building" (levels), "Member" (combat teams), "Upgrade" (building value) or "Character Id" (name history)' });
     }
     if (TAB_FORMAT[tab] !== format) {
       return json_({ ok: false, error: 'format mismatch: a ' + format + ' block may not be written to "' + tab + '" (' + TAB_FORMAT[tab] + ' tab)' });
@@ -169,14 +195,23 @@ function doPost(e) {
       return json_({ ok: false, error: 'tab not found: "' + tab + '" — create it first' });
     }
 
+    // The one block that is MERGED rather than rewritten.
+    if (format === 'name_history') return json_(upsertNameHistory_(sh, tab, header, rows));
+
     // --- Build the block: header (text) + rows (tick cells -> booleans) -----
     // Row 0 is the header verbatim (User + skill names + combat-trial names).
     var out = [header.slice()];
+    var idCol = -1;                                // sign-up characterId column, if any
+    if (format === 'signup') {
+      for (var h = 1; h < nCols; h++) {
+        if (String(header[h]) === SIGNUP_ID_HEADER) { idCol = h; break; }
+      }
+    }
     for (var r = 0; r < rows.length; r++) {
       var src = rows[r];
       var line = [String(src[0])];               // User / Building / Member name (text)
       for (var c = 1; c < nCols; c++) {
-        line.push(format === 'signup' ? truthy_(src[c]) : cell_(src[c]));
+        line.push(format === 'signup' && c !== idCol ? truthy_(src[c]) : cell_(src[c]));
       }
       out.push(line);
     }
@@ -233,6 +268,7 @@ function formatOf_(header) {
   if (h0 === 'Building') return 'buildings';
   if (h0 === 'Member') return 'combat';
   if (h0 === 'Upgrade') return 'building_value';
+  if (h0 === 'Character Id') return 'name_history';
   return null;
 }
 
@@ -244,6 +280,90 @@ function cell_(v) {
   if (typeof v === 'number') return v;
   return String(v);
 }
+
+// UPSERT on (Character Id, Name) — NEVER a whole-tab rewrite. For an existing key,
+// First Seen = min of the non-empty values and Last Seen = max (ISO-8601 UTC strings
+// compare lexically); Guild Id takes the new value when non-empty; "" never
+// overwrites a timestamp. A new key is appended. Rows with an empty or non-numeric
+// id, or an empty name, are skipped and counted in `rejected`. Every cell is written
+// as TEXT ('@', set BEFORE the values) so Sheets never date-parses a timestamp or
+// numberifies an id. A script lock stops two members' browsers syncing at once from
+// losing each other's appends.
+function upsertNameHistory_(sh, tab, header, rows) {
+  var n = NAME_HISTORY_HEADER.length;
+  if (header.length !== n) {
+    return { ok: false, error: 'bad header: a name history block is exactly ' + NAME_HISTORY_HEADER.join(', ') };
+  }
+  for (var k = 0; k < n; k++) {
+    if (String(header[k]) !== NAME_HISTORY_HEADER[k]) {
+      return { ok: false, error: 'bad header: a name history block is exactly ' + NAME_HISTORY_HEADER.join(', ') };
+    }
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) {
+    return { ok: false, error: 'busy: another write holds the lock; retry in a moment' };
+  }
+  try {
+    var lastRow = sh.getLastRow();
+    if (lastRow >= 1) {
+      var existingHeader = sh.getRange(1, 1, 1, n).getValues()[0];
+      var blank = existingHeader.every(function (c) { return String(c) === ''; });
+      if (!blank) {
+        for (var h = 0; h < n; h++) {
+          if (String(existingHeader[h]) !== NAME_HISTORY_HEADER[h]) {
+            return { ok: false, error: 'header mismatch at column ' + (h + 1) + ' on "' + tab +
+              '": sheet has "' + existingHeader[h] + '", expected "' + NAME_HISTORY_HEADER[h] + '"' };
+          }
+        }
+      }
+    }
+    var out = lastRow >= 2
+      ? sh.getRange(2, 1, lastRow - 1, n).getValues().map(function (r) { return r.map(text_); })
+      : [];
+    var index = {};
+    for (var x = 0; x < out.length; x++) {
+      var ek = out[x][0] + '\u0000' + out[x][1];
+      if (out[x][0] !== '' && !Object.prototype.hasOwnProperty.call(index, ek)) index[ek] = x;
+    }
+    var inserted = 0, updated = 0, rejected = 0;
+    for (var r = 0; r < rows.length; r++) {
+      var id = text_(rows[r][0]), name = text_(rows[r][1]);
+      if (!/^\d+$/.test(id) || name === '') { rejected++; continue; }
+      var guild = text_(rows[r][2]), first = text_(rows[r][3]), last = text_(rows[r][4]);
+      var key = id + '\u0000' + name;
+      if (Object.prototype.hasOwnProperty.call(index, key)) {
+        var row = out[index[key]];
+        if (guild !== '') row[2] = guild;
+        row[3] = minNonEmpty_(row[3], first);
+        row[4] = maxNonEmpty_(row[4], last);
+        updated++;
+      } else {
+        index[key] = out.length;
+        out.push([id, name, guild, first, last]);
+        inserted++;
+      }
+    }
+    var need = out.length + 1;
+    if (sh.getMaxRows() < need) sh.insertRowsAfter(sh.getMaxRows(), need - sh.getMaxRows());
+    var range = sh.getRange(1, 1, need, n);
+    range.setNumberFormat('@');                      // BEFORE setValues: text, not dates
+    range.setValues([NAME_HISTORY_HEADER.slice()].concat(out));
+    return { ok: true, tab: tab, format: 'name_history', received: rows.length,
+             inserted: inserted, updated: updated, rejected: rejected, totalRows: out.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// A sheet value as trimmed text: null/undefined -> '', a Date (a cell Sheets parsed
+// before the '@' format was set) -> ISO-8601, everything else -> String.
+function text_(v) {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) return v.toISOString();
+  return String(v).trim();
+}
+function minNonEmpty_(a, b) { return a === '' ? b : (b === '' ? a : (b < a ? b : a)); }
+function maxNonEmpty_(a, b) { return a === '' ? b : (b === '' ? a : (b > a ? b : a)); }
 
 function json_(obj) {
   return ContentService

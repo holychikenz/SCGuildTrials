@@ -215,9 +215,15 @@ function doPost(e) {
     }
     var nCols = header.length;
 
-    // Also the guard that catches a SIGN-UP payload arriving here by mistake
-    // (the wrong /exec URL pasted into the wrong module's settings): its header
-    // is ["User", …] and carries no characterId.
+    // The guard that catches a SIGN-UP payload arriving here by mistake (the
+    // wrong /exec URL pasted into the wrong module's settings): its header is
+    // ["User", …]. Since 2026-10 (rename safety) a sign-up header ALSO ends in a
+    // characterId column, so the KEY_COLUMN check below no longer catches it on
+    // its own — col 0 is checked first.
+    if (String(header[0]) === 'User') {
+      return json_({ ok: false, error: 'header[0] is "User": this is a sign-up payload ' +
+        'sent to the profiles endpoint (it needs a "' + KEY_COLUMN + '"-keyed roster block)' });
+    }
     var keyIdx = -1;
     for (var k = 0; k < nCols; k++) {
       if (String(header[k]) === KEY_COLUMN) { keyIdx = k; break; }
