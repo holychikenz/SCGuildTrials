@@ -96,7 +96,6 @@ def test_renamed_member_resolved_via_roster_row_is_not_departed(monkeypatch, cap
     assert inputs.roster_provenance.admitted == 0
 
 
-@pytest.mark.xfail(strict=True, reason="Name History reader lands with P3")
 def test_renamed_member_resolved_via_name_history(monkeypatch, capsys):
     _stub(monkeypatch, SIGNUP_WITH_IDS)
     monkeypatch.setattr(identity, "fetch_name_history_csv", lambda tab: HISTORY_CSV)

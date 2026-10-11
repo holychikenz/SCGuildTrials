@@ -21,12 +21,17 @@ model module can import it without a cycle.
 
 from __future__ import annotations
 
+import csv
+import io
 import re
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
+from urllib.parse import quote
+
+import requests
 
 from . import config
-from .reader import MemberRow, norm_name
+from .reader import MemberRow, SheetStructureError, _cell, norm_name
 
 _ID_RE = re.compile(r"\s*\d+\s*")
 
@@ -75,6 +80,77 @@ class HistoryRow:
     guild_id: str = ""
     first_seen: str = ""
     last_seen: str = ""
+
+
+def fetch_name_history_csv(tab_name: str) -> str:
+    """Fetch a Name History tab's gviz CSV export as text, addressed by name.
+
+    ``&headers=1`` forces exactly ONE label row: the tab is all TEXT, and gviz may
+    otherwise guess 0 header rows for an all-text table. This is NOT the
+    ``&headers=0`` override (config.GVIZ_NO_HEADER_COLLAPSE), which blanks numeric
+    labels.
+
+    Raises:
+        RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
+    """
+    url = config.GVIZ_URL.format(sheet=quote(tab_name)) + "&headers=1"
+    try:
+        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to reach Google Sheets gviz endpoint: {exc}") from exc
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"Google Sheets returned {resp.status_code} for the gviz export of tab "
+            f"{tab_name!r}. The sheet's 'anyone with the link' sharing may have been "
+            f"revoked. URL: {url}"
+        )
+    try:
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"gviz export of {tab_name!r} failed: {exc}") from exc
+    return resp.text
+
+
+def parse_name_history(csv_text: str, tab: str = "") -> list[HistoryRow]:
+    """Parse a Name History tab. ``""`` -> ``[]``; header-only -> ``[]``.
+
+    Leading all-blank lines are skipped; the first non-blank line MUST equal
+    ``config.NAME_HISTORY_HEADER`` cell for cell, because gviz serves the FIRST tab
+    for an unknown name — otherwise :class:`SheetStructureError`. Data rows with an
+    invalid id or a blank name are skipped.
+    """
+    rows = list(csv.reader(io.StringIO(csv_text or "")))
+    while rows and not any(c.strip() for c in rows[0]):
+        rows.pop(0)
+    if not rows:
+        return []
+    header = tuple(_cell(rows[0], i) for i in range(len(config.NAME_HISTORY_HEADER)))
+    if header != config.NAME_HISTORY_HEADER:
+        raise SheetStructureError(
+            f"the {tab or 'Name History'!r} tab's header did not match "
+            f"{list(config.NAME_HISTORY_HEADER)}; got {rows[0][:6]!r}. THE TAB MAY NOT "
+            f"EXIST — gviz silently serves a different tab in that case."
+        )
+    out: list[HistoryRow] = []
+    for r in rows[1:]:
+        cid = parse_id(_cell(r, 0))
+        name = _cell(r, 1)
+        if cid is None or name == "":
+            continue
+        out.append(HistoryRow(cid, name, _cell(r, 2), _cell(r, 3), _cell(r, 4)))
+    return out
+
+
+def load_name_history(tab_name: str) -> tuple[list[HistoryRow], str]:
+    """``(rows, warning)``; never raises. Flag off -> ``([], "")`` with no fetch.
+    Any SheetStructureError / RuntimeError / network error -> ``([], reason)``, and
+    the build behaves exactly as it did before the tab existed."""
+    if not config.NAME_HISTORY_SOURCE_ENABLED:
+        return [], ""
+    try:
+        return parse_name_history(fetch_name_history_csv(tab_name), tab_name), ""
+    except (SheetStructureError, RuntimeError, requests.RequestException) as exc:
+        return [], f"{tab_name!r}: {exc}"
 
 
 def _unambiguous(pairs) -> tuple[dict[str, int], dict[int, str]]:

@@ -124,6 +124,11 @@ class GuildSite:
         return config.ROSTER_TABS[self.key]
 
     @property
+    def name_history_tab(self) -> str:
+        """This guild's Name History tab (identity.load_name_history)."""
+        return config.NAME_HISTORY_TABS[self.key]
+
+    @property
     def signup_tab(self) -> str:
         return signup_model.SIGNUP_TABS[self.key]
 
@@ -5077,7 +5082,17 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     # resolves member-tab names against it, and filter_departed judges by it.
     roll = signup_model.parse_roll(signup_csv)
     roll_ids = signup_model.parse_roll_ids(signup_csv)
-    history: list = []
+    # The Name History tab: every (id, name) pair the sync has seen, so an OLD name
+    # the officers still type resolves to the member's id. Never stops the deploy:
+    # a missing tab, a wrong header or a fetch error warns and resolves from the
+    # roll and roster only (config.NAME_HISTORY_SOURCE_ENABLED = False skips it).
+    history, history_warning = identity.load_name_history(site.name_history_tab)
+    if history_warning:
+        print(
+            f"WARNING ({site.key}): name history unavailable, renames resolve from "
+            f"the roll and roster only — {history_warning}",
+            file=sys.stderr,
+        )
 
     # --- The roster tab, and the merge ------------------------------------------
     # THE REGISTER IS BUILT FIRST, AND FROM THE UNMERGED ROWS, deliberately.

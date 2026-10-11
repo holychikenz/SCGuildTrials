@@ -134,3 +134,74 @@ def test_find_member_by_id_then_name_then_norm():
     assert find_member([a, b], "Other") is b
     assert find_member([a, b], "other") is b
     assert find_member([a, b], "Nobody") is None
+
+
+# --- the Name History reader ---------------------------------------------------
+_H = "Character Id,Name,Guild Id,First Seen,Last Seen\n"
+
+
+def test_parse_name_history_reads_rows():
+    rows = identity.parse_name_history(_H + "102437,OldName,4,,\n555,Other,4,a,b\n")
+    assert rows == [HistoryRow(102437, "OldName", "4", "", ""), HistoryRow(555, "Other", "4", "a", "b")]
+
+
+def test_parse_name_history_skips_leading_blank_lines_and_bad_rows():
+    text = ",,,,\n" + _H + "x,Bad,4,,\n7,,4,,\n8,Good,4,,\n"
+    assert identity.parse_name_history(text) == [HistoryRow(8, "Good", "4")]
+
+
+def test_parse_name_history_empty_and_header_only():
+    assert identity.parse_name_history("") == []
+    assert identity.parse_name_history(_H) == []
+
+
+def test_parse_name_history_wrong_tab_raises():
+    from src.reader import SheetStructureError
+    with pytest.raises(SheetStructureError):
+        identity.parse_name_history("Name,Main Classes,Flex\nYedic,x,y\n")
+
+
+def test_load_name_history_degrades(monkeypatch):
+    def boom(tab):
+        raise RuntimeError("403")
+    monkeypatch.setattr(identity, "fetch_name_history_csv", boom)
+    rows, warning = identity.load_name_history("SC Name History")
+    assert rows == [] and "403" in warning
+
+    monkeypatch.setattr(identity, "fetch_name_history_csv", lambda tab: "Member,x\n")
+    rows, warning = identity.load_name_history("SC Name History")
+    assert rows == [] and warning
+
+
+def test_load_name_history_flag_off_makes_no_fetch(monkeypatch):
+    monkeypatch.setattr(config, "NAME_HISTORY_SOURCE_ENABLED", False)
+
+    def never(tab):
+        raise AssertionError("must not fetch")
+    monkeypatch.setattr(identity, "fetch_name_history_csv", never)
+    assert identity.load_name_history("SC Name History") == ([], "")
+
+
+def test_fetch_name_history_url_forces_one_header_row(monkeypatch):
+    seen = {}
+
+    class R:
+        status_code = 200
+        text = _H
+
+        def raise_for_status(self):
+            pass
+
+    def get(url, timeout):
+        seen["url"] = url
+        return R()
+    monkeypatch.undo()   # drop the conftest stub for this test
+    monkeypatch.setattr(identity.requests, "get", get)
+    assert identity.fetch_name_history_csv("SC Name History") == _H
+    assert seen["url"].endswith("&headers=1") and "SC%20Name%20History" in seen["url"]
+
+
+def test_resolver_history_two_ids_carried_bob_latest_wins():
+    r = Resolver(history=[HistoryRow(1, "Bob", last_seen="2026-01-01"),
+                          HistoryRow(2, "Bob", last_seen="2026-05-01")])
+    assert r.id_for("bob") == 2
