@@ -51,7 +51,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from . import config
+from . import config, identity
 from .reader import MemberRow, SheetStructureError
 
 
@@ -1557,6 +1557,9 @@ class RosterEntry:
     tool_enhance: Optional[int] = None   # its observed enhancement level
     source: str = "manual"               # member-level: manual|roster|roster-only
     tool_source: str = "manual"          # per-field, for the tool badge
+    # The game's numeric characterId (rename safety, 2026-10). Emitted in
+    # trials.json as "characterId" when known and OMITTED otherwise.
+    character_id: Optional[int] = None
 
 
 @dataclass
@@ -1593,7 +1596,9 @@ class TrialResult:
     expected_points: Optional[float] = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d["roster"] = [identity.with_character_id(r) for r in d["roster"]]
+        return d
 
 
 # Safety bound: success is now floored at 0.05 (it never reaches 0), but the
@@ -1756,6 +1761,7 @@ def simulate_race(
                 tool_enhance=entry.tool_enhance if entry else None,
                 source=m.provenance.get("member", "manual"),
                 tool_source=m.provenance.get(f"{sheet_col}.tool", "manual"),
+                character_id=identity.parse_id(m.character_id),
             )
         )
 
@@ -2472,9 +2478,13 @@ class WeekResult:
     community_buff_gathering: float = 0.0
     community_buff_production: float = 0.0
     community_buff_enhancing: float = 0.0
+    # {benched name: characterId} for the benched members whose id is known
+    # (rename safety, 2026-10). A parallel map because ``bench`` stays a list of
+    # names; emitted in trials.json only when non-empty.
+    bench_character_ids: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "generated_at": self.generated_at,
             "week_date": self.week_date,
             "skills": self.skills,
@@ -2503,6 +2513,9 @@ class WeekResult:
             "community_buff_production": self.community_buff_production,
             "community_buff_enhancing": self.community_buff_enhancing,
         }
+        if self.bench_character_ids:
+            d["bench_character_ids"] = dict(self.bench_character_ids)
+        return d
 
 
 def _week_defaults(
@@ -2677,6 +2690,11 @@ def score_assignment(
         strategy=strategy,
         trials=trials,
         bench=[m.name for m in assignment.bench],
+        bench_character_ids={
+            m.name: c
+            for m in assignment.bench
+            if (c := identity.parse_id(m.character_id)) is not None
+        },
         guild_building_levels={
             skill: guild_building_skill_levels(skill) for skill in skills
         },

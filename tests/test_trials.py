@@ -2630,3 +2630,29 @@ def test_the_client_reads_only_assign_data_and_data_attributes():
     assert "combatBanner" in combat_src, "the slice must cover both helpers"
     assert "innerHTML" not in combat_src
     assert combat_src.count("textContent") >= 5
+
+
+# --- rename safety: characterId in trials.json (2026-10) ---------------------
+def _with_id(m, cid):
+    m.character_id = cid
+    return m
+
+
+def test_roster_entries_carry_characterId_only_when_known():
+    members = [_with_id(_member("A"), "102437"), _member("B")]
+    res = trials.simulate_race(members, "Brewing").to_dict()
+    by_name = {r["name"]: r for r in res["roster"]}
+    assert by_name["A"]["characterId"] == 102437
+    assert "characterId" not in by_name["B"]
+    assert all("character_id" not in r for r in res["roster"])
+
+
+def test_bench_character_ids_emitted_only_when_a_benched_member_has_one():
+    members = [_with_id(_member(f"M{i}"), str(100 + i)) for i in range(8)]
+    wk = trials.run_week(members, skills=["Brewing"], cap=2, strategy="random").to_dict()
+    assert wk["bench"]
+    assert wk["bench_character_ids"] == {n: 100 + int(n[1:]) for n in wk["bench"]}
+
+    plain = [_member(f"M{i}") for i in range(8)]
+    wk2 = trials.run_week(plain, skills=["Brewing"], cap=2, strategy="random").to_dict()
+    assert "bench_character_ids" not in wk2

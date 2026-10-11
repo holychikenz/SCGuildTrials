@@ -34,7 +34,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 
-from . import config
+from . import config, identity
 from . import gear as gear_model
 from .reader import MemberRow, SheetStructureError, SkillEntry, norm_name
 from .scraper import fetch_tab_csv
@@ -305,6 +305,11 @@ class JoinReport:
     # Kept beside unmatched_roster (their names) rather than derived from it, so
     # the admission order is the tab's order and therefore deterministic.
     roster_only: list[RosterRow] = field(default_factory=list)
+    # Roster rows whose NAME matched a member but whose characterId differs from
+    # that member's: two different people under one name. QUARANTINED — reported
+    # (``"Bob (member id 5, roster id 9)"``) and listed in unmatched_roster, but
+    # never in roster_only, so admission cannot seat a second "Bob".
+    id_conflicts: list[str] = field(default_factory=list)
 
     def join_rate(self, member_count: int) -> float:
         """Fraction of the MANUAL tab's members that joined a roster row."""
@@ -314,8 +319,16 @@ class JoinReport:
 
 
 def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
-    """Match member-tab rows to roster rows by name, case-insensitively.
+    """Match member-tab rows to roster rows: id first, then names.
 
+    ID PASS (rename safety, 2026-10): a member whose ``character_id`` parses joins
+    the roster row carrying the same id, whatever either is called — so a member
+    renamed in-game still joins (logged in ``normalized_matches`` as
+    ``OLD → NEW (id N)``) and is never admitted again as a roster-only duplicate.
+    An id held by two rows on either side is left to the name pass. Off when
+    ``config.ID_JOIN_ENABLED`` is False.
+
+    NAME PASS, for everyone the id pass did not match:
     Exact name equality wins; otherwise the normalised key
     (:func:`reader.norm_name` — casefold plus collapsed whitespace) is tried.
     Measured, an exact-only join loses SIX members on each guild to nothing but
@@ -345,7 +358,30 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
             roster_by_norm.setdefault(key, i)
 
     used: set[int] = set()
+    m_ids = [identity.parse_id(m.character_id) for m in members]
+    r_ids = [identity.parse_id(r.character_id) for r in rows]
+    conflicts: dict[int, str] = {}   # roster row index -> "member id A, roster id B"
+    if config.ID_JOIN_ENABLED:
+        dup = {c for c, n in Counter(x for x in m_ids if x is not None).items() if n > 1}
+        dup |= {c for c, n in Counter(x for x in r_ids if x is not None).items() if n > 1}
+        roster_by_id = {c: j for j, c in enumerate(r_ids) if c is not None and c not in dup}
+        for idx, member in enumerate(members):
+            cid = m_ids[idx]
+            if cid is None or cid in dup or cid not in roster_by_id:
+                continue
+            j = roster_by_id[cid]
+            report.matched[idx] = rows[j]
+            used.add(j)
+            if norm_name(rows[j].name) != member_norm[idx]:
+                report.normalized_matches.append(
+                    f"{rows[j].name} → {member.name} (id {cid})"
+                )
+            elif rows[j].name != member.name:
+                report.normalized_matches.append(f"{rows[j].name} ≈ {member.name}")
+
     for idx, member in enumerate(members):
+        if idx in report.matched:
+            continue
         j = roster_by_exact.get(member.name)
         if j is None:
             key = member_norm[idx]
@@ -354,8 +390,12 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
                 report.unmatched_members.append(member.name)
                 continue
             j = roster_by_norm.get(key)
+            if j is not None and not _name_join_ok(j, idx, used, m_ids, r_ids, conflicts):
+                j = None
             if j is not None:
                 report.normalized_matches.append(f"{rows[j].name} ≈ {member.name}")
+        elif not _name_join_ok(j, idx, used, m_ids, r_ids, conflicts):
+            j = None
         if j is None:
             report.unmatched_members.append(member.name)
             continue
@@ -365,9 +405,36 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
     for i, row in enumerate(rows):
         if i not in used:
             report.unmatched_roster.append(row.name)
-            report.roster_only.append(row)
+            if i in conflicts:
+                report.id_conflicts.append(f"{row.name} ({conflicts[i]})")
+            else:
+                report.roster_only.append(row)
 
     return report
+
+
+def _name_join_ok(j, idx, used, m_ids, r_ids, conflicts) -> bool:
+    """A name match is refused when the roster row was already claimed (by the id
+    pass), or when both sides carry a valid id and the ids differ — two different
+    people who happen to share a name. The latter is recorded in ``conflicts`` so
+    the row is quarantined rather than admitted."""
+    if j in used:
+        return False
+    if config.ID_JOIN_ENABLED and m_ids[idx] is not None and r_ids[j] is not None:
+        if m_ids[idx] != r_ids[j]:
+            conflicts.setdefault(j, f"member id {m_ids[idx]}, roster id {r_ids[j]}")
+            return False
+    return True
+
+
+def _merged_id(member: MemberRow, row: Optional[RosterRow]) -> Optional[str]:
+    """The roster row's id when it parses; else the member's own (canonicalised)
+    id; else whatever the row carried (today's behaviour)."""
+    if row is not None and identity.parse_id(row.character_id) is not None:
+        return row.character_id
+    if member.character_id:
+        return member.character_id
+    return (row.character_id or None) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +723,7 @@ def merge(
                 flex=member.flex,
                 flex_levels=list(member.flex_levels),
                 skills=skills,
-                character_id=(row.character_id or None) if row else None,
+                character_id=_merged_id(member, row),
                 captured_at=(row.captured_at or None) if row else None,
                 shrine_levels=_shrine_levels(row) if row else {},
                 provenance=member_provenance,

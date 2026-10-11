@@ -27,6 +27,10 @@ The SC Trial Signup tab layout (fixed skilling block since 2026-07-24)::
     cols 1..4 (B–E)  = this week's FOUR skilling trials, one TRUE/FALSE tick-box
                        each — ALWAYS in these four fixed positions.
     cols 5..  (F..)  = the two combat trials (+ any stray columns) — IGNORED.
+    last col         = an optional trailing ``characterId`` column (rename safety,
+                       2026-10): the member's numeric game id, a VALUE not a tick.
+                       Located BY HEADER (:func:`parse_roll_ids`), never read as a
+                       trial.
 
 The companion Tampermonkey writer (``guild-signup-sync``) emits exactly this
 compact layout — ``User | <4 skilling trials> | <2 combat trials>``, e.g.
@@ -61,7 +65,7 @@ from urllib.parse import quote
 
 import requests
 
-from . import config
+from . import config, identity
 from .reader import MemberRow, SheetStructureError, _cell, _to_bool, norm_name
 from .optimizer import AssignmentScorer, _min_banking, objective_of
 from .trials import (
@@ -267,22 +271,68 @@ def parse_roll(csv_text: str) -> list[str]:
     return names
 
 
-def filter_departed(members: list, roll: list[str]) -> tuple[list, list[str], str]:
+def parse_roll_ids(csv_text: str) -> dict[str, int]:
+    """``{roll name: characterId}`` for rows whose ``characterId`` cell parses.
+
+    The column is located BY HEADER (:func:`src.identity.find_id_column`), never by
+    position. Returns ``{}`` for an old tab (no column), a wrong tab (col 0 is not
+    "User"), or an all-boolean column written by an old Code.gs (TRUE/FALSE do not
+    parse as ids). Reads the same rows as :func:`parse_roll`: it stops at the first
+    blank User cell.
+    """
+    rows = list(csv.reader(io.StringIO(csv_text or "")))
+    if not rows or "User" not in _cell(rows[0], 0):
+        return {}
+    col = identity.find_id_column(rows[0])
+    if col in (None, 0):
+        return {}
+    ids: dict[str, int] = {}
+    for row in rows[1:]:
+        name = _cell(row, 0)
+        if name == "":
+            break
+        cid = identity.parse_id(_cell(row, col))
+        if cid is not None:
+            ids[name] = cid
+    return ids
+
+
+def filter_departed(
+    members: list, roll: list[str], roll_ids: Optional[dict[str, int]] = None
+) -> tuple[list, list[str], str]:
     """Drop members absent from the game's roll (they have left the guild).
 
     Returns ``(kept, departed_names, skipped_reason)``. When the roll is empty or
     matches fewer than :data:`ROLL_MIN_MATCH_FRACTION` of ``members``, nothing is
     dropped and ``skipped_reason`` says why.
+
+    Id first (rename safety): when ``roll_ids`` (from :func:`parse_roll_ids`) is
+    non-empty, a member carrying a ``character_id`` is kept iff that id is on the
+    roll — so a renamed member is never dropped — falling back to its name only
+    when its name's roll row carries no id. A member without an id, or a roll
+    without the id column, is judged by name exactly as before.
+    ``config.ID_JOIN_ENABLED = False`` ignores ids.
     """
     if not roll:
         return members, [], "no sign-up roll was read"
     current = {norm_name(n) for n in roll}
-    kept = [m for m in members if norm_name(m.name) in current]
+    ids = (roll_ids or {}) if config.ID_JOIN_ENABLED else {}
+    id_set = set(ids.values())
+    names_with_id = {norm_name(n) for n in ids}
+
+    def on_roll(m) -> bool:
+        cid = identity.parse_id(getattr(m, "character_id", None))
+        k = norm_name(m.name)
+        if cid is not None and id_set:
+            return cid in id_set or (k in current and k not in names_with_id)
+        return k in current
+
+    kept = [m for m in members if on_roll(m)]
     if len(kept) < ROLL_MIN_MATCH_FRACTION * len(members):
         return members, [], (
             f"the sign-up roll matched only {len(kept)} of {len(members)} members"
         )
-    departed = [m.name for m in members if norm_name(m.name) not in current]
+    departed = [m.name for m in members if not on_roll(m)]
     return kept, departed, ""
 
 # ---------------------------------------------------------------------------
@@ -311,6 +361,9 @@ class SignupRosterEntry:
     tool_enhance: Optional[int] = None
     source: str = "manual"
     tool_source: str = "manual"
+    # The game's numeric characterId (rename safety, 2026-10); signup.json emits it
+    # as "characterId" only when known.
+    character_id: Optional[int] = None
 
 
 @dataclass
@@ -555,7 +608,7 @@ class SignupPlan:
                     "slack_fraction": t.slack_fraction,
                     "clear_probability": t.clear_probability,
                     "expected_points": t.expected_points,
-                    "roster": [asdict(r) for r in t.roster],
+                    "roster": [identity.with_character_id(asdict(r)) for r in t.roster],
                 }
                 for t in self.trials
             ],
@@ -1401,6 +1454,7 @@ def plan(
                         bot=r.bot, rate_final=r.rate_final, status="assigned",
                         tool_item=r.tool_item, tool_enhance=r.tool_enhance,
                         source=r.source, tool_source=r.tool_source,
+                        character_id=r.character_id,
                     )
                 )
             else:
@@ -1413,6 +1467,7 @@ def plan(
                         lifts_tier=gain > config.OPT_POINTS_EPS,
                         tool_item=r.tool_item, tool_enhance=r.tool_enhance,
                         source=r.source, tool_source=r.tool_source,
+                        character_id=r.character_id,
                     )
                 )
         assigned_rows.sort(key=lambda e: e.rate_final, reverse=True)

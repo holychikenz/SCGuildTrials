@@ -1851,17 +1851,20 @@ COMBAT_OPTIONAL_HEADERS = {
     7: ("equals", "Loadout Id"),
     8: ("equals", "Loadout"),
     9: ("equals", "Loadout Name"),
+    # Appended 2026-10 (rename safety): the member's numeric game characterId.
+    10: ("equals", "Character Id"),
 }
 
 # The widths the writer has ever emitted: seven (pre-2026-09-15), nine (the loadout
-# pair) and ten (the loadout NAME, 2026-09-18). Checked as an ALLOW-LIST rather than
+# pair), ten (the loadout NAME, 2026-09-18) and eleven (Character Id, 2026-10; ten
+# stays supported for old tabs). Checked as an ALLOW-LIST rather than
 # as a maximum, because the interesting failure is not a tab that is too wide — it is
 # a tab that is EIGHT wide, which is not an old writer but a torn one, and accepting
 # it would attribute a loadout id to a column with no JSON beside it.
 #
 # Seven never reaches the check at all (the branch is width-gated above seven); it is
 # named here as documentation of the supported set rather than as a live test.
-COMBAT_ACCEPTED_WIDTHS = (7, 9, 10)
+COMBAT_ACCEPTED_WIDTHS = (7, 9, 10, 11)
 
 # ===========================================================================
 # Combat guild-building value (2026-10-07) — what the next level of each COMBAT
@@ -2094,3 +2097,20 @@ TARGET_SCALE = 1.0
 
 # Which family/back cape group covers each trial skill is implicit in the model
 # (efficiency for gathering/alchemy, speed for enhancing); see trials.py.
+
+# ===========================================================================
+# Rename safety (2026-10) — the game's numeric characterId travels end-to-end
+# (sign-up tab, roster tab, combat tab, Name History tab) and joins are made on
+# it first, names second. See src/identity.py.
+# ===========================================================================
+# False is the one-line rollback: identity.canonicalise() is a no-op and
+# signup.filter_departed / roster.join ignore ids — exactly the pre-id behaviour.
+ID_JOIN_ENABLED = True
+# Header texts that identify a characterId column (compared stripped + lowercased).
+CHARACTER_ID_HEADERS = ("characterid", "character id")
+# Name History (written by cowstuff guild-signup-sync via apps-script/Code.gs, format
+# 'name_history'; upserted on (Character Id, Name)). Read via gviz with &headers=1.
+# False is the rollback: no fetch, renames resolve from the roll and roster only.
+NAME_HISTORY_SOURCE_ENABLED = True
+NAME_HISTORY_TABS = {"sc": "SC Name History", "li": "LI Name History"}
+NAME_HISTORY_HEADER = ("Character Id", "Name", "Guild Id", "First Seen", "Last Seen")

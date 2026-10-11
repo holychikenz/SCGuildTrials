@@ -1036,3 +1036,77 @@ def test_staleness_counts_rows_rather_than_taking_the_oldest():
     prov.captures = {"m": iso(20)}
     prov.newest_captured_at = iso(20)
     assert build_model._provenance_block(inputs)["stale"] is True
+
+
+# --- rename safety: the id pass (2026-10) -----------------------------------
+def _with_id(member, cid):
+    member.character_id = cid
+    return member
+
+
+def test_RENAME_join_matches_a_renamed_member_by_id():
+    members = [_with_id(_member("NewName"), "102437"), _with_id(_member("Other"), "555")]
+    rows = roster.parse(_roster_csv([
+        {"name": "OldName", "characterId": "102437"},
+        {"name": "Other", "characterId": "555"},
+    ]))
+    report = roster.join(members, rows)
+    assert report.matched[0].name == "OldName"
+    assert report.matched[1].name == "Other"
+    assert "OldName → NewName (id 102437)" in report.normalized_matches
+    assert report.unmatched_roster == [] and report.roster_only == []
+
+
+def test_a_row_claimed_by_id_is_not_rematched_by_name():
+    # "OldName" (no id) must not also claim the row "OldName" already matched by id.
+    members = [_with_id(_member("NewName"), "102437"), _member("OldName")]
+    rows = roster.parse(_roster_csv([{"name": "OldName", "characterId": "102437"}]))
+    report = roster.join(members, rows)
+    assert list(report.matched) == [0]
+    assert report.unmatched_members == ["OldName"]
+
+
+def test_a_name_match_is_refused_when_both_ids_differ():
+    members = [_with_id(_member("Bob"), "5")]
+    rows = roster.parse(_roster_csv([{"name": "Bob", "characterId": "9"}]))
+    report = roster.join(members, rows)
+    assert report.matched == {}
+    assert report.unmatched_members == ["Bob"] and report.unmatched_roster == ["Bob"]
+
+
+def test_a_garbage_roster_id_falls_back_to_the_name_join():
+    # Hazard H: an upstream fallback can put a NAME in characterId.
+    members = [_with_id(_member("Yedic"), "102437")]
+    rows = roster.parse(_roster_csv([{"name": "Yedic", "characterId": "Yedic"}]))
+    report = roster.join(members, rows)
+    assert report.matched[0].name == "Yedic"
+
+
+def test_merge_keeps_the_members_id_when_the_row_has_none():
+    members = [_with_id(_member("Yedic"), "102437")]
+    rows = roster.parse(_roster_csv([{"name": "Yedic", "characterId": ""}]))
+    merged, _ = roster.merge(members, roster.join(members, rows), "sc")
+    assert merged[0].character_id == "102437"
+
+
+def test_id_join_flag_off_is_todays_name_join(monkeypatch):
+    monkeypatch.setattr(config, "ID_JOIN_ENABLED", False)
+    members = [_with_id(_member("NewName"), "102437")]
+    rows = roster.parse(_roster_csv([{"name": "OldName", "characterId": "102437"}]))
+    report = roster.join(members, rows)
+    assert report.matched == {}
+    assert report.unmatched_roster == ["OldName"]
+
+
+def test_an_id_conflict_is_quarantined_not_admitted(monkeypatch):
+    # Same name, two different ids: the roster row is NOT a newcomer to seat beside
+    # the member — it is held back and reported, so one name is never modelled twice.
+    monkeypatch.setattr(config, "ROSTER_ADMITS_NEW_MEMBERS", True)
+    members = [_with_id(_member("Bob"), "5")]
+    rows = roster.parse(_roster_csv([{"name": "Bob", "characterId": "9"}]))
+    report = roster.join(members, rows)
+    assert report.roster_only == []
+    assert report.id_conflicts == ["Bob (member id 5, roster id 9)"]
+    merged, prov = roster.merge(members, report, "sc")
+    assert [m.name for m in merged] == ["Bob"]
+    assert prov.admitted == 0

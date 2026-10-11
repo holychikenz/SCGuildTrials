@@ -140,7 +140,8 @@ def test_parses_a_machine_written_tab():
     }
     # party_size is derived, never carried: it cannot disagree with the roster.
     assert all(t["party_size"] == len(t["roster"]) for t in g.to_dict()["teams"])
-    # NO characterId reaches the artefact, by construction on the writer's side.
+    # A seven-wide tab carries no Character Id cell, so no characterId reaches the
+    # artefact (rename safety omits the key when the id is unknown).
     assert "characterId" not in json.dumps(g.to_dict())
     assert "character_id" not in json.dumps(g.to_dict())
 
@@ -459,16 +460,55 @@ def test_an_eight_wide_tab_is_refused_by_the_allow_list():
     assert str(config.COMBAT_ACCEPTED_WIDTHS) in msg
 
 
-def test_an_eleven_wide_tab_is_refused_by_the_allow_list():
+def test_a_twelve_wide_tab_is_refused_by_the_allow_list():
     """A column nobody on this side knows about. Refused, not ignored."""
-    eleven = TEN_HEADER + ["Something New"]
+    twelve = ELEVEN_HEADER + ["Something New"]
     with pytest.raises(SheetStructureError) as exc:
         combat.parse_combat(
-            _csv10(_row10("Yedic") + ["x"], header=eleven),
+            _csv10(_row11("Yedic") + ["x"], header=twelve),
             "sc",
             tab="SC Combat Teams",
         )
-    assert "header is 11 cells wide" in str(exc.value)
+    assert "header is 12 cells wide" in str(exc.value)
+
+
+# --- the eleventh cell: Character Id (rename safety, 2026-10) ----------------
+ELEVEN_HEADER = TEN_HEADER + ["Character Id"]
+
+
+def _csv11(*rows, header=None):
+    return _csv10(*rows, header=header or ELEVEN_HEADER)
+
+
+def _row11(name, cid="102437", **kw):
+    return _row10(name, **kw) + [cid]
+
+
+def test_an_eleven_wide_tab_carries_the_character_id():
+    g = combat.parse_combat(_csv11(_row11("Yedic")), "sc", tab="SC Combat Teams")
+    seat = g.teams[0].roster[0]
+    assert seat.character_id == 102437
+    assert g.to_dict()["teams"][0]["roster"][0]["characterId"] == 102437
+
+
+@pytest.mark.parametrize("cell", ["", "TRUE", "Yedic", "0"])
+def test_a_blank_or_garbage_character_id_is_omitted(cell):
+    g = combat.parse_combat(_csv11(_row11("Yedic", cid=cell)), "sc", tab="SC Combat Teams")
+    assert g.teams[0].roster[0].character_id is None
+    assert "characterId" not in g.to_dict()["teams"][0]["roster"][0]
+
+
+def test_a_mistyped_eleventh_header_raises_naming_col_ten():
+    bad = TEN_HEADER + ["CharId"]
+    with pytest.raises(SheetStructureError) as exc:
+        combat.parse_combat(_csv11(_row11("Yedic"), header=bad), "sc", tab="SC Combat Teams")
+    assert "col 10" in str(exc.value)
+
+
+def test_a_ten_wide_tab_still_parses_without_an_id():
+    g = combat.parse_combat(_csv10(_row10("Yedic")), "sc", tab="SC Combat Teams")
+    assert g.teams[0].roster[0].character_id is None
+    assert "characterId" not in g.to_dict()["teams"][0]["roster"][0]
 
 
 def test_a_mistyped_tenth_header_raises_naming_col_nine():
@@ -977,3 +1017,15 @@ def test_shipped_flag_is_on():
     """What actually ships. The counterpart to the rollback test above."""
     assert config.COMBAT_SOURCE_ENABLED is True
     assert config.COMBAT_TABS == {"sc": "SC Combat Teams", "li": "LI Combat Teams"}
+
+
+def test_signup_combat_pair_ignores_a_trailing_character_id_column():
+    header = "User,Milking,Cooking,Woodcutting,Enhancing,Badger,Swarm,characterId\n"
+    assert combat.signup_combat_pair(header, "SC Trial Signup") == ["Badger", "Swarm"]
+
+
+def test_signup_combat_pair_refuses_a_character_id_inside_the_pair():
+    header = "User,Milking,Cooking,Woodcutting,Enhancing,Badger,characterId\n"
+    with pytest.raises(SheetStructureError) as exc:
+        combat.signup_combat_pair(header, "SC Trial Signup")
+    assert "characterId column inside the combat pair" in str(exc.value)

@@ -24,6 +24,7 @@ from . import combat as combat_model
 from . import config
 from . import draw as draw_model
 from . import gear as gear_model
+from . import identity
 from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
@@ -653,7 +654,12 @@ def _badge(present: bool, label: str) -> str:
     return f'<span class="{cls}" title="{html.escape(label)}">{label[0]}</span>'
 
 
-def _attach_week(register: dict, week: Optional[dict], draw_warning: str) -> None:
+def _attach_week(
+    register: dict,
+    week: Optional[dict],
+    draw_warning: str,
+    renames: Optional[dict[str, str]] = None,
+) -> None:
     """Project this week's assignments onto the register, in place.
 
     data.json and index.html answer "what does each member have"; trials.json answers
@@ -678,6 +684,10 @@ def _attach_week(register: dict, week: Optional[dict], draw_warning: str) -> Non
     ``week_date`` is copied as trials.json carries it — the BUILD date (trials.run_week),
     the draw source publishing no cycle date (draw.TrialDraw). A consumer that wants to
     know whether this block is current compares ``generated_at`` with trials.json's.
+
+    ``renames`` (OLD -> NEW, from ``identity.canonicalise``) lets a register member
+    the officers still list under an in-game OLD name find their seat under the NEW
+    name the model used; the register row keeps the officers' spelling.
     """
     if week is None:
         register["week"] = None
@@ -703,12 +713,22 @@ def _attach_week(register: dict, week: Optional[dict], draw_warning: str) -> Non
     for name in seat:
         by_norm.setdefault(norm_name(name), name)
 
+    renames = renames or {}
+    renames_norm = {norm_name(k): v for k, v in renames.items()}
+
     claimed: set[str] = set()
     unassigned: list[str] = []
     for m in members:
         hit = m["name"] if m["name"] in seat else None
         if hit is None and norm_name(m["name"]) not in ambiguous:
             hit = by_norm.get(norm_name(m["name"]))
+        if hit is None and renames:
+            new = renames.get(m["name"]) or renames_norm.get(norm_name(m["name"]))
+            if new:
+                if new in seat:
+                    hit = new
+                elif norm_name(new) not in ambiguous:
+                    hit = by_norm.get(norm_name(new))
         if hit is None:
             m["trial"] = {"skill": None, "status": "unassigned"}
             unassigned.append(m["name"])
@@ -2682,6 +2702,9 @@ def _pretty_boss(hrid: str) -> str:
 def _combat_index(week: dict) -> dict[str, dict]:
     """Folded member name -> the four terse combat keys, for the search index.
 
+    Seat names arrive already refreshed to the live name by ``_combat_block`` (by
+    characterId), so the fold here meets the canonical roster names unchanged.
+
     ``{}`` when the week carries no ``combat`` key at all (``trials-maxbuff.html``
     renders from ``week_maxbuff``, which has none, and ``COMBAT_SOURCE_ENABLED =
     False`` is the same path), when the block is unavailable, or when it carries no
@@ -4636,6 +4659,10 @@ class _GuildInputs:
     # Filled by main() in the render phase from the published unit's result. Not an
     # input — it lives here so one object carries everything _write_guild needs.
     plan_dict: Optional[dict] = None
+    # Old member-tab name -> live name, from identity.canonicalise (logged as
+    # "renamed OLD → NEW (id N)"). _attach_week uses it to stamp the register,
+    # which keeps the officers' spelling.
+    renames: dict[str, str] = field(default_factory=dict)
 
 
 def _resolve_guild_gear(
@@ -4985,6 +5012,73 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     if register is None:
         register = process(gd.members)
 
+    # --- The sign-up tab, and whether it is talking about THIS week --------------
+    # A SheetStructureError here means this guild's sign-up tab no longer carries the
+    # tick-box sign-up table (e.g. trials went "free-assigned" and the tab was
+    # repurposed — see the 2026-07 reformat). That is an upstream DATA change, not a
+    # build failure: the guild still gets its member and trials pages and an inactive
+    # signup.html. A network/HTTP RuntimeError still propagates and fails loudly.
+    picks: Optional[dict[str, set[str]]] = None
+    unavailable = ""
+    unavailable_short = ""
+    # Bound before the try so the name exists on every path out of it. It already did
+    # wherever the fetch SUCCEEDED, but _fetch_combat below reads it and a reader
+    # should not have to prove that from the exception flow; "" is the right value
+    # for it, and combat.signup_combat_pair refuses "" as "cannot cross-check".
+    signup_csv = ""
+    try:
+        signup_csv = signup_model.fetch_signup_csv(site.signup_tab)
+        tab_skills = draw_model.trial_columns(signup_csv, site.signup_tab)
+
+        # THE STALENESS GUARD, added 2026-08-14 after the case that motivated it.
+        # The game rewrites each guild's sign-up tab when a new cycle opens, and it
+        # does not do so for both guilds at once. On 2026-08-14 the LI tab still held
+        # the ENTIRE 8/10 cycle — its four skills AND both its combat bosses — while
+        # SC's had moved on to 8/14. Nothing noticed, because parse_signup validates
+        # that the four headers are SKILLS and every one of last week's was.
+        #
+        # So a plan was being built from the wrong week's volunteers and published as
+        # this week's advice. That is worse than no plan: an officer cannot tell it
+        # apart from a good one. The plan is therefore WITHHELD when a guild's own
+        # sign-up columns disagree with the draw, and the page says so.
+        #
+        # Compared as SETS, not sequences: the game orders these columns as it likes
+        # and the draw carries no priority (see draw.TrialDraw), so order is not
+        # information and a re-ordering must not be mistaken for a stale week.
+        if set(tab_skills) != set(week_draw.skills):
+            unavailable = (
+                f"The {site.signup_tab!r} tab lists "
+                f"{', '.join(tab_skills)}, which is not this week's draw "
+                f"({', '.join(week_draw.skills)}). The game refreshes each guild's "
+                f"sign-up tab when a new cycle opens and has not yet refreshed this "
+                f"one, so its ticks are a PREVIOUS week's volunteers. A plan built "
+                f"from them would be indistinguishable from a good one, so none is "
+                f"published; it returns by itself once the tab catches up."
+            )
+            unavailable_short = (
+                f"stale tab, lists [{', '.join(tab_skills)}]"
+            )
+        else:
+            picks = signup_model.parse_signup(signup_csv, tab_label=site.signup_tab)
+    except SheetStructureError as exc:
+        unavailable = str(exc)
+        unavailable_short = f"{site.signup_tab} not in tick-box sign-up format"
+
+    if unavailable:
+        print(
+            f"WARNING ({site.key}): sign-up plan withheld — {unavailable}",
+            file=sys.stderr,
+        )
+
+    # --- The game's roll, and every characterId we can see (rename safety) -------
+    # The sign-up tab is rewritten whole from the game's roll, so its User column is
+    # the guild's CURRENT names, and its trailing characterId column (when the
+    # writer emits it) is the one immutable key. Read once here: canonicalise below
+    # resolves member-tab names against it, and filter_departed judges by it.
+    roll = signup_model.parse_roll(signup_csv)
+    roll_ids = signup_model.parse_roll_ids(signup_csv)
+    history: list = []
+
     # --- The roster tab, and the merge ------------------------------------------
     # THE REGISTER IS BUILT FIRST, AND FROM THE UNMERGED ROWS, deliberately.
     # index.html mirrors the officers' own hand-maintained tab, stale cells and all;
@@ -4997,9 +5091,9 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     # config.ROSTER_SOURCE_ENABLED off the build does not even talk to the roster
     # tab, so the rollback also covers the case where the separate Apps Script
     # deployment is the thing that is broken.
-    members = gd.members
     roster_provenance = None
     roster_unavailable = ""
+    roster_rows = None
     if config.ROSTER_SOURCE_ENABLED:
         try:
             roster_rows = roster_model.scrape_roster_tab(site.roster_tab)
@@ -5024,28 +5118,52 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
                 f"manual member tab:\n{exc}",
                 file=sys.stderr,
             )
-        else:
-            report = roster_model.join(gd.members, roster_rows)
-            members, roster_provenance = roster_model.merge(
-                gd.members, report, site.key
+
+    # --- Canonical names (rename safety) -----------------------------------------
+    # ONE choke point: every member-tab row is rewritten to the name the game's roll
+    # gives its characterId NOW (resolved from the roll, the Name History tab and the
+    # roster tab), so a member renamed in-game carries one name through every later
+    # name join — the roster merge, the sign-up plan, the combat index. The register
+    # above was built from the untouched rows (canonicalise never mutates), so
+    # index.html and data.json still mirror the officers' tab.
+    resolver = identity.Resolver(
+        roll=[(n, roll_ids.get(n)) for n in roll],
+        roster=[(r.name, r.character_id) for r in (roster_rows or [])],
+        history=history,
+    )
+    members, renames, rename_notes = identity.canonicalise(gd.members, resolver)
+    for note in rename_notes:
+        print(f"NOTE ({site.key}): {note}", file=sys.stderr)
+
+    if roster_rows is not None:
+        report = roster_model.join(members, roster_rows)
+        if report.id_conflicts:
+            print(
+                f"WARNING ({site.key}): roster row(s) share a member's name but not "
+                f"their characterId — held back, not admitted: "
+                f"{'; '.join(report.id_conflicts)}",
+                file=sys.stderr,
             )
-            # The tool audit runs ONCE per guild, here in the parent, on the
-            # merged list. It strips items config.TOOL_STATS does not model (so
-            # the hot loop never sees one and falls back to the checkbox), counts
-            # what it stripped and how many named tools had a blank enhancement,
-            # and RAISES on a tool in the wrong slot — which is not a new item but
-            # a shifted header row, and makes every tool column suspect.
-            roster_provenance.tools = trials_model.audit_roster_tools(members)
-            # The per-item gear runs AFTER the tool audit, and the order is not
-            # arbitrary: the audit strips items config.TOOL_STATS does not model
-            # from the merged entries, and the gear resolver must see the same
-            # members the race will. Gear and tools are disjoint slots, so nothing
-            # here can undo that stripping — but a later reader should not have to
-            # work that out from the call order alone.
-            roster_provenance.gear = _resolve_guild_gear(
-                members, roster_rows, site.key
-            )
-            _report_roster_join(site, roster_provenance)
+        members, roster_provenance = roster_model.merge(
+            members, report, site.key
+        )
+        # The tool audit runs ONCE per guild, here in the parent, on the
+        # merged list. It strips items config.TOOL_STATS does not model (so
+        # the hot loop never sees one and falls back to the checkbox), counts
+        # what it stripped and how many named tools had a blank enhancement,
+        # and RAISES on a tool in the wrong slot — which is not a new item but
+        # a shifted header row, and makes every tool column suspect.
+        roster_provenance.tools = trials_model.audit_roster_tools(members)
+        # The per-item gear runs AFTER the tool audit, and the order is not
+        # arbitrary: the audit strips items config.TOOL_STATS does not model
+        # from the merged entries, and the gear resolver must see the same
+        # members the race will. Gear and tools are disjoint slots, so nothing
+        # here can undo that stripping — but a later reader should not have to
+        # work that out from the call order alone.
+        roster_provenance.gear = _resolve_guild_gear(
+            members, roster_rows, site.key
+        )
+        _report_roster_join(site, roster_provenance)
 
     # --- The guild's own building & shrine levels --------------------------------
     # THE ONLY SOURCE HERE THAT DESCRIBES THE GUILD RATHER THAN ITS MEMBERS, and
@@ -5108,64 +5226,6 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     # The seat cap rides the same observation: its Skilling Encampment row.
     party_cap = _resolve_party_cap(site, observation, buildings_unread)
 
-    # --- The sign-up tab, and whether it is talking about THIS week --------------
-    # A SheetStructureError here means this guild's sign-up tab no longer carries the
-    # tick-box sign-up table (e.g. trials went "free-assigned" and the tab was
-    # repurposed — see the 2026-07 reformat). That is an upstream DATA change, not a
-    # build failure: the guild still gets its member and trials pages and an inactive
-    # signup.html. A network/HTTP RuntimeError still propagates and fails loudly.
-    picks: Optional[dict[str, set[str]]] = None
-    unavailable = ""
-    unavailable_short = ""
-    # Bound before the try so the name exists on every path out of it. It already did
-    # wherever the fetch SUCCEEDED, but _fetch_combat below reads it and a reader
-    # should not have to prove that from the exception flow; "" is the right value
-    # for it, and combat.signup_combat_pair refuses "" as "cannot cross-check".
-    signup_csv = ""
-    try:
-        signup_csv = signup_model.fetch_signup_csv(site.signup_tab)
-        tab_skills = draw_model.trial_columns(signup_csv, site.signup_tab)
-
-        # THE STALENESS GUARD, added 2026-08-14 after the case that motivated it.
-        # The game rewrites each guild's sign-up tab when a new cycle opens, and it
-        # does not do so for both guilds at once. On 2026-08-14 the LI tab still held
-        # the ENTIRE 8/10 cycle — its four skills AND both its combat bosses — while
-        # SC's had moved on to 8/14. Nothing noticed, because parse_signup validates
-        # that the four headers are SKILLS and every one of last week's was.
-        #
-        # So a plan was being built from the wrong week's volunteers and published as
-        # this week's advice. That is worse than no plan: an officer cannot tell it
-        # apart from a good one. The plan is therefore WITHHELD when a guild's own
-        # sign-up columns disagree with the draw, and the page says so.
-        #
-        # Compared as SETS, not sequences: the game orders these columns as it likes
-        # and the draw carries no priority (see draw.TrialDraw), so order is not
-        # information and a re-ordering must not be mistaken for a stale week.
-        if set(tab_skills) != set(week_draw.skills):
-            unavailable = (
-                f"The {site.signup_tab!r} tab lists "
-                f"{', '.join(tab_skills)}, which is not this week's draw "
-                f"({', '.join(week_draw.skills)}). The game refreshes each guild's "
-                f"sign-up tab when a new cycle opens and has not yet refreshed this "
-                f"one, so its ticks are a PREVIOUS week's volunteers. A plan built "
-                f"from them would be indistinguishable from a good one, so none is "
-                f"published; it returns by itself once the tab catches up."
-            )
-            unavailable_short = (
-                f"stale tab, lists [{', '.join(tab_skills)}]"
-            )
-        else:
-            picks = signup_model.parse_signup(signup_csv, tab_label=site.signup_tab)
-    except SheetStructureError as exc:
-        unavailable = str(exc)
-        unavailable_short = f"{site.signup_tab} not in tick-box sign-up format"
-
-    if unavailable:
-        print(
-            f"WARNING ({site.key}): sign-up plan withheld — {unavailable}",
-            file=sys.stderr,
-        )
-
     # --- The optimiser's published combat teams ---------------------------------
     # AFTER the sign-up tab, because the cross-check needs its header: the tab's two
     # bosses must equal (as a set) the two the game put in this guild's own sign-up
@@ -5178,13 +5238,16 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     # game-written sign-up tab is rewritten whole from the game's roll, so it does
     # not. The model pool keeps only names on that roll. The register (index.html)
     # is left as the officers' tab, by the rule above.
+    # Judged BY ID where both sides carry one (a renamed member is never dropped),
+    # by name otherwise — see signup.filter_departed.
     members, departed, roll_skipped = signup_model.filter_departed(
-        members, signup_model.parse_roll(signup_csv)
+        members, roll, roll_ids
     )
     if departed:
+        how = " by id" if roll_ids and config.ID_JOIN_ENABLED else ""
         print(
-            f"NOTE ({site.key}): {len(departed)} member(s) not on the game's roll "
-            f"(left the guild), excluded: {', '.join(departed)}",
+            f"NOTE ({site.key}): {len(departed)} member(s) not on the game's roll"
+            f"{how} (left the guild), excluded: {', '.join(departed)}",
             file=sys.stderr,
         )
     elif roll_skipped:
@@ -5210,6 +5273,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
         combat_unavailable=combat_unavailable,
         building_value=building_value,
         building_value_unavailable=building_value_unavailable,
+        renames=renames,
     )
 
 
@@ -5424,6 +5488,11 @@ def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
     DTO's spelling — and not `itemHrid`, the UI's. A consumer that does not recognise
     the shape must refuse the block rather than guess which spelling it is holding.
 
+    Seats carry ``characterId`` when the tab's ``Character Id`` cell has one (rename
+    safety), and a seat whose id belongs to a member now known under another name is
+    shown under the LIVE name (logged ``renamed OLD → NEW (id N)``), so the userscript
+    and the search index meet the same spelling as the skilling rosters.
+
     This is pure dict work over fields the dataclass always has, so it cannot raise
     and cannot be the thing that stops a deploy.
     """
@@ -5435,6 +5504,22 @@ def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
         # never returns an unusable block with an empty reason. Still answered, and
         # in the same words, rather than publishing an unexplained `false`.
         reason = f"The {site.combat_tab!r} tab was not read."
+    trials = [t.to_dict() for t in obs.teams] if available else []
+    live: dict[int, str] = {}
+    for m in inputs.members:
+        cid = identity.parse_id(m.character_id)
+        if cid is not None:
+            live.setdefault(cid, m.name)
+    for t in trials:
+        for seat in t["roster"]:
+            cur = live.get(seat.get("characterId"))
+            if cur and cur != seat["name"]:
+                print(
+                    f"NOTE ({site.key}): renamed {seat['name']} → {cur} "
+                    f"(id {seat['characterId']}) in {site.combat_tab}",
+                    file=sys.stderr,
+                )
+                seat["name"] = cur
     return {
         "available": available,
         "unavailable": "" if available else reason,
@@ -5445,7 +5530,7 @@ def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
             "shape": COMBAT_LOADOUT_SHAPE,
             "by_id": obs.loadouts if available else {},
         },
-        "trials": [t.to_dict() for t in obs.teams] if available else [],
+        "trials": trials,
     }
 
 
@@ -5609,7 +5694,7 @@ def _write_guild(
     # the register carries both. Gated: config.REGISTER_CARRIES_WEEK = False is the
     # byte-for-byte rollback of the API (no new keys, no Trial column).
     if config.REGISTER_CARRIES_WEEK:
-        _attach_week(inputs.register, week, draw_warning)
+        _attach_week(inputs.register, week, draw_warning, inputs.renames)
         stamped = inputs.register["week"]
         if stamped is not None and stamped["unassigned"]:
             # Should never fire: roster.merge copies every manual member, so every

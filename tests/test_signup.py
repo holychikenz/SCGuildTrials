@@ -1068,3 +1068,75 @@ def test_filter_departed_skips_a_broken_roll():
     for roll in ([], ["Alpha", "Stranger"]):
         kept, departed, skipped = signup.filter_departed(members, roll)
         assert kept == members and departed == [] and skipped
+
+
+# --- rename safety: the trailing characterId column (2026-10) -----------------
+_ID_CSV = (
+    "User,Milking,Cooking,Woodcutting,Enhancing,Badger,Swarm,characterId\n"
+    "NewName,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE,102437\n"
+    "Other,FALSE,TRUE,FALSE,FALSE,FALSE,FALSE,9\n"
+)
+
+
+def test_parse_roll_ids_reads_ids_by_header():
+    assert signup.parse_roll_ids(_ID_CSV) == {"NewName": 102437, "Other": 9}
+
+
+def test_parse_roll_ids_is_empty_for_old_or_boolean_tabs():
+    old = "User,Milking,Cooking,Woodcutting,Enhancing,Badger,Swarm\nAlpha,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE\n"
+    assert signup.parse_roll_ids(old) == {}
+    booleans = _ID_CSV.replace(",102437", ",TRUE").replace(",9\n", ",FALSE\n")
+    assert signup.parse_roll_ids(booleans) == {}
+    assert signup.parse_roll_ids("Member,characterId\nAlpha,5\n") == {}
+    assert signup.parse_roll_ids("") == {}
+
+
+def test_parse_roll_ids_finds_the_column_anywhere():
+    assert signup.parse_roll_ids("User,Character Id,Milking\nAlpha,7,TRUE\n") == {"Alpha": 7}
+
+
+def test_characterId_column_is_never_a_pick_or_a_roll_name():
+    old = _ID_CSV.replace(",characterId", "").replace(",102437", "").replace(",9\n", "\n")
+    assert signup.parse_roll(_ID_CSV) == signup.parse_roll(old) == ["NewName", "Other"]
+    assert signup.parse_signup(_ID_CSV) == signup.parse_signup(old)
+
+
+def test_RENAME_filter_departed_keeps_a_renamed_member_by_id():
+    from types import SimpleNamespace as NS
+    members = [NS(name="OldName", character_id="102437"), NS(name="Other", character_id="9")]
+    kept, departed, skipped = signup.filter_departed(
+        members, ["NewName", "Other"], {"NewName": 102437, "Other": 9})
+    assert kept == members and departed == [] and skipped == ""
+
+
+def test_filter_departed_an_id_off_the_roll_is_departed_despite_its_name():
+    from types import SimpleNamespace as NS
+    members = [NS(name="Bob", character_id="5"), NS(name="A", character_id="1"),
+               NS(name="B", character_id="2")]
+    kept, departed, _ = signup.filter_departed(
+        members, ["Bob", "A", "B"], {"Bob": 9, "A": 1, "B": 2})
+    assert departed == ["Bob"]
+
+
+def test_filter_departed_name_fallback_for_a_roll_row_without_an_id():
+    from types import SimpleNamespace as NS
+    members = [NS(name="Alpha", character_id="7"), NS(name="Other", character_id="9")]
+    kept, departed, _ = signup.filter_departed(members, ["Alpha", "Other"], {"Other": 9})
+    assert kept == members and departed == []
+
+
+def test_filter_departed_without_roll_ids_is_unchanged():
+    from types import SimpleNamespace as NS
+    members = [NS(name=n, character_id="1") for n in ("Alpha", "bravo", "zzzZap", "Delta")]
+    kept, departed, skipped = signup.filter_departed(members, ["alpha", "Bravo", "Delta"], None)
+    assert departed == ["zzzZap"] and skipped == ""
+
+
+def test_filter_departed_flag_off_ignores_ids(monkeypatch):
+    from types import SimpleNamespace as NS
+    monkeypatch.setattr(config, "ID_JOIN_ENABLED", False)
+    members = [NS(name="OldName", character_id="102437"), NS(name="Other", character_id="9"),
+               NS(name="Third", character_id="3")]
+    kept, departed, _ = signup.filter_departed(
+        members, ["NewName", "Other", "Third"], {"NewName": 102437, "Other": 9, "Third": 3})
+    assert departed == ["OldName"]

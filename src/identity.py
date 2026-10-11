@@ -1,0 +1,204 @@
+"""Character identity: the game's immutable numeric ``characterId``.
+
+Display names change in-game; the id never does. This module owns every id rule
+the build uses, so the rest of the code never re-derives one:
+
+- ``parse_id``          the cross-repo contract's id rule (positive int, or a
+                        ``/^\\s*\\d+\\s*$/`` string; anything else is "no id")
+- ``find_id_column``    locate a characterId column BY HEADER, never by position
+- ``with_character_id`` JSON emission: ``characterId`` only when known
+- ``Resolver``          name -> id and id -> live name, from the live roll, the
+                        Name History tab and the roster tab
+- ``canonicalise``      rewrite member-tab rows to the name the game's roll gives
+                        them now, attaching their id (logs ``renamed OLD → NEW (id N)``)
+- ``find_member``       id first, then exact name, then unambiguous normalised name
+- the Name History reader (``fetch_name_history_csv`` / ``parse_name_history`` /
+  ``load_name_history``)
+
+Imports only ``config`` and ``reader`` — never trials/signup/build — so every
+model module can import it without a cycle.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+from typing import Iterable, Optional
+
+from . import config
+from .reader import MemberRow, norm_name
+
+_ID_RE = re.compile(r"\s*\d+\s*")
+
+
+def parse_id(value) -> Optional[int]:
+    """Contract id rule: a positive int, or a ``/^\\s*\\d+\\s*$/`` string; else None.
+
+    Booleans are refused explicitly (an OLD Code.gs coerced the sign-up id column
+    to TRUE/FALSE, and ``True`` is an ``int`` in Python).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value > 0 else None
+    if isinstance(value, str) and _ID_RE.fullmatch(value):
+        v = int(value)
+        return v if v > 0 else None
+    return None
+
+
+def find_id_column(header: Iterable) -> Optional[int]:
+    """Index of the first header cell naming a characterId column, else None."""
+    for i, h in enumerate(header):
+        if str(h).strip().lower() in config.CHARACTER_ID_HEADERS:
+            return i
+    return None
+
+
+def with_character_id(d: dict) -> dict:
+    """Pop the dataclass key ``character_id``; re-add it as ``characterId`` only
+    when it parses. Mutates and returns ``d``."""
+    cid = parse_id(d.pop("character_id", None))
+    if cid is not None:
+        d["characterId"] = cid
+    return d
+
+
+@dataclass(frozen=True)
+class HistoryRow:
+    """One row of a Name History tab: a name this id has carried."""
+
+    character_id: int
+    name: str
+    guild_id: str = ""
+    first_seen: str = ""
+    last_seen: str = ""
+
+
+def _unambiguous(pairs) -> tuple[dict[str, int], dict[int, str]]:
+    """(norm name -> id, id -> first name seen) over parseable pairs. A normalised
+    name held by two DIFFERENT ids is ambiguous and left out of the name map —
+    the same rule roster.join applies to names."""
+    by_name: dict[str, int] = {}
+    ambiguous: set[str] = set()
+    by_id: dict[int, str] = {}
+    for name, raw in pairs:
+        cid = parse_id(raw)
+        if cid is None or not str(name or "").strip():
+            continue
+        name = str(name).strip()
+        k = norm_name(name)
+        by_id.setdefault(cid, name)
+        if k in ambiguous:
+            continue
+        if k in by_name and by_name[k] != cid:
+            del by_name[k]
+            ambiguous.add(k)
+            continue
+        by_name[k] = cid
+    return by_name, by_id
+
+
+class Resolver:
+    """name -> id and id -> live name.
+
+    Precedence for name -> id: the live roll (unambiguous) > the Name History tab
+    (the id whose row has the latest Last Seen; '' sorts oldest; a tie goes to the
+    higher id) > the roster tab (unambiguous). id -> current name comes from the
+    ROLL ONLY: history supplies the names an id has been seen with, never its
+    current one.
+    """
+
+    def __init__(self, roll=(), roster=(), history: Iterable[HistoryRow] = ()):
+        self._roll, self._live = _unambiguous(roll)
+        self._roster, _ = _unambiguous(roster)
+        self._hist: dict[str, tuple[str, int]] = {}
+        self._seen: dict[int, set[str]] = {}
+        for h in history:
+            cid = parse_id(h.character_id)
+            if cid is None or not h.name.strip():
+                continue
+            k = norm_name(h.name)
+            cand = (h.last_seen or "", cid)
+            if k not in self._hist or cand > self._hist[k]:
+                self._hist[k] = cand
+            self._seen.setdefault(cid, set()).add(h.name.strip())
+        for cid, name in self._live.items():
+            self._seen.setdefault(cid, set()).add(name)
+
+    def id_for(self, name: str) -> Optional[int]:
+        k = norm_name(name or "")
+        if k in self._roll:
+            return self._roll[k]
+        if k in self._hist:
+            return self._hist[k][1]
+        return self._roster.get(k)
+
+    def current_name(self, cid) -> Optional[str]:
+        cid = parse_id(cid)
+        return self._live.get(cid) if cid is not None else None
+
+    def names_for(self, cid) -> set[str]:
+        """Every display name seen for the id (history plus the live roll)."""
+        cid = parse_id(cid)
+        return set(self._seen.get(cid, ())) if cid is not None else set()
+
+
+def canonicalise(
+    members: list[MemberRow], resolver: Resolver
+) -> tuple[list[MemberRow], dict[str, str], list[str]]:
+    """Rewrite each member row to the name the live roll gives its id now.
+
+    Returns ``(members', renames, notes)`` where ``renames`` maps OLD -> NEW and
+    ``notes`` are the human log lines (``renamed OLD → NEW (id N)``). NEVER
+    mutates its input — the register was built from these very objects — and
+    uses ``dataclasses.replace`` on changed rows only, so an unchanged row is the
+    same object. When the member tab already carries a row under the NEW name,
+    the OLD row is dropped (and noted) rather than modelling one person twice.
+    ``config.ID_JOIN_ENABLED = False`` makes it a no-op.
+    """
+    if not config.ID_JOIN_ENABLED:
+        return list(members), {}, []
+    taken = {norm_name(m.name) for m in members}
+    claimed: set[str] = set()
+    out: list[MemberRow] = []
+    renames: dict[str, str] = {}
+    notes: list[str] = []
+    for m in members:
+        own = parse_id(m.character_id)
+        cid = own if own is not None else resolver.id_for(m.name)
+        if cid is None:
+            out.append(m)
+            continue
+        cur = resolver.current_name(cid)
+        if cur is None or norm_name(cur) == norm_name(m.name):
+            out.append(m if own == cid else replace(m, character_id=str(cid)))
+            continue
+        if norm_name(cur) in taken | claimed:
+            notes.append(
+                f"renamed {m.name} → {cur} (id {cid}): the member tab also has a row "
+                f"for {cur}, so the {m.name} row is not modelled"
+            )
+            continue
+        out.append(replace(m, name=cur, character_id=str(cid)))
+        renames[m.name] = cur
+        claimed.add(norm_name(cur))
+        notes.append(f"renamed {m.name} → {cur} (id {cid})")
+    return out, renames, notes
+
+
+def find_member(members, name: str, character_id=None):
+    """Id first (``parse_id``), then exact name, then unambiguous ``norm_name``."""
+    cid = parse_id(character_id)
+    if cid is not None:
+        for m in members:
+            if parse_id(getattr(m, "character_id", None)) == cid:
+                return m
+    for m in members:
+        if m.name == name:
+            return m
+    k = norm_name(name or "")
+    hits = [m for m in members if norm_name(m.name) == k]
+    return hits[0] if len(hits) == 1 else None

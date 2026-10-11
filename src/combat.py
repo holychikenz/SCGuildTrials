@@ -89,11 +89,12 @@ import io
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Optional
 from urllib.parse import quote
 
 import requests
 
-from . import config
+from . import config, identity
 from . import draw as draw_model
 from .reader import SheetStructureError, _cell, _to_int
 
@@ -115,6 +116,11 @@ COL_LOADOUT = 8
 # Appended 2026-09-18. Same rules, one exception: it has no pairing invariant of its
 # own — it is an independent label that is either there or "".
 COL_LOADOUT_NAME = 9
+# Appended 2026-10 (rename safety): the member's numeric game characterId, at index
+# 10 of an ELEVEN-wide tab. Documentation only — the read is BY HEADER
+# (identity.find_id_column), and a ten-wide tab, or a blank/non-numeric cell, simply
+# yields no id (the consumers then join by name, as before).
+COL_CHARACTER_ID = 10
 
 # Every Trial Hrid must start with this. A structural guard a display name could not
 # admit, and the reason §3.1 of the plan publishes the hrid rather than "Swarm": it is
@@ -134,9 +140,11 @@ COMBAT_PAIR_COUNT = 2
 class CombatSeat:
     """One seated member, as the optimiser assigned them.
 
-    No ``character_id``, by construction on the writer's side: ``trials.json`` names
-    members by name everywhere else and the userscript joins on a folded name, and
-    the id is the one thing SCLIRoster promises never leaves its own tree.
+    ``character_id`` is the game's numeric id from the tab's ``Character Id`` cell
+    (rename safety, 2026-10). A characterId is public — the game shows it on every
+    player profile — so it is emitted freely: it travels to ``trials.json`` as
+    ``characterId`` and is OMITTED only when unknown (a ten-wide tab, a blank or
+    non-numeric cell). Consumers join id first and fall back to the name.
     """
 
     name: str
@@ -163,15 +171,19 @@ class CombatSeat:
     # one id would carry two rightful names, which _parse_loadout would refuse as a
     # conflict. On the seat there is no conflict to resolve.
     loadout_name: str = ""
+    character_id: Optional[int] = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "name": self.name,
             "role": self.role,
             "slot": self.slot,
             "loadout_id": self.loadout_id,
             "loadout_name": self.loadout_name,
         }
+        if self.character_id is not None:
+            d["characterId"] = self.character_id
+        return d
 
 
 @dataclass
@@ -480,6 +492,7 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
         return unobserved
 
     _validate_combat_header(rows[0], tab or repr(guild_key))
+    cid_col = identity.find_id_column(rows[0])
 
     data = [r for r in rows[1:] if any(cell.strip() for cell in r)]
     if not data:
@@ -550,6 +563,9 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
                 slot=_cell(raw, COL_SLOT),
                 loadout_id=loadout_id,
                 loadout_name=loadout_name,
+                character_id=(
+                    identity.parse_id(_cell(raw, cid_col)) if cid_col is not None else None
+                ),
             )
         )
 
@@ -611,6 +627,16 @@ def signup_combat_pair(csv_text: str, tab_label: str) -> list[str]:
         )
 
     end = COMBAT_PAIR_COL_START + COMBAT_PAIR_COUNT  # first column past the pair
+    idc = identity.find_id_column(header)
+    if idc is not None and COMBAT_PAIR_COL_START <= idc < end:
+        # The trailing characterId column (rename safety) belongs AFTER the pair. A
+        # writer emitting fewer than two combat columns would put it inside F–G,
+        # and the cross-check would then compare "characterId" against a boss.
+        raise SheetStructureError(
+            f"{tab_label!r} has its characterId column inside the combat pair F–G "
+            f"(column {idc}): {header!r}. The writer emitted fewer than two combat "
+            f"columns; the id column must follow them."
+        )
     if len(header) < end:
         raise SheetStructureError(
             f"{tab_label!r} has too few columns to hold the two combat bosses in "
