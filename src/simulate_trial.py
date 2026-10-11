@@ -66,7 +66,7 @@ from typing import Optional
 
 import numpy as np
 
-from . import config, trials
+from . import calibrate, config, identity, trials
 from .reader import MemberRow
 
 # --- Validated palette (dataviz six-checks, light surface #fcfcfb) ----------
@@ -535,9 +535,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     data = scrape_member_tab(config.TABS[args.guild])
     with open(signup) as fh:
         plan = json.load(fh)
-    by_name = {m.name: m for m in data.members}
+    members = calibrate.canonical_members(data.members, signup, (), args.guild)
     entry = next(t for t in plan["trials"] if t["skill"] == args.skill)
-    party_rows = [by_name[r["name"]] for r in entry["roster"]]
+    party_rows = []
+    for r in entry["roster"]:
+        # Id first, then name: tolerates a member renamed since the plan shipped.
+        m = identity.find_member(members, r["name"], r.get("characterId"))
+        if m is None:
+            raise SystemExit(
+                f"{r['name']!r} is in {signup} but not on the member tab — refresh "
+                f"signup.json before simulating"
+            )
+        party_rows.append(m)
 
     party = build_party(party_rows, args.skill)
     taus_det, sds = analytic(party)

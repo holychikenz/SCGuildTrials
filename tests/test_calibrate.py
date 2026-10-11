@@ -290,3 +290,42 @@ def test_the_deterministic_score_does_not_depend_on_risk_sigma_systematic():
                (b.tier_reached, b.partial_fraction, b.credit_points, b.points)
     # And the two figures that MUST move, or the constant is not wired in at all.
     assert lo.total_expected_points != hi.total_expected_points
+
+
+# --- rename safety: load_seats resolves by characterId (2026-10) ---------------
+def _plain(name, cid=None):
+    return MemberRow(name=name, main_classes="", flex="", character_id=cid)
+
+
+def _plan_file(tmp_path, roster):
+    import json
+    p = tmp_path / "signup.json"
+    p.write_text(json.dumps({"trials": [{"skill": "Milking", "roster": roster}]}))
+    return str(p)
+
+
+def test_load_seats_resolves_a_renamed_member_by_id(tmp_path):
+    m = _plain("OldName", "102437")
+    path = _plan_file(tmp_path, [{"name": "NewName", "characterId": 102437, "status": "assigned"}])
+    seats = calibrate.load_seats(path, [m, _plain("Other")])
+    assert seats[0][0].member is m and seats[0][0].volunteered
+
+
+def test_load_seats_name_only_plan_still_resolves(tmp_path):
+    m = _plain("Dome")
+    path = _plan_file(tmp_path, [{"name": "dome", "status": "recommended"}])
+    assert calibrate.load_seats(path, [m])[0][0].member is m
+
+
+def test_load_seats_unknown_name_still_raises(tmp_path):
+    path = _plan_file(tmp_path, [{"name": "Nobody", "status": "assigned"}])
+    with pytest.raises(KeyError):
+        calibrate.load_seats(path, [_plain("Dome")])
+
+
+def test_canonical_members_renames_from_the_shipped_plan(tmp_path):
+    path = _plan_file(tmp_path, [{"name": "NewName", "characterId": 102437}])
+    from src import roster
+    row = roster.RosterRow(name="OldName", character_id="102437", captured_at="", revision="")
+    out = calibrate.canonical_members([_plain("OldName")], path, [row], "sc")
+    assert out[0].name == "NewName" and out[0].character_id == "102437"

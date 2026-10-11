@@ -2656,3 +2656,31 @@ def test_bench_character_ids_emitted_only_when_a_benched_member_has_one():
     plain = [_member(f"M{i}") for i in range(8)]
     wk2 = trials.run_week(plain, skills=["Brewing"], cap=2, strategy="random").to_dict()
     assert "bench_character_ids" not in wk2
+
+
+# --- rename safety: pins remember characterId (2026-10) ------------------------
+def test_index_entries_carry_the_character_id_when_known():
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    first = base["trials"][0]["roster"][0]
+    first["characterId"] = 102437
+    benched = "Benched McBenchface"
+    base["bench"] = [benched]
+    base["bench_character_ids"] = {benched: 7}
+    index = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    by_name = {e["n"]: e for e in index}
+    assert by_name[first["name"]]["i"] == 102437
+    assert by_name[benched]["i"] == 7
+    others = [e for e in index if e["n"] not in (first["name"], benched)]
+    assert others and all("i" not in e for e in others)
+
+
+def test_pins_record_ids_and_migrate_on_load():
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    assert 'PIN_KEY + ".ids"' in page
+    assert "function migratePins" in page
+    assert "migratePins();\n  renderPins();" in page

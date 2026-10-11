@@ -1314,6 +1314,8 @@ def _render_trial_card(
             "n": r["name"], "t": trial["skill"], "r": f"r-{t_index}-{i}",
             "l": r["level"], "d": scored, "m": margin, "b": band,
             **combat_of.get(norm_name(r["name"]), {}),
+            # The member's characterId, so a pin survives an in-game rename.
+            **({"i": r["characterId"]} if r.get("characterId") is not None else {}),
         }
         for i, r in enumerate(roster)
     ]
@@ -1562,9 +1564,13 @@ _TRIALS_JS = r"""
   // served from the one github.io origin and localStorage is per-origin, not
   // per-directory, so a bare "pins" key would have Survey Corps and Lactose
   // Intolerance silently overwrite each other. NAMES are stored, never row ids:
-  // ids are regenerated on every weekly build and would point at a stranger by
-  // Tuesday, whereas a name still resolves — or honestly fails to.
+  // row ids are regenerated on every weekly build and would point at a stranger by
+  // Tuesday, whereas a name still resolves — or honestly fails to. Beside the
+  // names, each pin's game characterId is recorded under PIN_KEY + ".ids"
+  // ({name: id}) whenever the index carries one (entry.i), so a member who renames
+  // in-game keeps their pin: migratePins() re-points it at the current name.
   var PIN_KEY = dataEl ? (dataEl.getAttribute("data-pin-key") || "") : "";
+  var PIN_ID_KEY = PIN_KEY ? PIN_KEY + ".ids" : "";
   var pinSection = document.getElementById("pinned-section");
   var pinList = document.getElementById("pinned-list");
   var pinClear = document.getElementById("pin-clear");
@@ -1594,6 +1600,53 @@ _TRIALS_JS = r"""
       if (data[i].n === name) return data[i];
     }
     return null;
+  }
+
+  function pinIdsRead() {
+    if (!PIN_ID_KEY) return {};
+    var raw = null;
+    try { raw = window.localStorage.getItem(PIN_ID_KEY); } catch (e) { return {}; }
+    if (!raw) return {};
+    try {
+      var v = JSON.parse(raw);
+      return Object.prototype.toString.call(v) === "[object Object]" ? v : {};
+    } catch (e) { return {}; }
+  }
+
+  function pinIdsWrite(m) {
+    if (!PIN_ID_KEY) return;
+    try { window.localStorage.setItem(PIN_ID_KEY, JSON.stringify(m)); } catch (e) {}
+  }
+
+  function entryById(id) {
+    for (var i = 0; i < data.length; i++) {
+      if (data[i].i != null && String(data[i].i) === String(id)) return data[i];
+    }
+    return null;
+  }
+
+  // Runs once on load, before the first renderPins(): records the id of every pin
+  // that resolves by name (migrating old name-only pins), and re-points a pin whose
+  // name no longer resolves but whose recorded id does (a rename) at the member's
+  // current name.
+  function migratePins() {
+    var pins = pinsRead(), ids = pinIdsRead(), out = [], changed = false;
+    pins.forEach(function (name) {
+      var e = entryFor(name);
+      if (!e && ids[name] != null) {
+        var moved = entryById(ids[name]);
+        if (moved) {
+          delete ids[name];
+          ids[moved.n] = moved.i;
+          if (out.indexOf(moved.n) === -1) out.push(moved.n);
+          changed = true;
+          return;
+        }
+      }
+      if (e && e.i != null && String(ids[name]) !== String(e.i)) { ids[name] = e.i; changed = true; }
+      if (out.indexOf(name) === -1) out.push(name);
+    });
+    if (changed) { pinsWrite(out); pinIdsWrite(ids); }
   }
 
   function makeStar(name) {
@@ -1692,8 +1745,17 @@ _TRIALS_JS = r"""
     if (!name) return;
     var pins = pinsRead();
     var at = pins.indexOf(name);
-    if (at === -1) pins.push(name); else pins.splice(at, 1);
+    var ids = pinIdsRead();
+    if (at === -1) {
+      pins.push(name);
+      var e = entryFor(name);
+      if (e && e.i != null) ids[name] = e.i;
+    } else {
+      pins.splice(at, 1);
+      delete ids[name];
+    }
     pinsWrite(pins);
+    pinIdsWrite(ids);
     renderPins();
   }
 
@@ -1705,7 +1767,7 @@ _TRIALS_JS = r"""
   });
 
   if (pinClear) {
-    pinClear.addEventListener("click", function () { pinsWrite([]); renderPins(); });
+    pinClear.addEventListener("click", function () { pinsWrite([]); pinIdsWrite({}); renderPins(); });
   }
 
   // Keeps the level-1 and level-20 trials pages (and any other open tab on this
@@ -1714,6 +1776,7 @@ _TRIALS_JS = r"""
     if (!e.key || e.key === PIN_KEY) renderPins();
   });
 
+  migratePins();
   renderPins();
 
   // ---------- Generic sortable roster tables ----------
@@ -2829,6 +2892,7 @@ def _render_trials_html(
     cards = "".join(cards_parts)
 
     bench = week["bench"]
+    bench_ids = week.get("bench_character_ids") or {}
     # Chips rather than a comma list, so a benched member can pin themselves too —
     # "am I in this week?" is exactly the question the bench answers, and it is
     # worth an answer at the top of the page like any other.
@@ -2849,6 +2913,7 @@ def _render_trials_html(
             # most in need of the answer: "am I in this week?" is what the bench
             # section is for, and for them the honest answer is "yes, in combat".
             **combat_of.get(norm_name(n), {}),
+            **({"i": bench_ids[n]} if n in bench_ids else {}),
         }
         for n in bench
     )

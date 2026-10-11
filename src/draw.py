@@ -8,7 +8,8 @@ are drawn (seemingly randomly) each cycle. This module reads them from the
     User,Enhancing,Milking,Cooking,Brewing,Hedgehog,Swarm
 
 Columns B–E (0-based 1..4) are the four SKILLING trials, in the game's own order.
-Everything from column F on is the two COMBAT trials and is ignored by position —
+Everything from column F on is the two COMBAT trials — and, since 2026-10, an
+optional trailing ``characterId`` column (rename safety) — and is ignored by position —
 the same fixed geometry :func:`src.signup.parse_signup` reads the tick-boxes
 against, and for the same reason: the game writes this row, so its shape is the
 game's, not an officer's.

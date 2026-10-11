@@ -67,6 +67,21 @@ per-character harvest (`apps-script/profiles/`, written to an **SC Roster** / **
 Roster** tab and read by `src/roster.py` and `src/gear.py`), with the manual tab as
 a per-field fallback.
 
+### Renames: members are joined by characterId (2026-10)
+
+Display names change in-game; the game's numeric `characterId` never does, and it is
+public (every player profile shows it). It now travels with each name: the sign-up
+tab's trailing `characterId` column, the roster tab's `characterId`, the combat tab's
+`Character Id` (11th cell), and a new **SC / LI Name History** tab of every
+(id, name) pair the in-game sync has seen. `src/identity.py` resolves each
+member-tab row to the name the game's roll gives its id now, once, before any join,
+and logs `renamed OLD → NEW (id N)`, so a renamed member is never dropped as
+departed, left unmatched or admitted twice. The roster join and the departed filter
+match id first and fall back to names; trials.json, signup.json and the trials
+page's pin index carry `characterId` when known. Old tabs without the id columns
+behave exactly as before. Rollbacks: `config.ID_JOIN_ENABLED = False` (no id
+joins) and `config.NAME_HISTORY_SOURCE_ENABLED = False` (no history fetch).
+
 ### The precedence is per FIELD, not per member
 
 ```

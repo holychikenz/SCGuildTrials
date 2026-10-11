@@ -95,7 +95,7 @@ import statistics
 from dataclasses import dataclass, fields, replace
 from typing import Callable, Iterable, Optional
 
-from . import config, gear as gear_model, roster as roster_model, trials
+from . import config, gear as gear_model, identity, roster as roster_model, trials
 from .reader import MemberRow
 from .roster import ROSTER as _ROSTER
 
@@ -1212,6 +1212,31 @@ def selftest(seats: list[Seat]) -> float:
     return worst
 
 
+def canonical_members(
+    members: list[MemberRow], signup_path: str, rows=(), guild: str = "sc"
+) -> list[MemberRow]:
+    """Member rows renamed to the names (and ids) the shipped signup.json uses,
+    resolved as build._fetch_guild resolves them: signup.json as the roll, then the
+    Name History tab, then the roster rows. Prints each rename note."""
+    try:
+        with open(signup_path) as fh:
+            plan = json.load(fh)
+    except (OSError, ValueError):
+        return members
+    roll = [(r["name"], r.get("characterId"))
+            for t in plan.get("trials", []) for r in t.get("roster", [])]
+    history, warning = identity.load_name_history(config.NAME_HISTORY_TABS[guild])
+    if warning:
+        print(f"name history unavailable: {warning}")
+    resolver = identity.Resolver(
+        roll=roll, roster=[(r.name, r.character_id) for r in rows], history=history
+    )
+    out, _, notes = identity.canonicalise(members, resolver)
+    for note in notes:
+        print(note)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Loading the shipped lineup
 # ---------------------------------------------------------------------------
@@ -1227,12 +1252,14 @@ def load_seats(
     """
     with open(signup_path) as fh:
         plan = json.load(fh)
-    by_name = {m.name: m for m in members}
     out = []
     for t in plan["trials"]:
         seats = []
         for r in t["roster"]:
-            m = by_name.get(r["name"])
+            # Id first (signup.json carries characterId since 2026-10), then the
+            # exact and normalised name — so a member renamed since the plan
+            # shipped still resolves.
+            m = identity.find_member(members, r["name"], r.get("characterId"))
             if m is None:
                 raise KeyError(
                     f"{r['name']!r} is in the shipped plan but not on the live "
@@ -1601,8 +1628,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Gated exactly as build._fetch_guild gates it, and by the same switch, so the
     # campaign and the site cannot disagree about what a member is.
     members = data.members
-    if config.ROSTER_SOURCE_ENABLED and not args.no_roster:
-        rows = roster_model.scrape_roster_tab(config.ROSTER_TABS[args.guild])
+    use_roster = config.ROSTER_SOURCE_ENABLED and not args.no_roster
+    rows = roster_model.scrape_roster_tab(config.ROSTER_TABS[args.guild]) if use_roster else []
+    # Mirror build._fetch_guild: canonicalise the member tab's names before the
+    # join. signup.json is the "live" source here — it carries the shipped names
+    # and their characterIds.
+    members = canonical_members(members, signup_path, rows, args.guild)
+    if use_roster:
         report_join = roster_model.join(members, rows)
         members, prov = roster_model.merge(members, report_join, args.guild)
         # Strips the items config.TOOL_STATS does not model, exactly as the build
