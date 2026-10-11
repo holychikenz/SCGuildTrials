@@ -191,7 +191,6 @@ class Resolver:
         self._roll, self._live = _unambiguous(roll)
         self._roster, _ = _unambiguous(roster)
         self._hist: dict[str, tuple[str, int]] = {}
-        self._seen: dict[int, set[str]] = {}
         for h in history:
             cid = parse_id(h.character_id)
             if cid is None or not h.name.strip():
@@ -200,9 +199,6 @@ class Resolver:
             cand = (h.last_seen or "", cid)
             if k not in self._hist or cand > self._hist[k]:
                 self._hist[k] = cand
-            self._seen.setdefault(cid, set()).add(h.name.strip())
-        for cid, name in self._live.items():
-            self._seen.setdefault(cid, set()).add(name)
 
     def id_for(self, name: str) -> Optional[int]:
         k = norm_name(name or "")
@@ -216,11 +212,6 @@ class Resolver:
         cid = parse_id(cid)
         return self._live.get(cid) if cid is not None else None
 
-    def names_for(self, cid) -> set[str]:
-        """Every display name seen for the id (history plus the live roll)."""
-        cid = parse_id(cid)
-        return set(self._seen.get(cid, ())) if cid is not None else set()
-
 
 def canonicalise(
     members: list[MemberRow], resolver: Resolver
@@ -232,27 +223,41 @@ def canonicalise(
     mutates its input — the register was built from these very objects — and
     uses ``dataclasses.replace`` on changed rows only, so an unchanged row is the
     same object. When the member tab already carries a row under the NEW name,
-    the OLD row is dropped (and noted) rather than modelling one person twice.
+    the OLD row is dropped (and noted) rather than modelling one person twice;
+    ``renames`` still maps OLD -> NEW so the officers' register row finds the seat.
     ``config.ID_JOIN_ENABLED = False`` makes it a no-op.
     """
     if not config.ID_JOIN_ENABLED:
         return list(members), {}, []
-    taken = {norm_name(m.name) for m in members}
+    # Resolve every row FIRST, so a collision is judged against the names rows will
+    # carry AFTER canonicalisation — not their original spellings. A swap or a chain
+    # (Bob -> Carol, then Alice takes "Bob") must not drop Alice because the tab
+    # once had a "Bob" row that has itself been renamed away.
+    resolved = []
+    for m in members:
+        own = parse_id(m.character_id)
+        cid = own if own is not None else resolver.id_for(m.name)
+        cur = resolver.current_name(cid) if cid is not None else None
+        resolved.append((m, own, cid, cur))
+    taken = {
+        norm_name(m.name) for m, _, cid, cur in resolved
+        if cid is None or cur is None or norm_name(cur) == norm_name(m.name)
+    }
     claimed: set[str] = set()
     out: list[MemberRow] = []
     renames: dict[str, str] = {}
     notes: list[str] = []
-    for m in members:
-        own = parse_id(m.character_id)
-        cid = own if own is not None else resolver.id_for(m.name)
+    for m, own, cid, cur in resolved:
         if cid is None:
             out.append(m)
             continue
-        cur = resolver.current_name(cid)
         if cur is None or norm_name(cur) == norm_name(m.name):
             out.append(m if own == cid else replace(m, character_id=str(cid)))
             continue
-        if norm_name(cur) in taken | claimed:
+        k = norm_name(cur)
+        if k in taken or k in claimed:
+            # Still OLD -> NEW: the officers' register row under OLD finds NEW's seat.
+            renames[m.name] = cur
             notes.append(
                 f"renamed {m.name} → {cur} (id {cid}): the member tab also has a row "
                 f"for {cur}, so the {m.name} row is not modelled"
@@ -260,7 +265,7 @@ def canonicalise(
             continue
         out.append(replace(m, name=cur, character_id=str(cid)))
         renames[m.name] = cur
-        claimed.add(norm_name(cur))
+        claimed.add(k)
         notes.append(f"renamed {m.name} → {cur} (id {cid})")
     return out, renames, notes
 

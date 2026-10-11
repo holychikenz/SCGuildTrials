@@ -1625,28 +1625,31 @@ _TRIALS_JS = r"""
     return null;
   }
 
-  // Runs once on load, before the first renderPins(): records the id of every pin
-  // that resolves by name (migrating old name-only pins), and re-points a pin whose
-  // name no longer resolves but whose recorded id does (a rename) at the member's
-  // current name.
+  // Runs once on load, before the first renderPins(). A pin with a recorded id is
+  // resolved BY ID first — so an alt who later takes a pinned member's old name is
+  // never mistaken for them — and re-pointed at the member's current name (a
+  // rename). The name is the fallback only when no id is recorded, or the recorded
+  // one is not on this week's page; a name match then records an id only where
+  // none was, never overwriting one. The id map is rebuilt from the OLD map, so a
+  // chain (A takes B's old name while B renames on) cannot clobber B's record.
   function migratePins() {
-    var pins = pinsRead(), ids = pinIdsRead(), out = [], changed = false;
+    var pins = pinsRead(), ids = pinIdsRead(), out = [], next = {};
     pins.forEach(function (name) {
-      var e = entryFor(name);
-      if (!e && ids[name] != null) {
-        var moved = entryById(ids[name]);
-        if (moved) {
-          delete ids[name];
-          ids[moved.n] = moved.i;
-          if (out.indexOf(moved.n) === -1) out.push(moved.n);
-          changed = true;
-          return;
-        }
+      var rec = ids[name], pinned = name;
+      if (rec != null) {
+        var e = entryById(rec);
+        if (e) pinned = e.n;
+        next[pinned] = rec;
+      } else {
+        var byName = entryFor(name);
+        if (byName && byName.i != null) next[name] = byName.i;
       }
-      if (e && e.i != null && String(ids[name]) !== String(e.i)) { ids[name] = e.i; changed = true; }
-      if (out.indexOf(name) === -1) out.push(name);
+      if (out.indexOf(pinned) === -1) out.push(pinned);
     });
-    if (changed) { pinsWrite(out); pinIdsWrite(ids); }
+    if (JSON.stringify(out) !== JSON.stringify(pins) ||
+        JSON.stringify(next) !== JSON.stringify(ids)) {
+      pinsWrite(out); pinIdsWrite(next);
+    }
   }
 
   function makeStar(name) {

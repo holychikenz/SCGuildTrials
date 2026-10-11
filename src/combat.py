@@ -117,10 +117,9 @@ COL_LOADOUT = 8
 # own — it is an independent label that is either there or "".
 COL_LOADOUT_NAME = 9
 # Appended 2026-10 (rename safety): the member's numeric game characterId, at index
-# 10 of an ELEVEN-wide tab. Documentation only — the read is BY HEADER
+# 10 of an ELEVEN-wide tab. No constant on purpose — the read is BY HEADER
 # (identity.find_id_column), and a ten-wide tab, or a blank/non-numeric cell, simply
 # yields no id (the consumers then join by name, as before).
-COL_CHARACTER_ID = 10
 
 # Every Trial Hrid must start with this. A structural guard a display name could not
 # admit, and the reason §3.1 of the plan publishes the hrid rather than "Swarm": it is

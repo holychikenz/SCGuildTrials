@@ -2684,3 +2684,51 @@ def test_pins_record_ids_and_migrate_on_load():
     assert 'PIN_KEY + ".ids"' in page
     assert "function migratePins" in page
     assert "migratePins();\n  renderPins();" in page
+
+
+def _run_migrate_pins(page, data, pins, ids):
+    """Execute the page's own migratePins() in node against stub storage."""
+    import json as _json
+    import re as _re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    fns = "\n".join(
+        _re.search(r"  function %s\(.*?\n  }\n" % n, page, _re.S).group(0)
+        for n in ("entryFor", "entryById", "migratePins")
+    )
+    script = (
+        "var data = %s, store = {pins: %s, ids: %s};\n"
+        "function pinsRead() { return store.pins.slice(); }\n"
+        "function pinIdsRead() { return JSON.parse(JSON.stringify(store.ids)); }\n"
+        "function pinsWrite(l) { store.pins = l; }\n"
+        "function pinIdsWrite(m) { store.ids = m; }\n"
+        "%s\nmigratePins();\nconsole.log(JSON.stringify(store));\n"
+    ) % (_json.dumps(data), _json.dumps(pins), _json.dumps(ids), fns)
+    res = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+    return _json.loads(res.stdout)
+
+
+def test_migrate_pins_resolves_by_recorded_id_before_name():
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    page = build._render_trials_html(base, build.GUILD_SITES[0])
+
+    # An alt took a pinned member's old name: the pin follows the id, not the name.
+    data = [{"n": "Bob", "i": 9}, {"n": "Carol", "i": 2}]
+    got = _run_migrate_pins(page, data, ["Bob"], {"Bob": 2})
+    assert got == {"pins": ["Carol"], "ids": {"Carol": 2}}
+
+    # A chain (Alice -> Bob, Bob -> Carol) keeps both pins and both ids.
+    data = [{"n": "Bob", "i": 1}, {"n": "Carol", "i": 2}]
+    got = _run_migrate_pins(page, data, ["Alice", "Bob"], {"Alice": 1, "Bob": 2})
+    assert got == {"pins": ["Bob", "Carol"], "ids": {"Bob": 1, "Carol": 2}}
+
+    # A name-only pin records its id; a recorded id not on this week's page is kept.
+    data = [{"n": "Dan", "i": 4}]
+    got = _run_migrate_pins(page, data, ["Dan", "Gone"], {"Gone": 8})
+    assert got == {"pins": ["Dan", "Gone"], "ids": {"Gone": 8, "Dan": 4}}

@@ -75,7 +75,6 @@ def test_resolver_current_name_comes_from_the_roll_only():
     assert r.current_name(102437) == "NewName"
     assert r.current_name("102437") == "NewName"
     assert r.current_name(55) is None
-    assert r.names_for(55) == {"Ghost"}
 
 
 # --- canonicalise (hazard J) -------------------------------------------------
@@ -103,8 +102,37 @@ def test_canonicalise_drops_old_row_when_new_row_present():
     r = Resolver(roll=[("NewName", 102437)], history=[HistoryRow(102437, "OldName")])
     out, renames, notes = canonicalise(members, r)
     assert [m.name for m in out] == ["NewName"]
-    assert renames == {}
+    # The dropped OLD row still maps OLD -> NEW, so the officers' register row
+    # under OldName finds NewName's seat instead of reading "unassigned".
+    assert renames == {"OldName": "NewName"}
     assert notes and notes[0].startswith("renamed OldName → NewName (id 102437)")
+
+
+def test_canonicalise_chain_rename_keeps_both_members():
+    # Bob -> Carol, then Alice takes "Bob". The tab's original "Bob" row has
+    # itself been renamed away, so Alice's row must not collide with it.
+    members = [_m("Alice", "1"), _m("Bob", "2")]
+    r = Resolver(roll=[("Bob", 1), ("Carol", 2)])
+    out, renames, notes = canonicalise(members, r)
+    assert [(m.name, m.character_id) for m in out] == [("Bob", "1"), ("Carol", "2")]
+    assert renames == {"Alice": "Bob", "Bob": "Carol"}
+    assert all("not modelled" not in n for n in notes)
+
+
+def test_canonicalise_swap_keeps_both_members():
+    members = [_m("Alice", "1"), _m("Bob", "2")]
+    out, renames, _ = canonicalise(members, Resolver(roll=[("Bob", 1), ("Alice", 2)]))
+    assert [(m.name, m.character_id) for m in out] == [("Bob", "1"), ("Alice", "2")]
+    assert renames == {"Alice": "Bob", "Bob": "Alice"}
+
+
+def test_canonicalise_two_rows_renamed_to_one_name_keep_the_first():
+    members = [_m("Old1", "1"), _m("Old2")]
+    r = Resolver(roll=[("New", 1)], history=[HistoryRow(1, "Old2")])
+    out, renames, notes = canonicalise(members, r)
+    assert [m.name for m in out] == ["New"]
+    assert renames == {"Old1": "New", "Old2": "New"}
+    assert "not modelled" in notes[1]
 
 
 def test_canonicalise_never_mutates_its_input():

@@ -150,6 +150,26 @@ def test_attach_week_stamps_a_renamed_register_member():
     assert register["week"]["not_on_register"] == ["NewName"]
 
 
+def test_dropped_stale_row_still_finds_its_seat_on_the_register():
+    # The officers' tab lists both OldName (stale) and NewName: canonicalise drops
+    # the OldName row, but the register row must not read "unassigned" every build.
+    reg_members = [_member("OldName", 90), _member("NewName", 90)] + [
+        _member(f"m{i}", 91 + i) for i in range(5)]
+    resolver = identity.Resolver(
+        roll=[("NewName", 102437)], history=[identity.HistoryRow(102437, "OldName")])
+    members, renames, _ = identity.canonicalise(reg_members, resolver)
+    assert "OldName" not in {m.name for m in members}
+    assert renames == {"OldName": "NewName"}
+
+    week = _week_for(["NewName"] + [f"m{i}" for i in range(5)])
+    register = processor.process(reg_members)
+    build._attach_week(register, week, "", renames)
+    stamps = {m["name"]: m["trial"] for m in register["members"]}
+    assert stamps["OldName"] == stamps["NewName"]
+    assert stamps["OldName"]["status"] in ("assigned", "bench")
+    assert register["week"]["unassigned"] == []
+
+
 # --- _combat_block: a renamed seat is shown under its live name ----------------
 def test_combat_block_refreshes_a_renamed_seat_and_carries_the_id(capsys):
     seat = combat.CombatSeat(name="OldName", role="tank", slot="tank 1",
