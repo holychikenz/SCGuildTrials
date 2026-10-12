@@ -183,6 +183,7 @@ def test_combat_block_refreshes_a_renamed_seat_and_carries_the_id(capsys):
     inputs = build._GuildInputs(
         site_key="sc", members=[_member("NewName", cid="102437")], register={},
         picks=None, combat=obs,
+        resolver=identity.Resolver(roll=[("NewName", 102437)]),
     )
     block = build._combat_block(inputs, site)
     out = block["trials"][0]["roster"][0]
@@ -190,3 +191,142 @@ def test_combat_block_refreshes_a_renamed_seat_and_carries_the_id(capsys):
     assert "renamed OldName → NewName (id 102437)" in capsys.readouterr().err
     # The observation itself is untouched.
     assert seat.name == "OldName"
+
+
+# --- _attach_week: chain and swap renames find the RIGHT seat ------------------
+def _hand_week(seats):
+    """A minimal week: one single-seat trial per (skill, seated name)."""
+    return {
+        "generated_at": "g", "week_date": "d", "skills": [s for s, _ in seats],
+        "community_buff_level": 0, "total_points": 0, "total_credit_points": 0,
+        "bench": [],
+        "trials": [
+            {"skill": s, "party_size": 1, "tier_reached": 1, "points": 0,
+             "roster": [{"name": n, "rate_final": 1.0}]}
+            for s, n in seats
+        ],
+    }
+
+
+def _stamps(register):
+    return {m["name"]: m["trial"]["skill"] for m in register["members"]}
+
+
+def test_attach_week_chain_rename_stamps_each_member_with_their_own_seat():
+    # Bob -> Carol, then Alice takes "Bob". The officers' tab still says Alice, Bob.
+    week = _hand_week([("Milking", "Bob"), ("Cooking", "Carol")])
+    register = processor.process([_member("Alice"), _member("Bob")])
+    build._attach_week(register, week, "", {"Alice": "Bob", "Bob": "Carol"})
+    assert _stamps(register) == {"Alice": "Milking", "Bob": "Cooking"}
+    assert register["week"]["not_on_register"] == []
+    assert register["week"]["unassigned"] == []
+
+
+def test_attach_week_swap_rename_stamps_each_member_with_their_own_seat():
+    # Alice and Bob swapped names in-game; the officers' tab has the old spellings.
+    week = _hand_week([("Milking", "Bob"), ("Cooking", "Alice")])
+    register = processor.process([_member("Alice"), _member("Bob")])
+    build._attach_week(register, week, "", {"Alice": "Bob", "Bob": "Alice"})
+    assert _stamps(register) == {"Alice": "Milking", "Bob": "Cooking"}
+    assert register["week"]["not_on_register"] == []
+
+
+# --- roster-only admitted members carry their LIVE name ------------------------
+SIGNUP_ROSTER_ONLY = (
+    f"{HEADER},characterId\n"
+    "NewRo,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE,777\n"
+    "Other,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,555\n"
+    "OldName,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,102437\n"
+)
+
+
+def test_roster_only_member_is_renamed_to_their_live_name(monkeypatch, capsys):
+    monkeypatch.setattr(config, "ROSTER_ADMITS_NEW_MEMBERS", True)
+    _stub(monkeypatch, SIGNUP_ROSTER_ONLY,
+          [_roster_row("OldName", "102437"), _roster_row("Other", "555"),
+           _roster_row("OldRo", "777")])
+    inputs = _fetch()
+    err = capsys.readouterr().err
+    names = {m.name for m in inputs.members}
+    assert "NewRo" in names and "OldRo" not in names
+    new = next(m for m in inputs.members if m.name == "NewRo")
+    assert new.character_id == "777"
+    assert new.provenance["member"] == roster.ROSTER_ONLY
+    assert "renamed OldRo → NewRo (id 777)" in err
+    # Its sign-up tick is matched under the name the model pool now uses.
+    assert inputs.picks["NewRo"] == {"Milking"}
+
+
+def test_rename_roster_only_skips_a_collision_with_an_existing_member():
+    resolver = identity.Resolver(roll=[("Taken", 777), ("Taken2", 888)])
+    stale = _member("OldRo", cid="777")
+    stale.provenance = {"member": roster.ROSTER_ONLY}
+    other = _member("OldRo2", cid="888")
+    other.provenance = {"member": roster.ROSTER_ONLY}
+    manual = _member("Taken")
+    out, notes = build._rename_roster_only([manual, stale, other], resolver)
+    assert [m.name for m in out] == ["Taken", "OldRo", "Taken2"]
+    assert any("OldRo" in n and "not renamed" in n for n in notes)
+    assert "renamed OldRo2 → Taken2 (id 888)" in notes
+    # Never mutates its input.
+    assert other.name == "OldRo2"
+
+
+def _combat_inputs(seat_name, members, resolver):
+    seat = combat.CombatSeat(name=seat_name, role="tank", slot="tank 1",
+                             character_id=777)
+    obs = combat.GuildCombat(
+        tab="SC Combat Teams", guild_key="sc", observed=True,
+        teams=[combat.CombatTeam(hrid="/guild_combat/badger", team="SC Team 1",
+                                 roster=[seat])],
+    )
+    return build._GuildInputs(
+        site_key="sc", members=members, register={}, picks=None, combat=obs,
+        resolver=resolver,
+    )
+
+
+def test_combat_block_never_renames_a_seat_to_a_name_the_roll_does_not_report():
+    # A stale roster-only member "OldRo" (id 777) must not undo the optimiser's
+    # correct live seat name "NewRo".
+    site = [s for s in build.GUILD_SITES if s.key == "sc"][0]
+    inputs = _combat_inputs("NewRo", [_member("OldRo", cid="777")],
+                            identity.Resolver(roll=[("NewRo", 777)]))
+    block = build._combat_block(inputs, site)
+    assert block["trials"][0]["roster"][0]["name"] == "NewRo"
+
+
+# --- config.ID_JOIN_ENABLED = False is the pre-id behaviour --------------------
+def test_flag_off_combat_block_neither_renames_nor_emits_ids(monkeypatch, capsys):
+    monkeypatch.setattr(config, "ID_JOIN_ENABLED", False)
+    site = [s for s in build.GUILD_SITES if s.key == "sc"][0]
+    inputs = _combat_inputs("OldRo", [_member("NewRo", cid="777")],
+                            identity.Resolver(roll=[("NewRo", 777)]))
+    out = build._combat_block(inputs, site)["trials"][0]["roster"][0]
+    assert out["name"] == "OldRo"
+    assert "characterId" not in out
+    assert "renamed" not in capsys.readouterr().err
+
+
+def test_flag_off_trials_json_carries_no_character_ids(monkeypatch):
+    monkeypatch.setattr(config, "ID_JOIN_ENABLED", False)
+    members = [_member(f"m{i}", 90 + i, cid=str(100 + i)) for i in range(6)]
+    week = trials.run_week(
+        members, skills=["Foraging", "Brewing"], seed=7, cap=2, strategy="random"
+    ).to_dict()
+    assert all("characterId" not in r for t in week["trials"] for r in t["roster"])
+    assert "bench_character_ids" not in week
+
+
+# --- Resolver.id_for: a roll name with a blank id does not fall back -----------
+def test_id_for_a_roll_name_with_a_blank_id_does_not_use_history():
+    resolver = identity.Resolver(
+        roll=[("Bob", None), ("Carol", 5)],
+        history=[identity.HistoryRow(9, "Bob")],
+        roster=[("Bob", 7)],
+    )
+    assert resolver.id_for("Bob") is None
+    assert resolver.id_for(" bob ") is None
+    assert resolver.id_for("Carol") == 5
+    # A name NOT on the roll still resolves from history.
+    assert identity.Resolver(history=[identity.HistoryRow(9, "Bob")]).id_for("Bob") == 9

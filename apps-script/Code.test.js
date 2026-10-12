@@ -106,9 +106,14 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
 // the way a concurrent write from another browser would (name_history only).
 function load(sheetsByName, { lock = {} } = {}) {
     const { granted = true } = lock;
-    const lockCalls = { tried: 0, released: 0 };
+    const lockCalls = { tried: 0, released: 0, flushes: [] };
     const ctx = {
-        SpreadsheetApp: { openById: () => ({ getSheetByName: (n) => sheetsByName[n] || null }) },
+        SpreadsheetApp: {
+            openById: () => ({ getSheetByName: (n) => sheetsByName[n] || null }),
+            // Records how many releases had happened when the flush ran, so a test
+            // can pin that pending writes commit BEFORE the lock is let go.
+            flush: () => { lockCalls.flushes.push({ releasedBefore: lockCalls.released }); },
+        },
         LockService: {
             getScriptLock: () => ({
                 tryLock: () => { lockCalls.tried++; return granted; },
@@ -546,6 +551,20 @@ test("a name history block on an EMPTY tab writes the header and every row as te
     }
     assert.ok(sh._formats.some(f => f.f === "@" && f.r === 1 && f.c === 1 && f.nr === 3 && f.nc === 5),
         "the written range must be formatted as text before the values land");
+    assert.strictEqual(ctx._lockCalls.released, 1);
+});
+
+test("name history flushes its writes BEFORE releasing the lock", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Name History": sh });
+    const res = post(ctx, {
+        secret: SECRET, tab: "SC Name History", header: H_HEADER,
+        rows: [[102437, "NewName", 4, T3, T3]],
+    });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(ctx._lockCalls.flushes.length, 1, "pending writes must be flushed");
+    assert.strictEqual(ctx._lockCalls.flushes[0].releasedBefore, 0,
+        "the flush must run while the lock is still held");
     assert.strictEqual(ctx._lockCalls.released, 1);
 });
 

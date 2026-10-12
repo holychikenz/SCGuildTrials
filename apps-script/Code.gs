@@ -348,6 +348,9 @@ function upsertNameHistory_(sh, tab, header, rows) {
     var range = sh.getRange(1, 1, need, n);
     range.setNumberFormat('@');                      // BEFORE setValues: text, not dates
     range.setValues([NAME_HISTORY_HEADER.slice()].concat(out));
+    // Commit the pending writes WHILE the lock is held: Apps Script batches them, so
+    // a release first lets a concurrent upsert read the tab before this lands.
+    SpreadsheetApp.flush();
     return { ok: true, tab: tab, format: 'name_history', received: rows.length,
              inserted: inserted, updated: updated, rejected: rejected, totalRows: out.length };
   } finally {

@@ -180,7 +180,7 @@ class CombatSeat:
             "loadout_id": self.loadout_id,
             "loadout_name": self.loadout_name,
         }
-        if self.character_id is not None:
+        if self.character_id is not None and config.ID_JOIN_ENABLED:
             d["characterId"] = self.character_id
         return d
 

@@ -64,9 +64,10 @@ def find_id_column(header: Iterable) -> Optional[int]:
 
 def with_character_id(d: dict) -> dict:
     """Pop the dataclass key ``character_id``; re-add it as ``characterId`` only
-    when it parses. Mutates and returns ``d``."""
+    when it parses (and never while ``config.ID_JOIN_ENABLED`` is off, the pre-id
+    output). Mutates and returns ``d``."""
     cid = parse_id(d.pop("character_id", None))
-    if cid is not None:
+    if cid is not None and config.ID_JOIN_ENABLED:
         d["characterId"] = cid
     return d
 
@@ -188,7 +189,15 @@ class Resolver:
     """
 
     def __init__(self, roll=(), roster=(), history: Iterable[HistoryRow] = ()):
+        roll = list(roll)
         self._roll, self._live = _unambiguous(roll)
+        # Roll names with a blank id: a current member whose id the roll did not
+        # carry must not borrow one from history/roster (that id may be another
+        # member's old name). Ambiguous roll names keep their fallback.
+        self._roll_blank = {
+            norm_name(str(n)) for n, raw in roll
+            if str(n or "").strip() and parse_id(raw) is None
+        }
         self._roster, _ = _unambiguous(roster)
         self._hist: dict[str, tuple[str, int]] = {}
         for h in history:
@@ -204,6 +213,8 @@ class Resolver:
         k = norm_name(name or "")
         if k in self._roll:
             return self._roll[k]
+        if k in self._roll_blank:
+            return None
         if k in self._hist:
             return self._hist[k][1]
         return self._roster.get(k)

@@ -2513,7 +2513,7 @@ class WeekResult:
             "community_buff_production": self.community_buff_production,
             "community_buff_enhancing": self.community_buff_enhancing,
         }
-        if self.bench_character_ids:
+        if self.bench_character_ids and config.ID_JOIN_ENABLED:
             d["bench_character_ids"] = dict(self.bench_character_ids)
         return d
 

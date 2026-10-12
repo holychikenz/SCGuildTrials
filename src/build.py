@@ -13,7 +13,7 @@ import os
 import sys
 from collections import Counter
 from concurrent import futures
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -692,7 +692,9 @@ def _attach_week(
 
     ``renames`` (OLD -> NEW, from ``identity.canonicalise``) lets a register member
     the officers still list under an in-game OLD name find their seat under the NEW
-    name the model used; the register row keeps the officers' spelling.
+    name the model used; the register row keeps the officers' spelling. It is
+    applied BEFORE the exact/normalised lookups, so a chain or swap rename (whose
+    OLD name is now someone else's seat) still finds the member's own seat.
     """
     if week is None:
         register["week"] = None
@@ -724,16 +726,16 @@ def _attach_week(
     claimed: set[str] = set()
     unassigned: list[str] = []
     for m in members:
-        hit = m["name"] if m["name"] in seat else None
-        if hit is None and norm_name(m["name"]) not in ambiguous:
-            hit = by_norm.get(norm_name(m["name"]))
-        if hit is None and renames:
-            new = renames.get(m["name"]) or renames_norm.get(norm_name(m["name"]))
-            if new:
-                if new in seat:
-                    hit = new
-                elif norm_name(new) not in ambiguous:
-                    hit = by_norm.get(norm_name(new))
+        # The rename FIRST: in a chain (Bob -> Carol, then Alice takes "Bob") or a
+        # swap, the officers' OLD spelling is someone else's live seat, so an exact
+        # match on it would hand this member the wrong trial.
+        target = (
+            renames.get(m["name"]) or renames_norm.get(norm_name(m["name"]))
+            or m["name"]
+        )
+        hit = target if target in seat else None
+        if hit is None and norm_name(target) not in ambiguous:
+            hit = by_norm.get(norm_name(target))
         if hit is None:
             m["trial"] = {"skill": None, "status": "unassigned"}
             unassigned.append(m["name"])
@@ -4736,6 +4738,48 @@ class _GuildInputs:
     # "renamed OLD → NEW (id N)"). _attach_week uses it to stamp the register,
     # which keeps the officers' spelling.
     renames: dict[str, str] = field(default_factory=dict)
+    # The rename resolver _fetch_guild built (roll, Name History, roster). Read by
+    # _combat_block, which only shows a seat under a name the ROLL reports for its
+    # id. None for inputs built outside _fetch_guild: then no seat is renamed.
+    resolver: Optional["identity.Resolver"] = None
+
+
+def _rename_roster_only(
+    members: list[MemberRow], resolver: "identity.Resolver"
+) -> tuple[list[MemberRow], list[str]]:
+    """Rename roster-only admitted members to the name the roll gives their id now.
+
+    ``identity.canonicalise`` runs on the member tab BEFORE the roster merge, so a
+    member who exists only on the roster (``ROSTER_ADMITS_NEW_MEMBERS``) would keep
+    the name their roster row was captured under — and lose their sign-up ticks,
+    which join by name. A live name already held (normalised) by another member is
+    left alone and noted rather than modelling two people under one name. Never
+    mutates its input: changed rows are ``dataclasses.replace`` copies.
+    """
+    taken = Counter(norm_name(m.name) for m in members)
+    out: list[MemberRow] = []
+    notes: list[str] = []
+    for m in members:
+        if (m.provenance or {}).get("member") != roster_model.ROSTER_ONLY:
+            out.append(m)
+            continue
+        cid = identity.parse_id(m.character_id)
+        cur = resolver.current_name(cid)
+        if cur is None or norm_name(cur) == norm_name(m.name):
+            out.append(m)
+            continue
+        if taken[norm_name(cur)]:
+            notes.append(
+                f"roster-only {m.name} (id {cid}) not renamed to {cur}: another "
+                f"member already has that name"
+            )
+            out.append(m)
+            continue
+        taken[norm_name(m.name)] -= 1
+        taken[norm_name(cur)] += 1
+        out.append(replace(m, name=cur))
+        notes.append(f"renamed {m.name} → {cur} (id {cid})")
+    return out, notes
 
 
 def _resolve_guild_gear(
@@ -5247,6 +5291,12 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             members, roster_rows, site.key
         )
         _report_roster_join(site, roster_provenance)
+        # Roster-only admits bypassed canonicalise (it ran before the merge), so
+        # give them their live name too, AFTER gear (which joins rows by name).
+        if config.ID_JOIN_ENABLED:
+            members, admit_notes = _rename_roster_only(members, resolver)
+            for note in admit_notes:
+                print(f"NOTE ({site.key}): {note}", file=sys.stderr)
 
     # --- The guild's own building & shrine levels --------------------------------
     # THE ONLY SOURCE HERE THAT DESCRIBES THE GUILD RATHER THAN ITS MEMBERS, and
@@ -5357,6 +5407,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
         building_value=building_value,
         building_value_unavailable=building_value_unavailable,
         renames=renames,
+        resolver=resolver,
     )
 
 
@@ -5588,10 +5639,14 @@ def _combat_block(inputs: _GuildInputs, site: "GuildSite") -> dict:
         # in the same words, rather than publishing an unexplained `false`.
         reason = f"The {site.combat_tab!r} tab was not read."
     trials = [t.to_dict() for t in obs.teams] if available else []
+    # Off -> the pre-id behaviour: seats keep the tab's names (and to_dict emitted
+    # no characterId). Otherwise a seat is renamed only to a member name the ROLL
+    # reports for its id, so a stale roster-only name can never undo a correct seat.
+    resolver = inputs.resolver if config.ID_JOIN_ENABLED else None
     live: dict[int, str] = {}
-    for m in inputs.members:
+    for m in inputs.members if resolver is not None else ():
         cid = identity.parse_id(m.character_id)
-        if cid is not None:
+        if cid is not None and resolver.current_name(cid) == m.name:
             live.setdefault(cid, m.name)
     for t in trials:
         for seat in t["roster"]:
