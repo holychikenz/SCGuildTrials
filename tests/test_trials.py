@@ -441,17 +441,17 @@ def test_probe_multi_level_buy_agrees_with_the_real_model():
         trials.expected_credit_points(party, "Brewing", after, bl))
     assert u.total_cost == trials.guild_building_upgrade_total_cost(0, u.to_level)
     assert u.points_gained_per_level == pytest.approx(u.points_gained / u.levels)
-    # And it IS the best rate among every k it could have taken.
+    # It IS the largest even share among every k it could have taken, and the
+    # payback is the NEXT level's own cost against that share.
     now = trials.simulate_race(party, "Brewing")
     e0 = trials.expected_credit_points(party, "Brewing", now, 0)
-    rates = []
+    shares = []
     for k in range(1, config.BUILDING_UPGRADE_LOOKAHEAD + 1):
         r = trials.simulate_race(party, "Brewing", None, trials.building_skill_levels(k))
-        gain = trials.expected_credit_points(
-            party, "Brewing", r, trials.building_skill_levels(k)) - e0
-        if gain > 0:
-            rates.append(trials.guild_building_upgrade_total_cost(0, k) / gain)
-    assert u.total_cost / u.points_gained == pytest.approx(min(rates))
+        shares.append((trials.expected_credit_points(
+            party, "Brewing", r, trials.building_skill_levels(k)) - e0) / k)
+    assert u.points_gained_per_level == pytest.approx(max(shares))
+    assert u.draws_to_return == pytest.approx(500 / u.points_gained_per_level)
 
 
 def test_expected_points_never_fall_as_the_building_rises():
@@ -475,8 +475,9 @@ def _fake_expected(monkeypatch, by_level):
 
 
 def test_probe_looks_past_a_tiny_first_step_to_the_best_rate(monkeypatch):
-    # 4 -> 5 gains almost nothing, 5 -> 6 carries the step: the row must read 4 -> 6
-    # (3900 gp for +100, 39 gp/point), not reject or price 4 -> 5 (1650 gp/point).
+    # 4 -> 5 gains almost nothing, 5 -> 6 carries the step: 4 -> 5 must be credited
+    # an EVEN half of the 4 -> 6 gain (+50), not its own +1 and not a cost-weighted
+    # share, and priced at its own 1650 gp against that.
     monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 4)
     _fake_expected(monkeypatch, {4: 1000.0, 5: 1001.0, 6: 1100.0})
     party = [_member(f"M{i}", {"Brewing": 100}) for i in range(10)]
@@ -486,7 +487,7 @@ def test_probe_looks_past_a_tiny_first_step_to_the_best_rate(monkeypatch):
     assert u.total_cost == 1650 + 2250
     assert u.points_gained == pytest.approx(100.0)
     assert u.points_gained_per_level == pytest.approx(50.0)
-    assert u.weeks_to_return == pytest.approx(3900 / 100 * config.TRIAL_WEEKS_BETWEEN_DRAWS)
+    assert u.weeks_to_return == pytest.approx(1650 / 50 * config.TRIAL_WEEKS_BETWEEN_DRAWS)
 
 
 def test_probe_keeps_k_one_when_the_first_step_is_the_best_rate(monkeypatch):

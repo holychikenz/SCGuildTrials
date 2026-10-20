@@ -2194,9 +2194,10 @@ def _render_guild_spend_section(doc: Optional[dict]) -> str:
             f"below quote base points; divide their weeks by {m:.2f} to compare."
         )
     meta.append(
-        "Shrine rows are best case (full adoption); skilling rows are the best-rate "
-        f"buy of up to {config.BUILDING_UPGRADE_LOOKAHEAD} levels, expected gain incl. "
-        "partial credit, averaged over the 4-of-10 weekly draw "
+        "Shrine rows are best case (full adoption); skilling rows are the next level, "
+        "credited an even share of the best gain within the next "
+        f"{config.BUILDING_UPGRADE_LOOKAHEAD} levels (expected points incl. partial "
+        "credit), averaged over the 4-of-10 weekly draw "
         f"(one draw every {config.TRIAL_WEEKS_BETWEEN_DRAWS:g} weeks); combat rows are "
         "simulated by the combat optimiser. "
         "Skilling and shrine upgrades with no payback are listed as checked and "
@@ -2236,9 +2237,9 @@ def _render_upgrades_section(week: dict) -> str:
     """Bottom-of-page section: what is one more building level worth, and when does it pay?
 
     Reads the ``building_upgrades`` probes computed by
-    ``trials.probe_building_upgrade`` — one per drawn skill, each the best-rate buy
-    L -> L+k (k <= config.BUILDING_UPGRADE_LOOKAHEAD) on expected points (partial
-    credit included). Rows are
+    ``trials.probe_building_upgrade`` — one per drawn skill, each the next level
+    credited an even share of the best L -> L+k span (k <=
+    config.BUILDING_UPGRADE_LOOKAHEAD) on expected points (partial credit included). Rows are
     ordered by payback, soonest first; buildings at the cap or with no gain are
     summarised in one line so the reader can see they were checked rather than
     omitted.
@@ -2264,7 +2265,7 @@ def _render_upgrades_section(week: dict) -> str:
             f"<td class=num>{u['tier_now']} &rarr; {u['tier_after']}</td>"
             f"<td class=num>+{u['points_gained']:,.1f}</td>"
             f"<td class=num>+{u['points_gained_per_level']:,.1f}</td>"
-            f"<td class=num>{_gp(u['total_cost'])}</td>"
+            f"<td class=num>{_gp(u['next_level_cost'])}</td>"
             f"<td class=num>{_payback(u['draws_to_return'])}</td>"
             f"<td class=num><strong>{_payback(u['weeks_to_return'])}</strong></td>"
             "</tr>"
@@ -2272,18 +2273,19 @@ def _render_upgrades_section(week: dict) -> str:
         )
         body = f"""
     <p class="meta">{len(priced)} of {len(upgrades)} building(s) gain from more
-       levels, soonest payback first. Each row is the buy of 1 to
-       {config.BUILDING_UPGRADE_LOOKAHEAD} levels with the lowest cost per expected
-       point. <strong>Points</strong> is the expected gain per draw over all those
-       levels, <strong>per level</strong> its average; <strong>cost</strong> is every
-       step added together, from the game's own <code>guildPointCosts</code>.</p>
+       levels, soonest payback first. <strong>Building lv</strong> is the span (1 to
+       {config.BUILDING_UPGRADE_LOOKAHEAD} levels) with the largest per-level share;
+       <strong>points</strong> is the expected gain per draw over that span,
+       <strong>per level</strong> its even share; <strong>cost</strong> is the next
+       level alone, from the game's own <code>guildPointCosts</code>, and the payback
+       is that cost against that share.</p>
     <div class="scroll">
       <table>
         <thead><tr>
           <th>Building</th><th>Trial</th>
           <th class=num>Building lv</th><th class=num>Grants</th>
           <th class=num>Tier</th><th class=num>Points / draw</th>
-          <th class=num>Per level</th><th class=num>Cost (gp)</th>
+          <th class=num>Per level</th><th class=num>Next level (gp)</th>
           <th class=num>Draws to repay</th><th class=num>Weeks to repay</th>
         </tr></thead>
         <tbody>{rows}</tbody>
@@ -2316,10 +2318,12 @@ def _render_upgrades_section(week: dict) -> str:
        guild building 1 to {config.BUILDING_UPGRADE_LOOKAHEAD} levels higher
        (<code>+2</code> skill levels per level to every member of that party) and
        priced on <em>expected</em> points, partial-tier credit included &mdash; the
-       same figure the optimiser maximises. Gains per level are lumpy, so the row
-       shown is the climb with the lowest cost per point, not just the next level. Any one skill is
-       drawn about every <code>{weeks_between:g}</code> weeks (four of the ten skills
-       per week), so <code>weeks = cost / points &times; {weeks_between:g}</code>.</p>
+       same figure the optimiser maximises. Gains per level are lumpy and the big
+       steps move as members level up, so the gain over the best span is shared
+       <em>evenly</em> among its levels, and the next level is priced at its own cost
+       against that share. Any one skill is drawn about every
+       <code>{weeks_between:g}</code> weeks (four of the ten skills per week), so
+       <code>weeks = next-level cost / per-level points &times; {weeks_between:g}</code>.</p>
     <p class="meta">Two caveats, both deliberate. The payback assumes this week's
        gain recurs <em>every</em> time the skill is drawn &mdash; the roster, the
        sign-ups and the community buffs all move week to week. Against that, parties
@@ -5793,8 +5797,8 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
       * combat   — the optimiser's tab (building_value.py): simulated, with a 95%
                    interval and a verdict; only rows with a payback are ranked.
       * skilling — trials.probe_building_upgrade for THIS WEEK'S drawn skills: the
-                   best-rate buy L -> L+k (k <= config.BUILDING_UPGRADE_LOOKAHEAD),
-                   its cumulative cost, expected-points gain per draw, and
+                   next level at its even share of the best L -> L+k span
+                   (k <= config.BUILDING_UPGRADE_LOOKAHEAD), its own cost, and
                    weeks_to_return at config.TRIAL_WEEKS_BETWEEN_DRAWS.
       * shrine   — trials' shrine probes; weeks_to_return is a BEST case (full
                    adoption by every member), as the trials page says.
@@ -5832,13 +5836,17 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
             continue
         ranked.append({
             "kind": "skilling", "name": u["building"], "key": u["skill"],
-            "from_level": u["from_level"], "to_level": u["to_level"],
-            "cost": u["total_cost"], "levels": u["levels"],
-            "gain_gp_per_week": u["points_gained"] / between if between else None,
+            # The NEXT level, credited its even share of the L -> L+k lookahead.
+            "from_level": u["from_level"], "to_level": u["from_level"] + 1,
+            "cost": u["next_level_cost"], "levels": u["levels"],
+            "gain_gp_per_week": (u["points_gained_per_level"] / between
+                                 if between else None),
             "payback_weeks": u["weeks_to_return"],
             "confidence": ("modelled" if u.get("gain_basis") != "credit"
                            else "modelled (credit points)"),
-            "recommendation": None,
+            "recommendation": (
+                f"even share of {u['from_level']} → {u['to_level']}"
+                if u["levels"] > 1 else None),
         })
     for u in shrines:
         if u.get("weeks_to_return") is None:
@@ -5858,10 +5866,6 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
         if x["gain_gp_per_week"] is not None:
             x["gain_gp_per_week"] *= m
         x["payback_weeks"] /= m
-        if x.get("levels", 1) > 1 and x["gain_gp_per_week"] is not None:
-            # skilling multi-level buy: its average rate
-            x["recommendation"] = (f"{x['levels']} levels, avg "
-                                   f"+{x['gain_gp_per_week'] / x['levels']:.1f} GP/week each")
 
     notes: list[str] = []
     weekly_base = None
@@ -5920,7 +5924,7 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
         x.setdefault("rank", None)        # Treasury: tokens, not ranked against GP
 
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "guild": site.key,
         "guild_id": config.GUILD_IDS.get(site.key),
         "generated_at": datetime.now(timezone.utc).isoformat(),

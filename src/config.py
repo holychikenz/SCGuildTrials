@@ -1649,7 +1649,7 @@ HOUSE_ENHANCING_SPEED = HOUSE_ENHANCING_SPEED_PER_LEVEL * DEFAULT_HOUSE_LEVEL  #
 # building, work_power must take the effective level too — see trials.work_power.
 GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL = 2   # +2 skill levels per building level
 GUILD_BUILDING_MAX_LEVEL = 20               # in-game guild buildings cap at 20
-# How many levels trials.probe_building_upgrade looks ahead for the best-rate buy:
+# How many levels trials.probe_building_upgrade looks ahead to share a span's gain evenly:
 # per-level gains are lumpy, so L->L+1 alone can hide a good multi-level buy. Each
 # extra level is one simulate_race + one expected_credit_points per drawn skill.
 BUILDING_UPGRADE_LOOKAHEAD = 8

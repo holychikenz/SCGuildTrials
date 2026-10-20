@@ -1867,21 +1867,24 @@ def upgrade_payback_weeks(
 
 @dataclass
 class BuildingUpgrade:
-    """The best-rate buy of one guild building's next few levels for this week's trial.
+    """The NEXT level of one guild building, credited an even share of a lookahead.
 
     Gains per level are lumpy (one level can carry a party across a big step while
-    the one before it moves little), so the probe looks ahead k = 1..K levels and
-    keeps the k with the shortest payback — the lowest cumulative cost per expected
-    point. ``to_level`` is ``from_level + levels``; at the cap every ``*_after``
-    field and the payback are None. ``levels`` stays 1 when nothing pays, so a
-    rejected row still names the step that was checked.
+    the one before it moves little), and where that step sits drifts as members
+    level and gear up. So the probe looks ahead k = 1..K levels, credits the gain
+    over L -> L+k EVENLY to each of those k levels, and keeps the k whose share is
+    largest. The payback (draws/weeks) is for the single next level: its own cost
+    against that share. ``to_level`` is the END of the averaging span
+    (``from_level + levels``); at the cap every ``*_after`` field and the payback
+    are None. ``levels`` stays 1 when nothing pays, so a rejected row still names
+    the step that was checked.
     """
 
     skill: str
     building: str            # in-game display name, e.g. "Guild Brewery"
     from_level: int          # the guild's current building level (0..20)
     to_level: Optional[int]  # from_level + levels (None at the cap)
-    levels: int              # k*, the best-rate lookahead (0 at the cap)
+    levels: int              # k*, the even-share span (0 at the cap)
     skill_levels_now: int    # levels the building grants today (+2 per level)
     skill_levels_after: Optional[int]
     at_cap: bool             # True iff the building is already at level 20
@@ -1893,8 +1896,8 @@ class BuildingUpgrade:
     points_after: Optional[float]
     gain_basis: str                  # "expected" or "credit" (fallback)
     points_gained: float             # per draw, over all ``levels``; 0 at the cap
-    points_gained_per_level: float   # points_gained / levels, the average rate
-    draws_to_return: Optional[float]  # draws of this skill to earn total_cost back
+    points_gained_per_level: float   # points_gained / levels: the next level's share
+    draws_to_return: Optional[float]  # draws for next_level_cost to earn back its share
     weeks_to_return: Optional[float]  # ... in weeks, at 2.5 weeks between draws
 
     def to_dict(self) -> dict:
@@ -1907,20 +1910,21 @@ def probe_building_upgrade(
     target_scale: Optional[float] = None,
     current: Optional[TrialResult] = None,
 ) -> BuildingUpgrade:
-    """Best-rate buy of ``skill``'s guild building: L -> L+k for the k that repays soonest.
+    """Price ``skill``'s guild building's next level at an even share of the best lookahead.
 
     For k = 1..min(cap - L, config.BUILDING_UPGRADE_LOOKAHEAD) the race is re-run at
-    L+k (+2 skill levels per level to every member), the gain is
-    ``expected_points(L+k) - expected_points(L)`` and the cost is the cumulative
-    :func:`guild_building_upgrade_total_cost`; the k with the smallest
-    ``cost / gain`` wins (ties to the smaller k). Expected rather than
+    L+k (+2 skill levels per level to every member) and the gain is
+    ``expected_points(L+k) - expected_points(L)``. Each of those k levels is
+    credited ``gain / k`` — an even share, not cost-weighted, because the step's
+    position moves as members level and gear up, so no single level owns it. The k
+    with the largest share wins (ties to the smaller k), and the next level is
+    priced at its own cost against that share. Expected rather than
     ``credit_points`` because partial credit pays only TRIAL_PARTIAL_CREDIT_RATE of
     a tier, so a single deterministic step is lumpy; the expectation smooths it.
 
     The party is held FIXED, so the gain is a LOWER BOUND: re-optimising the
-    assignment with the stronger building could only do better. Ranking is by rate
-    alone, with no ceiling on the bundle's total cost; ``next_level_cost`` is
-    carried so the single next step stays visible.
+    assignment with the stronger building could only do better. ``total_cost`` is
+    the whole span's cost, carried for the detail section only.
 
     ``current`` may be passed to reuse the already-simulated race (and its
     ``expected_points``, when run_week has attached it) at the current level.
@@ -1974,31 +1978,31 @@ def probe_building_upgrade(
         basis, values = "expected", expected
 
     best = 1                                 # rejected rows still show L -> L+1
-    best_rate = None
+    best_share = None
     for k in range(1, lookahead + 1):
-        gain = values[k] - values[0]
-        cost = guild_building_upgrade_total_cost(from_level, from_level + k)
-        if gain > 0 and cost is not None and (best_rate is None or cost / gain < best_rate):
-            best, best_rate = k, cost / gain
+        share = (values[k] - values[0]) / k
+        if share > 0 and (best_share is None or share > best_share):
+            best, best_share = k, share
 
     to_level = from_level + best
     gained = values[best] - values[0]
-    cost = guild_building_upgrade_total_cost(from_level, to_level)
+    share = gained / best
+    next_cost = guild_building_upgrade_cost(from_level + 1)
     return BuildingUpgrade(
         **common,
         to_level=to_level,
         levels=best,
         skill_levels_after=building_skill_levels(to_level),
-        next_level_cost=guild_building_upgrade_cost(from_level + 1),
-        total_cost=cost,
+        next_level_cost=next_cost,
+        total_cost=guild_building_upgrade_total_cost(from_level, to_level),
         tier_after=races[best - 1].tier_reached,
         points_now=values[0],
         points_after=values[best],
         gain_basis=basis,
         points_gained=gained,
-        points_gained_per_level=gained / best,
-        draws_to_return=upgrade_payback_draws(cost, gained),
-        weeks_to_return=upgrade_payback_weeks(cost, gained),
+        points_gained_per_level=share,
+        draws_to_return=upgrade_payback_draws(next_cost, share),
+        weeks_to_return=upgrade_payback_weeks(next_cost, share),
     )
 
 
@@ -2638,8 +2642,8 @@ def score_assignment(
         result.expected_points = expected_credit_points(
             assignment.parties[skill], skill, result
         )
-    # The best-rate buy of each trial's guild building (L -> L+k), and when it
-    # repays. Parties are held fixed: a lower bound (see probe_building_upgrade).
+    # Each trial's guild building: the next level at an even share of the best
+    # L -> L+k span, and when it repays. Parties are held fixed: a lower bound (see probe_building_upgrade).
     upgrades = [
         probe_building_upgrade(
             assignment.parties[skill], skill, target_scale, current=result
