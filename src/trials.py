@@ -1798,8 +1798,7 @@ def simulate_race(
 
 
 # ---------------------------------------------------------------------------
-# Guild-building upgrade probe ("what does the next tier cost, and when does it
-# pay for itself?")
+# Guild-building upgrade probe ("which next few levels repay soonest?")
 # ---------------------------------------------------------------------------
 def guild_building_upgrade_total_cost(
     from_level: int, to_level: int
@@ -1831,9 +1830,8 @@ def upgrade_payback_draws(
 ) -> Optional[float]:
     """How many DRAWS of a skill it takes to earn ``cost`` guild points back.
 
-    A tier bought with guild points pays out only when the trial is actually run,
-    and then it pays ``points_gained`` (one tier is worth
-    ``config.TRIAL_POINTS_PER_TIER``), so ``draws = cost / points_gained``.
+    An upgrade pays out only when the trial is actually run, and then it pays
+    ``points_gained`` per draw, so ``draws = cost / points_gained``.
     Returns None when there is nothing to price: no cost, or no points gained (in
     which case the spend never returns at all — not "returns in 0 draws").
     """
@@ -1855,8 +1853,8 @@ def upgrade_payback_weeks(
 
         weeks_to_return = (cost / points_gained) * weeks_between_draws
 
-    ASSUMPTION (optimistic, flagged in config and on the page): the bought tier is
-    assumed to be earned EVERY time the skill comes up. None when the cost cannot
+    ASSUMPTION (flagged on the page): this week's per-draw gain is assumed to recur
+    EVERY time the skill comes up. None when the cost cannot
     return (see :func:`upgrade_payback_draws`).
     """
     draws = upgrade_payback_draws(cost, points_gained)
@@ -1869,73 +1867,38 @@ def upgrade_payback_weeks(
 
 @dataclass
 class BuildingUpgrade:
-    """What it would take for one guild building to buy one trial another tier.
+    """The best-rate buy of one guild building's next few levels for this week's trial.
 
-    Three questions per drawn skill: HOW MANY building levels are needed to gain a
-    tier, what those levels cost IN TOTAL, and how long that spend takes to earn
-    itself back. The ``*_after`` fields describe the cheapest bumping level found;
-    they are all None when no level up to the cap buys a tier (``reachable``
-    False), which is why they are Optional rather than "unchanged".
+    Gains per level are lumpy (one level can carry a party across a big step while
+    the one before it moves little), so the probe looks ahead k = 1..K levels and
+    keeps the k with the shortest payback — the lowest cumulative cost per expected
+    point. ``to_level`` is ``from_level + levels``; at the cap every ``*_after``
+    field and the payback are None. ``levels`` stays 1 when nothing pays, so a
+    rejected row still names the step that was checked.
     """
 
     skill: str
     building: str            # in-game display name, e.g. "Guild Brewery"
     from_level: int          # the guild's current building level (0..20)
+    to_level: Optional[int]  # from_level + levels (None at the cap)
+    levels: int              # k*, the best-rate lookahead (0 at the cap)
     skill_levels_now: int    # levels the building grants today (+2 per level)
-    tier_now: int
-    points_now: int
-    at_cap: bool             # True iff the building is already at level 20
-    next_level_cost: Optional[int]   # gp for ONE more level (None at the cap)
-
-    # --- the next-tier search ---------------------------------------------
-    reachable: bool                  # True iff some level <= the cap buys a tier
-    levels_needed: Optional[int]     # +1 steps to that tier (None: unreachable)
-    to_level: Optional[int]          # from_level + levels_needed
     skill_levels_after: Optional[int]
+    at_cap: bool             # True iff the building is already at level 20
+    next_level_cost: Optional[int]   # gp for the single next level (None at the cap)
+    total_cost: Optional[int]        # gp for all ``levels`` steps together
+    tier_now: int
     tier_after: Optional[int]
-    points_after: Optional[int]
-    points_gained: int               # 0 when unreachable
-    total_cost: Optional[int]        # gp for ALL levels_needed steps together
+    points_now: Optional[float]      # expected points (credit points on fallback)
+    points_after: Optional[float]
+    gain_basis: str                  # "expected" or "credit" (fallback)
+    points_gained: float             # per draw, over all ``levels``; 0 at the cap
+    points_gained_per_level: float   # points_gained / levels, the average rate
     draws_to_return: Optional[float]  # draws of this skill to earn total_cost back
     weeks_to_return: Optional[float]  # ... in weeks, at 2.5 weeks between draws
 
     def to_dict(self) -> dict:
         return asdict(self)
-
-
-def _cheapest_bumping_level(
-    party: list[MemberRow],
-    skill: str,
-    target_scale: Optional[float],
-    from_level: int,
-    tier_now: int,
-) -> Optional[tuple[int, TrialResult]]:
-    """Lowest building level above ``from_level`` whose race clears a HIGHER tier.
-
-    BINARY SEARCH, which is sound because the race is monotone in the building
-    level: extra building levels can only raise the success delta in
-    :func:`success` (nothing else in the race reads the building), so every tier is
-    cleared no slower and ``tier_reached`` is non-decreasing in the level. That
-    costs ~log2(20) ≈ 5 simulations per skill instead of up to 20 — and the
-    assumption is pinned against a brute-force linear scan in
-    ``tests/test_trials.py``.
-
-    Returns ``(level, result)`` for the cheapest bumping level, or None when even
-    the level-20 cap does not buy a tier for this party.
-    """
-    lo, hi = from_level + 1, config.GUILD_BUILDING_MAX_LEVEL
-    found: Optional[tuple[int, TrialResult]] = None
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        result = simulate_race(
-            party, skill, target_scale, building_skill_levels(mid)
-        )
-        if result.tier_reached > tier_now:
-            found = (mid, result)
-            hi = mid - 1     # a cheaper level may do just as well
-        else:
-            lo = mid + 1
-    return found
 
 
 def probe_building_upgrade(
@@ -1944,85 +1907,89 @@ def probe_building_upgrade(
     target_scale: Optional[float] = None,
     current: Optional[TrialResult] = None,
 ) -> BuildingUpgrade:
-    """How many levels of ``skill``'s guild building buy a tier, and do they pay?
+    """Best-rate buy of ``skill``'s guild building: L -> L+k for the k that repays soonest.
 
-    Searches upward from the guild's current building level for the CHEAPEST level
-    that clears a higher tier inside the 1-hour budget (each level grants +2 skill
-    levels to every member — see :func:`_cheapest_bumping_level`), then prices it:
-    the cumulative guild-point cost of every step from the game's own cost curve,
-    and how many draws / weeks that lump sum takes to earn back at +100 points per
-    tier, once every ~2.5 weeks (:func:`upgrade_payback_weeks`).
+    For k = 1..min(cap - L, config.BUILDING_UPGRADE_LOOKAHEAD) the race is re-run at
+    L+k (+2 skill levels per level to every member), the gain is
+    ``expected_points(L+k) - expected_points(L)`` and the cost is the cumulative
+    :func:`guild_building_upgrade_total_cost`; the k with the smallest
+    ``cost / gain`` wins (ties to the smaller k). Expected rather than
+    ``credit_points`` because partial credit pays only TRIAL_PARTIAL_CREDIT_RATE of
+    a tier, so a single deterministic step is lumpy; the expectation smooths it.
 
-    The party is held FIXED, which makes ``levels_needed`` — and therefore the cost
-    and the payback — an UPPER BOUND: with a stronger building the optimizer might
-    also reshuffle members between trials and reach the tier sooner. Re-optimising
-    per candidate level would cost minutes of CI time for a speculative number, so
-    it is deliberately not done.
+    The party is held FIXED, so the gain is a LOWER BOUND: re-optimising the
+    assignment with the stronger building could only do better.
 
-    ``current`` may be passed to reuse an already-simulated result for the
-    unupgraded case (identical inputs give an identical race, so this is purely
-    to save the duplicate simulation).
+    ``current`` may be passed to reuse the already-simulated race at the current
+    level (identical inputs give an identical race).
     """
     from_level = guild_building_level(skill)
     at_cap = from_level >= config.GUILD_BUILDING_MAX_LEVEL
-
-    now = (
-        current
-        if current is not None
-        else simulate_race(party, skill, target_scale)
-    )
-    found = (
-        None
-        if at_cap
-        else _cheapest_bumping_level(
-            party, skill, target_scale, from_level, now.tier_reached
-        )
-    )
-
-    # Fields that hold whether or not a bumping level exists.
+    now = current if current is not None else simulate_race(party, skill, target_scale)
+    levels_now = building_skill_levels(from_level)
     common = dict(
         skill=skill,
         building=config.GUILD_BUILDING_NAMES.get(skill, f"{skill} building"),
         from_level=from_level,
-        skill_levels_now=building_skill_levels(from_level),
-        tier_now=now.tier_reached,
-        points_now=now.points,
+        skill_levels_now=levels_now,
         at_cap=at_cap,
-        next_level_cost=(
-            None if at_cap else guild_building_upgrade_cost(from_level + 1)
-        ),
+        tier_now=now.tier_reached,
     )
-
-    if found is None:
+    if at_cap:
         return BuildingUpgrade(
-            **common,
-            reachable=False,
-            levels_needed=None,
-            to_level=None,
-            skill_levels_after=None,
-            tier_after=None,
-            points_after=None,
-            points_gained=0,
-            total_cost=None,
-            draws_to_return=None,
-            weeks_to_return=None,
+            **common, to_level=None, levels=0, skill_levels_after=None,
+            next_level_cost=None, total_cost=None, tier_after=None,
+            points_now=None, points_after=None, gain_basis="expected",
+            points_gained=0.0, points_gained_per_level=0.0,
+            draws_to_return=None, weeks_to_return=None,
         )
 
-    to_level, after = found
-    total_cost = guild_building_upgrade_total_cost(from_level, to_level)
-    gained = after.points - now.points
+    lookahead = min(config.GUILD_BUILDING_MAX_LEVEL - from_level,
+                    config.BUILDING_UPGRADE_LOOKAHEAD)
+    races = [
+        simulate_race(party, skill, target_scale, building_skill_levels(from_level + k))
+        for k in range(1, lookahead + 1)
+    ]
+    expected = [expected_credit_points(party, skill, now, levels_now)] + [
+        expected_credit_points(
+            party, skill, r, building_skill_levels(from_level + k)
+        )
+        for k, r in enumerate(races, start=1)
+    ]
+    # Fallback: with the risk model off (or no sigma) there is no expectation, so
+    # price every k on deterministic credit points and say so in gain_basis.
+    if any(e is None for e in expected):
+        basis = "credit"
+        values = [now.credit_points] + [r.credit_points for r in races]
+    else:
+        basis, values = "expected", expected
+
+    best = 1                                 # rejected rows still show L -> L+1
+    best_rate = None
+    for k in range(1, lookahead + 1):
+        gain = values[k] - values[0]
+        cost = guild_building_upgrade_total_cost(from_level, from_level + k)
+        if gain > 0 and cost is not None and (best_rate is None or cost / gain < best_rate):
+            best, best_rate = k, cost / gain
+
+    to_level = from_level + best
+    gained = values[best] - values[0]
+    cost = guild_building_upgrade_total_cost(from_level, to_level)
     return BuildingUpgrade(
         **common,
-        reachable=True,
-        levels_needed=to_level - from_level,
         to_level=to_level,
+        levels=best,
         skill_levels_after=building_skill_levels(to_level),
-        tier_after=after.tier_reached,
-        points_after=after.points,
+        next_level_cost=guild_building_upgrade_cost(from_level + 1),
+        total_cost=cost,
+        tier_after=races[best - 1].tier_reached,
+        points_now=values[0],
+        points_after=values[best],
+        gain_basis=basis,
         points_gained=gained,
-        total_cost=total_cost,
-        draws_to_return=upgrade_payback_draws(total_cost, gained),
-        weeks_to_return=upgrade_payback_weeks(total_cost, gained),
+        points_gained_per_level=gained / best,
+        draws_to_return=upgrade_payback_draws(cost, gained),
+        weeks_to_return=upgrade_payback_weeks(cost, gained),
     )
 
 
@@ -2662,9 +2629,8 @@ def score_assignment(
         result.expected_points = expected_credit_points(
             assignment.parties[skill], skill, result
         )
-    # How many levels of each trial's guild building would buy another tier, and
-    # when does that spend pay for itself? The parties above are held fixed, so
-    # each answer is an upper bound on the cost (see probe_building_upgrade).
+    # The best-rate buy of each trial's guild building (L -> L+k), and when it
+    # repays. Parties are held fixed: a lower bound (see probe_building_upgrade).
     upgrades = [
         probe_building_upgrade(
             assignment.parties[skill], skill, target_scale, current=result

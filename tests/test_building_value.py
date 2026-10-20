@@ -84,10 +84,10 @@ def test_buildings_artefact_ranks_every_kind_on_one_payback_scale():
     week = {
         "building_upgrades": [
             {"skill": "Milking", "building": "Guild Dairy Barn", "from_level": 0,
-             "to_level": 3, "total_cost": 2075, "points_gained": 100,
+             "to_level": 1, "levels": 1, "total_cost": 2075, "points_gained": 100,
              "weeks_to_return": 51.875},
             {"skill": "Cooking", "building": "Guild Kitchen", "from_level": 20,
-             "to_level": None, "total_cost": None, "points_gained": 0,
+             "to_level": None, "levels": 0, "total_cost": None, "points_gained": 0,
              "weeks_to_return": None},
         ],
         "shrine_upgrades": [
@@ -113,7 +113,7 @@ def test_buildings_artefact_without_the_tab_still_ranks_skilling():
     inputs.building_value_unavailable = "never written"
     doc = build._buildings_artefact(_site(), inputs, {"building_upgrades": [
         {"skill": "Milking", "building": "Guild Dairy Barn", "from_level": 0,
-         "to_level": 3, "total_cost": 2075, "points_gained": 100,
+         "to_level": 1, "levels": 1, "total_cost": 2075, "points_gained": 100,
          "weeks_to_return": 51.875}]})
     assert doc["combat"]["available"] is False
     assert doc["combat"]["unavailable"] == "never written"
@@ -132,7 +132,7 @@ def _utility_doc(levels, total=5000.0):
         "total_credit_points": total,
         "building_upgrades": [
             {"skill": "Milking", "building": "Guild Dairy Barn", "from_level": 0,
-             "to_level": 3, "total_cost": 2075, "points_gained": 100,
+             "to_level": 1, "levels": 1, "total_cost": 2075, "points_gained": 100,
              "weeks_to_return": 51.875}],
         "shrine_upgrades": [
             {"shrine": "force", "name": "Shrine of Force", "from_level": 4,
@@ -144,7 +144,7 @@ def _utility_doc(levels, total=5000.0):
 
 def test_artefact_applies_builders_hall_and_adds_utility_rows():
     doc = _utility_doc({BH: 8, TREASURY: 6})
-    assert doc["schema_version"] == 2 and doc["gp_basis"] == "received"
+    assert doc["schema_version"] == 3 and doc["gp_basis"] == "received"
     assert doc["gp_multiplier"] == pytest.approx(1.16)
     assert doc["builders_hall_level"] == 8
     by = {r["kind"]: r for r in doc["ranked"] if r["kind"] != "utility"}
@@ -242,3 +242,17 @@ def test_observed_tab_missing_builders_hall_says_so_and_stays_base():
     assert any("Builder's Hall level missing from the Buildings tab" in n
                for n in doc["notes"])
     assert any("observed week" in n for n in doc["notes"])
+
+
+def test_multi_level_skilling_row_carries_its_average_rate():
+    inputs = build._GuildInputs.__new__(build._GuildInputs)
+    inputs.building_value = None
+    inputs.building_value_unavailable = "never written"
+    doc = build._buildings_artefact(_site(), inputs, {"building_upgrades": [
+        {"skill": "Cooking", "building": "Guild Kitchen", "from_level": 4,
+         "to_level": 6, "levels": 2, "total_cost": 3900, "points_gained": 100,
+         "weeks_to_return": 97.5}]})
+    row = doc["ranked"][0]
+    assert (row["from_level"], row["to_level"], row["cost"]) == (4, 6, 3900)
+    per_level = 100 / config.TRIAL_WEEKS_BETWEEN_DRAWS / 2
+    assert row["recommendation"] == f"2 levels, avg +{per_level:.1f} GP/week each"

@@ -408,6 +408,15 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
     with open(_GOLDEN_PATH, encoding="utf-8") as fh:
         expected = json.load(fh)
 
+    # The building probe was re-specified (best-rate L -> L+k on expected points) and
+    # the golden predates it. It is a probe of the race, not the race: assert it read
+    # the same race, then strip it.
+    for got_u, exp_u in zip(
+        got.pop("building_upgrades"), expected.pop("building_upgrades"), strict=True
+    ):
+        for key in ("skill", "building", "from_level", "tier_now"):
+            assert got_u[key] == exp_u[key]
+
     # R7 RE-SPECIFIED THE SHRINE PROBE AND ADDED A SECOND ONE, and the golden
     # predates both. Reconciled the same way R4's additive member keys are above:
     # every difference is ASSERTED to carry the pre-roster answer before it is

@@ -247,8 +247,8 @@ whole sweep, *including at every tier crossing* — because banking a tier gains
 the `−35 → −30` row pair, which is the crossing that could have broken it: `f`
 falls from 0.576 to 0.130 and the score still rises, 828.80 → 906.50.
 
-This is not cosmetic. It is the **precondition** for the binary search in
-`trials._cheapest_bumping_level` and for the "a stronger party never scores less"
+This is not cosmetic. It was the **precondition** for the binary search in
+`trials._cheapest_bumping_level` (removed 2026-10-20: buildings are now priced as a best-rate L→L+k lookahead on expected points) and is still the one for the "a stronger party never scores less"
 invariants in the test suite, and the plan pins it as new test 3 (§7.4).
 
 **Fixture**: the same party, shrunk one member at a time (weakest first).

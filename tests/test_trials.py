@@ -401,78 +401,95 @@ def test_payback_converts_a_lump_sum_into_draws_and_weeks():
     assert trials.upgrade_payback_weeks(None, 100) is None
 
 
-def test_probe_prices_a_single_level_bump_and_its_payback():
-    # Ten members at level 113 sit exactly on the tier-8/9 edge: ONE Guild Brewery
-    # level (+2 levels, 500 gp) buys tier 9 and its 100 points, repaying in 5
-    # draws == 12.5 weeks.
+def test_probe_prices_the_single_step_on_expected_points():
+    # Ten members at level 113 sit on the tier-8/9 edge: the first level carries
+    # the big step, so the best-rate buy is k* = 1 and the gain is the difference
+    # in EXPECTED points.
     party = [_member(f"M{i}", {"Brewing": 113}) for i in range(10)]
     u = trials.probe_building_upgrade(party, "Brewing")
-    assert u.reachable is True
-    assert u.levels_needed == 1
-    assert (u.from_level, u.to_level) == (0, 1)
+    now = trials.simulate_race(party, "Brewing")
+    after = trials.simulate_race(party, "Brewing", None, trials.building_skill_levels(1))
+    e_now = trials.expected_credit_points(party, "Brewing", now, 0)
+    e_after = trials.expected_credit_points(party, "Brewing", after, 2)
+    assert u.gain_basis == "expected"
+    assert (u.from_level, u.to_level, u.levels) == (0, 1, 1)
     assert (u.skill_levels_now, u.skill_levels_after) == (0, 2)
-    assert u.total_cost == 500
-    assert u.next_level_cost == 500
-    assert u.tier_after == u.tier_now + 1
-    assert u.points_gained == config.TRIAL_POINTS_PER_TIER
-    assert u.draws_to_return == pytest.approx(5.0)
-    assert u.weeks_to_return == pytest.approx(12.5)
+    assert u.next_level_cost == u.total_cost == 500
+    assert u.points_now == pytest.approx(e_now)
+    assert u.points_after == pytest.approx(e_after)
+    assert u.points_gained == pytest.approx(e_after - e_now)
+    assert u.points_gained > 0
+    assert u.draws_to_return == pytest.approx(500 / u.points_gained)
+    assert u.weeks_to_return == pytest.approx(
+        500 / u.points_gained * config.TRIAL_WEEKS_BETWEEN_DRAWS
+    )
     assert u.building == "Guild Brewery"
     assert u.at_cap is False
 
 
-def test_probe_counts_the_levels_needed_and_sums_their_cost():
-    # A party comfortably inside a tier band needs SEVERAL levels, and the cost is
-    # every step added up — not the single next step.
-    party = [_member(f"M{i}", {"Brewing": 108}) for i in range(10)]
+def _fake_expected(monkeypatch, by_level):
+    """Pin expected points per BUILDING level, so the lookahead's choice is exact."""
+    monkeypatch.setattr(
+        trials, "expected_credit_points",
+        lambda party, skill, result, building_levels=None:
+            by_level.get(building_levels // 2, by_level[max(by_level)]),
+    )
+
+
+def test_probe_looks_past_a_tiny_first_step_to_the_best_rate(monkeypatch):
+    # 4 -> 5 gains almost nothing, 5 -> 6 carries the step: the row must read 4 -> 6
+    # (3900 gp for +100, 39 gp/point), not reject or price 4 -> 5 (1650 gp/point).
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 4)
+    _fake_expected(monkeypatch, {4: 1000.0, 5: 1001.0, 6: 1100.0})
+    party = [_member(f"M{i}", {"Brewing": 100}) for i in range(10)]
     u = trials.probe_building_upgrade(party, "Brewing")
-    assert u.reachable is True
-    assert u.levels_needed > 1
-    assert u.to_level == u.from_level + u.levels_needed
-    assert u.skill_levels_after == 2 * u.to_level
-    assert u.tier_after > u.tier_now
-    assert u.total_cost == trials.guild_building_upgrade_total_cost(
-        u.from_level, u.to_level
+    assert (u.from_level, u.to_level, u.levels) == (4, 6, 2)
+    assert u.next_level_cost == 1650
+    assert u.total_cost == 1650 + 2250
+    assert u.points_gained == pytest.approx(100.0)
+    assert u.points_gained_per_level == pytest.approx(50.0)
+    assert u.weeks_to_return == pytest.approx(3900 / 100 * config.TRIAL_WEEKS_BETWEEN_DRAWS)
+
+
+def test_probe_keeps_k_one_when_the_first_step_is_the_best_rate(monkeypatch):
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 4)
+    _fake_expected(monkeypatch, {4: 1000.0, 5: 1100.0, 6: 1150.0})
+    party = [_member(f"M{i}", {"Brewing": 100}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    assert (u.to_level, u.levels, u.total_cost) == (5, 1, 1650)
+    assert u.points_gained == pytest.approx(100.0)
+
+
+def test_probe_lookahead_stops_at_the_cap(monkeypatch):
+    monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 18)
+    _fake_expected(monkeypatch, {18: 1000.0, 19: 1000.0, 20: 1001.0})
+    party = [_member(f"M{i}", {"Brewing": 100}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    assert (u.to_level, u.levels) == (20, 2)
+    assert u.total_cost == 110900 + 149725
+
+
+def test_probe_falls_back_to_credit_points_without_expectations(monkeypatch):
+    monkeypatch.setattr(config, "RISK_EXPECTED_POINTS", False)
+    party = [_member(f"M{i}", {"Brewing": 113}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    after = trials.simulate_race(
+        party, "Brewing", None, trials.building_skill_levels(u.to_level)
     )
-    assert u.total_cost > u.next_level_cost      # a multi-level climb costs more
-    assert u.weeks_to_return == pytest.approx(
-        u.total_cost / u.points_gained * config.TRIAL_WEEKS_BETWEEN_DRAWS
+    assert u.gain_basis == "credit"
+    assert u.points_gained == pytest.approx(
+        after.credit_points - trials.simulate_race(party, "Brewing").credit_points
     )
 
 
-def test_probe_finds_the_cheapest_bumping_level_like_a_brute_force_scan():
-    # The binary search assumes the race is monotone in the building level. Pin
-    # both: tier_reached never falls as levels rise, and the level the probe picks
-    # is the FIRST one a linear scan would accept.
-    for level in (100, 105, 110, 113, 120):
-        party = [_member(f"M{i}", {"Brewing": level}) for i in range(10)]
-        tiers = [
-            trials.simulate_race(
-                party, "Brewing", None, trials.building_skill_levels(building)
-            ).tier_reached
-            for building in range(config.GUILD_BUILDING_MAX_LEVEL + 1)
-        ]
-        assert tiers == sorted(tiers), f"non-monotone at level {level}: {tiers}"
-        first = next(
-            (b for b in range(1, len(tiers)) if tiers[b] > tiers[0]), None
-        )
-        u = trials.probe_building_upgrade(party, "Brewing")
-        assert u.to_level == first
-        assert u.reachable is (first is not None)
-
-
-def test_probe_reports_a_tier_unreachable_at_any_level():
-    # Three members at level 400 are already at the success clamp (1.0) for the
-    # tier they fail, so the race is time-bound: no number of building levels
-    # helps, and the probe says so rather than quoting a price.
+def test_probe_zero_gain_at_every_k_has_no_payback():
+    # Three members at level 400 are at the success clamp: the race is time-bound,
+    # so no number of levels gains anything and the spend never returns.
     party = [_member(f"M{i}", {"Brewing": 400}) for i in range(3)]
     u = trials.probe_building_upgrade(party, "Brewing")
-    assert u.at_cap is False                    # levels ARE available to buy
-    assert u.reachable is False                 # they just do not buy a tier
-    assert u.levels_needed is None
-    assert (u.to_level, u.tier_after, u.points_after) == (None, None, None)
-    assert u.points_gained == 0
-    assert u.total_cost is None
+    assert u.at_cap is False
+    assert (u.to_level, u.levels) == (1, 1)     # the checked step, for the reader
+    assert u.points_gained == pytest.approx(0.0, abs=1e-9)
     assert (u.draws_to_return, u.weeks_to_return) == (None, None)
     assert u.next_level_cost == 500              # still priced, for the officers
 
@@ -485,18 +502,14 @@ def test_probe_at_level_cap_offers_no_upgrade(monkeypatch):
     u = trials.probe_building_upgrade(party, "Brewing")
     assert u.at_cap is True
     assert u.from_level == config.GUILD_BUILDING_MAX_LEVEL
-    assert u.next_level_cost is None
-    assert u.reachable is False
-    assert u.levels_needed is None
-    assert u.total_cost is None
+    assert (u.to_level, u.next_level_cost, u.total_cost) == (None, None, None)
     assert u.points_gained == 0
     assert u.weeks_to_return is None
 
 
 def test_probe_respects_an_already_built_building(monkeypatch):
     # From level 6 the next step costs 3025 (the cost to REACH level 7), and the
-    # climb is priced from there — the six levels already paid for are not
-    # re-charged.
+    # buy is priced from there — the six levels already paid for are not re-charged.
     monkeypatch.setitem(config.GUILD_BUILDING_LEVELS, "Brewing", 6)
     party = [_member(f"M{i}", {"Brewing": 100}) for i in range(10)]
     u = trials.probe_building_upgrade(party, "Brewing")
@@ -504,7 +517,6 @@ def test_probe_respects_an_already_built_building(monkeypatch):
     assert u.skill_levels_now == 12
     assert u.next_level_cost == 3025
     assert u.total_cost == trials.guild_building_upgrade_total_cost(6, u.to_level)
-    assert u.total_cost >= 3025
 
 
 def test_probe_current_result_reuse_matches_a_fresh_simulation():
@@ -525,13 +537,11 @@ def test_run_week_probes_every_drawn_skill():
     # Each probe must agree with the trial it belongs to.
     for u, t in zip(d, wk.to_dict()["trials"]):
         assert u["tier_now"] == t["tier_reached"]
-        assert u["points_now"] == t["points"]
-        assert u["from_level"] == 0            # every building unbuilt today
+        if t["expected_points"] is not None:
+            assert u["points_now"] == pytest.approx(t["expected_points"])
+        assert u["from_level"] == 0
+        assert u["to_level"] == u["levels"] >= 1
         assert u["next_level_cost"] == 500
-        if u["reachable"]:
-            assert u["levels_needed"] >= 1
-            assert u["total_cost"] > 0
-            assert u["weeks_to_return"] > 0
 
 
 def test_no_member_no_party_even_with_a_guild_building(monkeypatch):
@@ -1056,8 +1066,7 @@ def test_credit_points_reduce_to_the_step_function_when_the_rate_is_zero(monkeyp
 def test_credit_points_are_monotone_in_party_throughput():
     """Stronger is never worth less -- including ACROSS tier boundaries.
 
-    The precondition for trials._cheapest_bumping_level's binary search, and the
-    reason partial credit does not punish a party for crossing a boundary: completing
+    The reason a building level never reads as a loss, and the reason partial credit does not punish a party for crossing a boundary: completing
     a tier gains TRIAL_POINTS_PER_TIER while surrendering at most rate*PER_TIER of
     partial credit, so with rate <= 1 the step always dominates the loss.
     """
@@ -1460,19 +1469,25 @@ def test_trials_page_places_the_guild_spend_table_above_the_upgrades():
     site = build.GUILD_SITES[0]
     assert "guild-spend-section" not in build._render_trials_html(base, site)
     base["building_upgrades"] = [
-        {"skill": "Foraging", "building": "Guild Garden", "reachable": True,
-         "levels_needed": 1, "from_level": 0, "to_level": 1, "skill_levels_now": 0,
-         "skill_levels_after": 2, "tier_now": 3, "tier_after": 4,
-         "points_gained": 100, "total_cost": 500, "draws_to_return": 5.0,
-         "weeks_to_return": 12.5}]
+        {"skill": "Foraging", "building": "Guild Garden", "from_level": 0,
+         "to_level": 1, "levels": 1, "skill_levels_now": 0, "skill_levels_after": 2,
+         "tier_now": 3, "tier_after": 3, "points_gained": 12.5,
+         "points_gained_per_level": 12.5, "next_level_cost": 500,
+         "total_cost": 500, "draws_to_return": 40.0,
+         "weeks_to_return": 100.0, "gain_basis": "expected", "at_cap": False}]
     doc = {"ranked": [{"kind": "skilling", "name": "Guild Garden", "key": "Foraging",
                        "from_level": 0, "to_level": 1, "cost": 500,
-                       "gain_gp_per_week": 40.0, "payback_weeks": 12.5,
+                       "gain_gp_per_week": 5.0, "payback_weeks": 100.0,
                        "confidence": "modelled", "recommendation": None, "rank": 1}],
            "gp_basis": "base", "notes": [], "combat": {"available": True}}
     page = build._render_trials_html(base, site, guild_spend=doc)
     assert 'id="upgrades-section"' in page
     assert page.index('id="guild-spend-section"') < page.index('id="upgrades-section"')
+    # The spend row is one level, L -> L+1, at that level's real gain.
+    spend = page[page.index('id="guild-spend-section"'):page.index('id="upgrades-section"')]
+    assert "<th>Guild Garden</th><td class=num>0 &rarr; 1</td>" in spend
+    assert "+5.0 GP" in spend
+    assert "tier is earned on every draw" not in page
 
 
 def test_trials_page_switch_cross_links_and_marks_the_active_level():

@@ -1351,9 +1351,9 @@ LEVEL_BONUS_NEG = 0.01         # per-level penalty when effective level <  diffi
 # Guild points awarded for a completed trial: points(T) = 100 + 100*T for the
 # tier T reached (trials.points_for_tier; ASSUMPTION, matching the only observed
 # messages — milking tier1 -> 200, tier2 -> 300, research/trial-messages.md).
-# The STEP is what a building upgrade buys: one extra tier is worth
-# TRIAL_POINTS_PER_TIER guild points EVERY time that trial is run, which is what
-# makes an upgrade's payback computable (see TRIAL_WEEKS_BETWEEN_DRAWS).
+# One extra tier is worth TRIAL_POINTS_PER_TIER guild points every time that trial
+# is run; a building upgrade is priced on its expected share of that (partial
+# credit included), see trials.probe_building_upgrade.
 TRIAL_POINTS_BASE = 100        # points(T) intercept: awarded for finishing at all
 TRIAL_POINTS_PER_TIER = 100    # points(T) slope: what one extra tier is worth
 # BuildingSkillLevels: skill levels contributed by buildings, added to the
@@ -1649,6 +1649,10 @@ HOUSE_ENHANCING_SPEED = HOUSE_ENHANCING_SPEED_PER_LEVEL * DEFAULT_HOUSE_LEVEL  #
 # building, work_power must take the effective level too — see trials.work_power.
 GUILD_BUILDING_SKILL_LEVELS_PER_LEVEL = 2   # +2 skill levels per building level
 GUILD_BUILDING_MAX_LEVEL = 20               # in-game guild buildings cap at 20
+# How many levels trials.probe_building_upgrade looks ahead for the best-rate buy:
+# per-level gains are lumpy, so L->L+1 alone can hide a good multi-level buy. Each
+# extra level is one simulate_race + one expected_credit_points per drawn skill.
+BUILDING_UPGRADE_LOOKAHEAD = 8
 # Live building levels, keyed by TRIAL skill name (the model's own labels, so
 # "Alchemy" is the Guild Laboratory — the "Bell Farming" joke does not reach
 # here). A skill omitted, None, or 0 grants nothing. Values are clamped to
@@ -2108,7 +2112,7 @@ SHRINE_BUFFS_APPLY_IN_TRIALS = True
 # back in the weeks its own skill is drawn. The weekly draw picks 4 of the 10
 # skilling trials, so any one skill comes up in 4/10 of weeks — once every 2.5
 # weeks on average. That converts a lump-sum cost into a payback period:
-#     draws_to_return = total_cost / points_gained_per_draw
+#     draws_to_return = cost / points_gained_per_draw
 #     weeks_to_return = draws_to_return * TRIAL_WEEKS_BETWEEN_DRAWS
 # See trials.upgrade_payback_weeks and the trials page's upgrade section.
 TRIAL_SKILLS_PER_WEEK = 4      # the weekly draw picks four of the ten skills
