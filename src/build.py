@@ -2160,25 +2160,26 @@ def _payback(value) -> str:
 
 def _render_guild_spend_section(doc: Optional[dict]) -> str:
     """Every guild-point spend from buildings.json (``_buildings_artefact``) in one
-    table, soonest payback first; "" when there is nothing to rank.
+    table, soonest payback first; "" only when ``doc`` is falsy or ``ranked`` is empty
+    (a Treasury-only table is still shown).
     """
     if not doc or not doc["ranked"]:
         return ""
     rows = []
     for x in doc["ranked"]:
-        gain = x["gain_gp_per_week"]
-        gain_cell = (f"+{_cp(gain)} GP" if gain is not None
-                     else f"+{_cp(x.get('gain_tokens_per_member_week'))} tokens/member")
+        tokens = x.get("gain_tokens_per_member_week")
+        gain_cell = (f"+{_cp(tokens)} tokens/member" if tokens is not None
+                     else f"+{_cp(x['gain_gp_per_week'])} GP")
         pw = x["payback_weeks"]
-        weeks_cell = (f"<strong>{_payback(pw)}</strong>" if pw is not None
-                      else "&mdash; (tokens, not GP)")
+        weeks_cell = ("&mdash; (tokens, not GP)" if tokens is not None
+                      else f"<strong>{_payback(pw)}</strong>")
         notes = " · ".join(filter(None, [x.get("confidence"), x.get("recommendation")]))
         rows.append(
             ("<tr class=dim>" if pw is None else "<tr>")
             + f"<td>{html.escape(x['kind'])}</td>"
             f"<th>{html.escape(x['name'])}</th>"
             f"<td class=num>{x['from_level']} &rarr; {x['to_level']}</td>"
-            f"<td class=num>{_gp(round(x['cost']))}</td>"
+            f"<td class=num>{_gp(None if x['cost'] is None else round(x['cost']))}</td>"
             f"<td class=num>{gain_cell}</td>"
             f"<td class=num>{weeks_cell}</td>"
             f"<td>{html.escape(notes)}</td>"
@@ -2195,11 +2196,17 @@ def _render_guild_spend_section(doc: Optional[dict]) -> str:
     meta.append(
         "Shrine rows are best case (full adoption); skilling rows assume the tier is "
         "earned on every draw; combat rows are simulated by the combat optimiser. "
-        "Upgrades with no payback are listed as checked and rejected in the sections "
-        "below."
+        "Skilling and shrine upgrades with no payback are listed as checked and "
+        "rejected in the sections below."
     )
     extra = [html.escape(n) for n in doc.get("notes") or []]
     combat = doc.get("combat") or {}
+    if combat.get("available"):
+        rejected = [f"{r.get('name')} ({r.get('verdict')})" for r in combat.get("rows") or []
+                    if r.get("payback_weeks") is None]
+        if rejected:
+            extra.append("Checked and rejected (combat): "
+                         + html.escape(", ".join(rejected)))
     if not combat.get("available") and combat.get("unavailable"):
         extra.append("Combat buildings are missing: " + html.escape(combat["unavailable"]))
     paragraphs = f'<p class="meta">{" ".join(meta)}</p>' + "".join(
@@ -5814,7 +5821,7 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
 
     ranked: list[dict] = []
     for r in combat["rows"] if combat["available"] else []:
-        if r.get("payback_weeks") is None:
+        if r.get("payback_weeks") is None or r.get("cost") is None:
             continue
         ranked.append({
             "kind": "combat", "name": r["name"], "key": r["hrid"],
@@ -5845,7 +5852,7 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
             "payback_weeks": u["weeks_to_return"],
             "confidence": "best case (full adoption)", "recommendation": None,
         })
-    levels = getattr(inputs, "other_building_levels", None)  # None: tab unobserved
+    levels = inputs.other_building_levels  # None: tab unobserved
     bh = None if levels is None else levels.get(config.BUILDERS_HALL_HRID)
     m = trials_model.gp_multiplier(bh)
     for x in ranked:                      # base -> received, every source alike
@@ -5860,25 +5867,36 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
                      "has not been observed, so their levels are unknown.")
     else:
         obs = config.COMBAT_TRIALS_OBSERVED.get(site.key)
+        if obs:
+            notes.append(f"Combat half of the weekly base GP is an observed week "
+                         f"({obs[1]}), not modelled; re-derive when combat results change.")
         combat_base = (sum(trials_model.combat_points_for_credit(t, f) for t, f in obs[0])
                        if obs else None)
+        # Same basis as the skilling/shrine rows: modelled expected credit points.
         weekly_base = (week.get("total_credit_points") or 0.0) + (combat_base or 0.0)
         basis = (f"skilling modelled + combat observed ({obs[1]})" if obs
                  else "skilling only: no combat observation, a lower bound")
         for hrid, name in ((config.BUILDERS_HALL_HRID, "Builder's Hall"),
                            (config.TREASURY_HRID, "Treasury")):
             lv = levels.get(hrid)
-            cost = (None if lv is None
-                    else config.GUILD_UTILITY_BUILDING_POINT_COSTS.get(lv + 1))
-            if cost is None:              # row not on the tab, or at the cap
+            if lv is None:
+                notes.append(f"{name} level missing from the Buildings tab"
+                             + ("; GP shown as base." if hrid == config.BUILDERS_HALL_HRID
+                                else "; not priced."))
+                continue
+            cost = config.GUILD_UTILITY_BUILDING_POINT_COSTS.get(lv + 1)
+            if cost is None:              # at the cap
                 continue
             row = {"kind": "utility", "name": name, "key": hrid,
                    "from_level": lv, "to_level": lv + 1, "cost": cost,
                    "confidence": basis}
             if hrid == config.BUILDERS_HALL_HRID:
                 gain = config.BUILDERS_HALL_GP_BONUS_PER_LEVEL * weekly_base  # received increment
+                if not gain:
+                    notes.append("Builder's Hall not priced: no weekly base GP this week.")
+                    continue
                 row.update(gain_gp_per_week=gain,
-                           payback_weeks=cost / gain if gain else None,
+                           payback_weeks=cost / gain,
                            recommendation=(f"also lifts every other row x"
                                            f"{(m + config.BUILDERS_HALL_GP_BONUS_PER_LEVEL) / m:.3f}"))
             else:

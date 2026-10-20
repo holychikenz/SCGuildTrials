@@ -202,3 +202,43 @@ def test_guild_spend_section_renders_every_kind():
     for kind in ("combat", "skilling", "shrine", "utility"):
         assert f"<td>{kind}</td>" in out
     assert "Builder&#x27;s Hall" in out and "tokens, not GP" in out and "1.16" in out
+
+
+def test_zero_gain_builders_hall_is_not_priced_and_treasury_stays_tokens(monkeypatch):
+    monkeypatch.setattr(config, "COMBAT_TRIALS_OBSERVED", {})
+    doc = _utility_doc({BH: 8, TREASURY: 6}, total=0.0)
+    assert [r["key"] for r in doc["ranked"] if r["kind"] == "utility"] == [TREASURY]
+    assert "Builder's Hall not priced: no weekly base GP this week." in doc["notes"]
+    out = build._render_guild_spend_section(doc)
+    assert "+0.0 tokens/member" in out and "tokens, not GP" in out
+
+
+def _combat_doc(*rows):
+    inputs = build._GuildInputs.__new__(build._GuildInputs)
+    inputs.building_value = bv.parse_building_value(_csv(*rows), "sc")
+    inputs.building_value_unavailable = ""
+    return build._buildings_artefact(_site(), inputs, {})
+
+
+def test_combat_row_without_cost_is_skipped_and_renders():
+    doc = _combat_doc(_row(), _row(**{"Upgrade": "Gym", "Hrid": "/guild_buildings/gym",
+                                      "GP Cost": "", "Rank": "2"}))
+    assert [r["name"] for r in doc["ranked"]] == ["Dojo"]
+    build._render_guild_spend_section(doc)   # must not raise
+
+
+def test_combat_row_without_payback_is_listed_as_rejected():
+    doc = _combat_doc(_row(), _row(**{"Upgrade": "Gym", "Hrid": "/guild_buildings/gym",
+                                      "Payback Weeks": "", "Verdict": "negative",
+                                      "Rank": "2"}))
+    out = build._render_guild_spend_section(doc)
+    assert "Checked and rejected (combat): Gym (negative)" in out
+    assert "Skilling and shrine upgrades with no payback" in out
+
+
+def test_observed_tab_missing_builders_hall_says_so_and_stays_base():
+    doc = _utility_doc({TREASURY: 6})
+    assert doc["gp_basis"] == "base" and doc["builders_hall_level"] is None
+    assert any("Builder's Hall level missing from the Buildings tab" in n
+               for n in doc["notes"])
+    assert any("observed week" in n for n in doc["notes"])
