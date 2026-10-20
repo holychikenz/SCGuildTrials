@@ -1672,7 +1672,9 @@ GUILD_BUILDING_MAX_LEVEL = 20               # in-game guild buildings cap at 20
 # observation of zero — which is the honest answer for a guild we cannot see, and
 # the same direction of error the repo takes everywhere else.
 #
-# The 2026-07-22 guild_updated capture this map used to hold (SC: builders_hall 3,
+# The 2026-07-22 guild_updated capture this map used to hold (SC at the time:
+# builders_hall 3; live levels now come from the tab, e.g. 2026-10-20 SC
+# builders_hall 8 / treasury 6, LI 9 / 7;
 # guild_hall 4, skilling_encampment 1, combat_encampment 1, dojo 1, plus the
 # force/tempo shrines — none granting a skill level) is superseded by the tab and
 # kept only in this sentence. The instruction that used to stand here — "SPLIT THIS
@@ -1717,8 +1719,9 @@ GUILD_BUILDING_NAMES = {
 # ALL TEN skilling buildings share this one curve (as do the seven combat
 # buildings and the two encampments — verified: 19 buildings, one identical
 # cost map). The four utility buildings (Guild Hall, Archives, Builder's Hall,
-# Treasury) sit on a curve of exactly DOUBLE these numbers, and are not modelled
-# here because they grant no skill levels.
+# Treasury) sit on a curve of exactly DOUBLE these numbers, priced by
+# GUILD_UTILITY_BUILDING_POINT_COSTS (== the shrine ladder) for the Builder's Hall /
+# Treasury rows in buildings.json.
 GUILD_BUILDING_POINT_COSTS = {
     1: 500,      2: 675,      3: 900,      4: 1225,     5: 1650,
     6: 2250,     7: 3025,     8: 4075,     9: 5525,    10: 7450,
@@ -1904,8 +1907,8 @@ BUILDING_VALUE_HEADERS = (
 # treasury, archives) grant no SKILLING level and so cannot enter this model. They
 # are not dropped either — buildings.parse_buildings keeps every unmapped hrid in
 # GuildBuildings.other_levels, so the data exists for the combat optimiser in
-# ~/pie/SCLIRoster and for the reward multipliers, once their per-level rules are
-# confirmed. An hrid the game adds later lands there too, counted, never silent.
+# ~/pie/SCLIRoster and for the reward multipliers (BUILDERS_HALL_* / TREASURY_*
+# below). An hrid the game adds later lands there too, counted, never silent.
 BUILDING_HRID_TO_SKILL = {
     "/guild_buildings/dairy_barn": "Milking",
     "/guild_buildings/garden": "Foraging",
@@ -2062,6 +2065,38 @@ GUILD_SHRINE_POINT_COSTS = {
     6: 4500,     7: 6050,     8: 8150,     9: 11050,   10: 14900,
     11: 20100,  12: 27150,   13: 36650,   14: 49450,   15: 66800,
     16: 90150,  17: 121700,  18: 164300,  19: 221800,  20: 299450,
+}
+
+# Utility buildings (guild_hall, archives, builders_hall, treasury) use the SHRINE
+# ladder (dump guildBuildingDetailMap guildPointCosts; double the other 19 buildings).
+# One list, two names.
+GUILD_UTILITY_BUILDING_POINT_COSTS = GUILD_SHRINE_POINT_COSTS
+
+# Reward multipliers (dump v1.20260927.0 guildBuildingDetailMap; linear 0.02*L).
+# Builder's Hall scales the GP the guild RECEIVES from every skilling AND combat
+# trial (captures: SC BH8 -> +116/tier skilling, +232/tier combat). Treasury scales
+# tokens, never GP.
+BUILDERS_HALL_HRID = "/guild_buildings/builders_hall"
+TREASURY_HRID = "/guild_buildings/treasury"
+BUILDERS_HALL_GP_BONUS_PER_LEVEL = 0.02   # guildPointsBonusPerLevel
+TREASURY_TOKEN_BONUS_PER_LEVEL = 0.02     # guildTokenBonusPerLevel
+
+# tokens/member/week = SHARE * weekly BASE GP * (1 + 0.02*Treasury), * MULT for a
+# participant. csim guildTrialStats.js; captures: 8873 predicted vs 8876 observed.
+TRIAL_TOKENS_BASE_POINTS_SHARE = 0.5
+TRIAL_TOKENS_PARTICIPATION_MULTIPLIER = 1.5
+
+# Observed combat-trial results, per guild: ((tiers_cleared, final_tier_frac) per
+# trial, source). The guild repo cannot model combat; this is the combat half of the
+# weekly BASE GP that prices the Builder's Hall / Treasury rows. Derivation: websocket
+# captures, lifetimeGuildPoints increments / (1+0.02*BH), split at the first base-400
+# step (SC), or weekly lump minus skilling recomputed from guild_trial_stats_updated
+# workDone (LI; only the sum is known, the per-trial split is fitted). A guild missing
+# here -> skilling-only lower bound, labelled.
+# shortcut: one observed week, goes stale; re-derive from captures (or have SCLIRoster publish a baseline) when trials change.
+COMBAT_TRIALS_OBSERVED = {
+    "sc": (((13, 0.05), (12, 0.01)), "captures 2026-10-19"),
+    "li": (((11, 0.6), (10, 0.65)), "captures 2026-10-20 (split fitted)"),
 }
 # Master switch for the patch note "Shrine buffs now apply inside guild Trials".
 # False restores the pre-patch race exactly (bit-identical rates), which is also the

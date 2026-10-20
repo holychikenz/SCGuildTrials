@@ -7,6 +7,7 @@ import pytest
 
 from src import build, config
 from src import building_value as bv
+from src import trials as trials_model
 from src.reader import SheetStructureError
 
 
@@ -117,3 +118,87 @@ def test_buildings_artefact_without_the_tab_still_ranks_skilling():
     assert doc["combat"]["available"] is False
     assert doc["combat"]["unavailable"] == "never written"
     assert [r["kind"] for r in doc["ranked"]] == ["skilling"]
+
+
+BH, TREASURY = config.BUILDERS_HALL_HRID, config.TREASURY_HRID
+
+
+def _utility_doc(levels, total=5000.0):
+    inputs = build._GuildInputs.__new__(build._GuildInputs)
+    inputs.building_value = bv.parse_building_value(_csv(_row()), "sc")
+    inputs.building_value_unavailable = ""
+    inputs.other_building_levels = levels
+    week = {
+        "total_credit_points": total,
+        "building_upgrades": [
+            {"skill": "Milking", "building": "Guild Dairy Barn", "from_level": 0,
+             "to_level": 3, "total_cost": 2075, "points_gained": 100,
+             "weeks_to_return": 51.875}],
+        "shrine_upgrades": [
+            {"shrine": "force", "name": "Shrine of Force", "from_level": 4,
+             "next_level_cost": 3300, "points_gained_at_full_adoption": 0.95,
+             "weeks_to_return": 3477.9}],
+    }
+    return build._buildings_artefact(_site(), inputs, week)
+
+
+def test_artefact_applies_builders_hall_and_adds_utility_rows():
+    doc = _utility_doc({BH: 8, TREASURY: 6})
+    assert doc["schema_version"] == 2 and doc["gp_basis"] == "received"
+    assert doc["gp_multiplier"] == pytest.approx(1.16)
+    assert doc["builders_hall_level"] == 8
+    by = {r["kind"]: r for r in doc["ranked"] if r["kind"] != "utility"}
+    assert by["skilling"]["gain_gp_per_week"] == pytest.approx(
+        100 / config.TRIAL_WEEKS_BETWEEN_DRAWS * 1.16)
+    assert by["skilling"]["payback_weeks"] == pytest.approx(51.875 / 1.16)
+    assert by["combat"]["gain_gp_per_week"] == pytest.approx(80 * 1.16)
+    assert by["combat"]["payback_weeks"] == pytest.approx(50 / 1.16)
+    combat_base = sum(trials_model.combat_points_for_credit(t, f)
+                      for t, f in config.COMBAT_TRIALS_OBSERVED["sc"][0])
+    weekly = 5000.0 + combat_base
+    assert doc["weekly_base_gp"] == pytest.approx(weekly)
+    bh = next(r for r in doc["ranked"] if r["key"] == BH)
+    assert (bh["from_level"], bh["to_level"], bh["cost"]) == (8, 9, 11050)
+    assert bh["gain_gp_per_week"] == pytest.approx(0.02 * weekly)
+    assert bh["payback_weeks"] == pytest.approx(11050 / (0.02 * weekly))
+    tr = doc["ranked"][-1]
+    assert tr["key"] == TREASURY and tr["cost"] == 6050
+    assert tr["payback_weeks"] is None and tr["rank"] is None
+    assert tr["gain_gp_per_week"] is None
+    assert tr["gain_tokens_per_member_week"] == pytest.approx(0.5 * 0.02 * weekly)
+    gp_rows = [r for r in doc["ranked"] if r["payback_weeks"] is not None]
+    assert [r["rank"] for r in gp_rows] == list(range(1, len(gp_rows) + 1))
+    assert [r["payback_weeks"] for r in gp_rows] == sorted(r["payback_weeks"] for r in gp_rows)
+    assert doc["skilling"]["upgrades"][0]["weeks_to_return"] == 51.875   # base, unscaled
+    assert doc["skilling"]["gp_basis"] == doc["shrines"]["gp_basis"] == "base"
+
+
+def test_artefact_without_combat_observation_is_a_labelled_lower_bound(monkeypatch):
+    monkeypatch.setattr(config, "COMBAT_TRIALS_OBSERVED", {})
+    doc = _utility_doc({BH: 8, TREASURY: 6})
+    assert doc["weekly_base_gp"] == pytest.approx(5000.0)
+    bh = next(r for r in doc["ranked"] if r["key"] == BH)
+    assert "lower bound" in bh["confidence"]
+
+
+def test_artefact_without_buildings_tab_has_no_utility_rows_and_says_so():
+    doc = _utility_doc(None)
+    assert doc["gp_basis"] == "base" and doc["gp_multiplier"] == 1.0
+    assert doc["weekly_base_gp"] is None
+    assert not [r for r in doc["ranked"] if r["kind"] == "utility"]
+    assert any("not been observed" in n for n in doc["notes"])
+
+
+def test_artefact_skips_a_utility_building_at_the_cap():
+    doc = _utility_doc({BH: 20, TREASURY: 6})
+    assert doc["gp_multiplier"] == pytest.approx(1.4)
+    assert [r["key"] for r in doc["ranked"] if r["kind"] == "utility"] == [TREASURY]
+
+
+def test_guild_spend_section_renders_every_kind():
+    assert build._render_guild_spend_section(None) == ""
+    out = build._render_guild_spend_section(_utility_doc({BH: 8, TREASURY: 6}))
+    assert 'id="guild-spend-section"' in out
+    for kind in ("combat", "skilling", "shrine", "utility"):
+        assert f"<td>{kind}</td>" in out
+    assert "Builder&#x27;s Hall" in out and "tokens, not GP" in out and "1.16" in out

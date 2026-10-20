@@ -1514,6 +1514,24 @@ def points_for_result(
     )
 
 
+def combat_points_for_credit(tiers_cleared: int, final_tier_fraction: float = 0.0) -> float:
+    """BASE guild points for ONE combat trial: csim guildTrialStats.computeTrialRewards.
+
+    400 for the first tier, +200 per further tier, plus half a tier's reward for the
+    unfinished one (an attempt on tier 1 is worth up to half of 400). Multiply by
+    gp_multiplier for what the guild receives.
+    """
+    f = _clamp(final_tier_fraction, 0.0, 1.0)
+    if tiers_cleared > 0:
+        return 400 + 200 * (tiers_cleared - 1) + 0.5 * f * 200
+    return 0.5 * f * 400
+
+
+def gp_multiplier(builders_hall_level: Optional[int]) -> float:
+    """Received / base guild points: 1 + 0.02 * Builder's Hall level (None -> 1.0)."""
+    return 1.0 + config.BUILDERS_HALL_GP_BONUS_PER_LEVEL * (builders_hall_level or 0)
+
+
 # ---------------------------------------------------------------------------
 # Simulation result types
 # ---------------------------------------------------------------------------

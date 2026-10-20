@@ -2158,6 +2158,70 @@ def _payback(value) -> str:
     return f"{value:,.0f}" if value >= 100 else f"{value:,.1f}"
 
 
+def _render_guild_spend_section(doc: Optional[dict]) -> str:
+    """Every guild-point spend from buildings.json (``_buildings_artefact``) in one
+    table, soonest payback first; "" when there is nothing to rank.
+    """
+    if not doc or not doc["ranked"]:
+        return ""
+    rows = []
+    for x in doc["ranked"]:
+        gain = x["gain_gp_per_week"]
+        gain_cell = (f"+{_cp(gain)} GP" if gain is not None
+                     else f"+{_cp(x.get('gain_tokens_per_member_week'))} tokens/member")
+        pw = x["payback_weeks"]
+        weeks_cell = (f"<strong>{_payback(pw)}</strong>" if pw is not None
+                      else "&mdash; (tokens, not GP)")
+        notes = " · ".join(filter(None, [x.get("confidence"), x.get("recommendation")]))
+        rows.append(
+            ("<tr class=dim>" if pw is None else "<tr>")
+            + f"<td>{html.escape(x['kind'])}</td>"
+            f"<th>{html.escape(x['name'])}</th>"
+            f"<td class=num>{x['from_level']} &rarr; {x['to_level']}</td>"
+            f"<td class=num>{_gp(round(x['cost']))}</td>"
+            f"<td class=num>{gain_cell}</td>"
+            f"<td class=num>{weeks_cell}</td>"
+            f"<td>{html.escape(notes)}</td>"
+            "</tr>"
+        )
+    meta = ["Every guild-point spend this build can price, soonest payback first."]
+    if doc.get("gp_basis") == "received":
+        m = doc["gp_multiplier"]
+        meta.append(
+            f"GP is what the guild receives: base trial points &times; {m:.2f} "
+            f"(Builder's Hall L{doc['builders_hall_level']}). The detail sections "
+            f"below quote base points; divide their weeks by {m:.2f} to compare."
+        )
+    meta.append(
+        "Shrine rows are best case (full adoption); skilling rows assume the tier is "
+        "earned on every draw; combat rows are simulated by the combat optimiser. "
+        "Upgrades with no payback are listed as checked and rejected in the sections "
+        "below."
+    )
+    extra = [html.escape(n) for n in doc.get("notes") or []]
+    combat = doc.get("combat") or {}
+    if not combat.get("available") and combat.get("unavailable"):
+        extra.append("Combat buildings are missing: " + html.escape(combat["unavailable"]))
+    paragraphs = f'<p class="meta">{" ".join(meta)}</p>' + "".join(
+        f'\n    <p class="meta">{n}</p>' for n in extra
+    )
+    return f"""
+  <section class="card" id="guild-spend-section">
+    <h2>Spending guild points &mdash; every option, side by side</h2>
+    {paragraphs}
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Kind</th><th>Upgrade</th><th class=num>Level</th>
+          <th class=num>Cost (gp)</th><th class=num>Gain / week</th>
+          <th class=num>Weeks to repay</th><th>Notes</th>
+        </tr></thead>
+        <tbody>{"".join(rows)}</tbody>
+      </table>
+    </div>
+  </section>"""
+
+
 def _render_upgrades_section(week: dict) -> str:
     """Bottom-of-page section: what does the next tier cost, and when does it pay?
 
@@ -2858,8 +2922,13 @@ def _render_trials_html(
     draw_warning: str = "",
     counterpart: Optional[dict] = None,
     ladder: Optional[dict] = None,
+    guild_spend: Optional[dict] = None,
 ) -> str:
     """Render the full trials page from a ``WeekResult`` dict.
+
+    ``guild_spend`` is the buildings.json doc (``_buildings_artefact``); when given,
+    the "Spending guild points" table sits above the upgrade sections. ``None``
+    (the maxbuff counterfactual, or the flag off) omits it.
 
     ``draw_warning``, when set, is shown as a banner at the top of the page: the
     live draw could not be read and the skills below are the last known ones (see
@@ -2966,6 +3035,7 @@ def _render_trials_html(
     )
 
     upgrades_section = _render_upgrades_section(week)
+    spend_section = _render_guild_spend_section(guild_spend)
     shrines_section = _render_shrines_section(week)
     min_levels_section = _render_min_levels_section(week)
     buff_toggle = _render_buff_toggle(week, counterpart)
@@ -3291,7 +3361,7 @@ def _render_trials_html(
        (beyond {len(week['skills'])} &times; {week['cap']}).</p>
     <p>{bench_html}</p>
   </section>
-{min_levels_section}{upgrades_section}{shrines_section}</main>
+{min_levels_section}{spend_section}{upgrades_section}{shrines_section}</main>
 <footer>
   <h3>Assumptions &amp; caveats</h3>
   <p>This page is a <strong>model</strong>, not live game data. Every number
@@ -4708,6 +4778,11 @@ class _GuildInputs:
     # not a cutoff — the tab is written only when a member running the module opens
     # the guild panel, and an old capture still beats the zeros it replaces.
     buildings_captured_at: str = ""
+    # Every non-skilling building level from the SAME Buildings observation
+    # (buildings.GuildBuildings.other_levels, keyed by hrid): Builder's Hall and
+    # Treasury for buildings.json. None = tab not observed. A plain default, not a
+    # factory, so tests that build inputs with __new__ read None.
+    other_building_levels: Optional[dict[str, int]] = None
     # Non-empty when the levels could not be used: EITHER the tab has never been
     # written (normal, and LI's position today) OR it could not be read. Those are
     # different things an officer would act on differently, so the text says which.
@@ -5310,6 +5385,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
     # which is all zeros — i.e. today's shipped behaviour, not a stale guess.
     building_levels: dict[str, int] = {}
     buildings_captured_at = ""
+    other_building_levels: Optional[dict[str, int]] = None
     buildings_unavailable = ""
     observation: Optional[buildings_model.GuildBuildings] = None
     # Why the tab was not read, for the seat cap's fallback note. Read only while
@@ -5336,6 +5412,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             if observation.observed:
                 building_levels = observation.skill_levels
                 buildings_captured_at = observation.captured_at
+                other_building_levels = observation.other_levels
             else:
                 # NOT a failure. The tabs are created by hand and empty, and this one
                 # has never been written. Said in the words an officer can act on,
@@ -5400,6 +5477,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
         roster_unavailable=roster_unavailable,
         building_levels=building_levels,
         buildings_captured_at=buildings_captured_at,
+        other_building_levels=other_building_levels,
         buildings_unavailable=buildings_unavailable,
         party_cap=party_cap,
         combat=combat,
@@ -5704,9 +5782,10 @@ def _fetch_building_value(
 def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -> dict:
     """buildings.json: every guild upgrade this build knows a price and a gain for.
 
-    THREE SOURCES, ONE SCALE. Every Guild Point figure is BASE trial points (no
-    Builder's Hall multiplier) and every payback is in WEEKS, so ``ranked`` can put
-    a combat building beside a skilling one:
+    FOUR SOURCES, ONE SCALE. Every Guild Point figure in ``ranked`` is RECEIVED GP
+    (base trial points x trials.gp_multiplier(Builder's Hall level)) and every
+    payback is in WEEKS, so ``ranked`` can put a combat building beside a skilling
+    one. The source blocks below stay in BASE points (``gp_basis: "base"``):
 
       * combat   — the optimiser's tab (building_value.py): simulated, with a 95%
                    interval and a verdict; only rows with a payback are ranked.
@@ -5715,6 +5794,9 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
                    weeks_to_return at config.TRIAL_WEEKS_BETWEEN_DRAWS.
       * shrine   — trials' shrine probes; weeks_to_return is a BEST case (full
                    adoption by every member), as the trials page says.
+      * utility  — Builder's Hall (GP on every trial, so 0.02 x weekly base GP) and
+                   Treasury (tokens, not GP: listed unranked). Weekly base GP is
+                   skilling modelled + combat observed (config.COMBAT_TRIALS_OBSERVED).
 
     The source blocks are carried verbatim beside ``ranked`` so a reader who wants
     the detail (intervals, tiers, adoption) does not need a second fetch.
@@ -5763,22 +5845,76 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
             "payback_weeks": u["weeks_to_return"],
             "confidence": "best case (full adoption)", "recommendation": None,
         })
-    ranked.sort(key=lambda x: (x["payback_weeks"], x["kind"], str(x["key"])))
-    for i, x in enumerate(ranked, start=1):
+    levels = getattr(inputs, "other_building_levels", None)  # None: tab unobserved
+    bh = None if levels is None else levels.get(config.BUILDERS_HALL_HRID)
+    m = trials_model.gp_multiplier(bh)
+    for x in ranked:                      # base -> received, every source alike
+        if x["gain_gp_per_week"] is not None:
+            x["gain_gp_per_week"] *= m
+        x["payback_weeks"] /= m
+
+    notes: list[str] = []
+    weekly_base = None
+    if levels is None:
+        notes.append("Builder's Hall and Treasury are not listed: the Buildings tab "
+                     "has not been observed, so their levels are unknown.")
+    else:
+        obs = config.COMBAT_TRIALS_OBSERVED.get(site.key)
+        combat_base = (sum(trials_model.combat_points_for_credit(t, f) for t, f in obs[0])
+                       if obs else None)
+        weekly_base = (week.get("total_credit_points") or 0.0) + (combat_base or 0.0)
+        basis = (f"skilling modelled + combat observed ({obs[1]})" if obs
+                 else "skilling only: no combat observation, a lower bound")
+        for hrid, name in ((config.BUILDERS_HALL_HRID, "Builder's Hall"),
+                           (config.TREASURY_HRID, "Treasury")):
+            lv = levels.get(hrid)
+            cost = (None if lv is None
+                    else config.GUILD_UTILITY_BUILDING_POINT_COSTS.get(lv + 1))
+            if cost is None:              # row not on the tab, or at the cap
+                continue
+            row = {"kind": "utility", "name": name, "key": hrid,
+                   "from_level": lv, "to_level": lv + 1, "cost": cost,
+                   "confidence": basis}
+            if hrid == config.BUILDERS_HALL_HRID:
+                gain = config.BUILDERS_HALL_GP_BONUS_PER_LEVEL * weekly_base  # received increment
+                row.update(gain_gp_per_week=gain,
+                           payback_weeks=cost / gain if gain else None,
+                           recommendation=(f"also lifts every other row x"
+                                           f"{(m + config.BUILDERS_HALL_GP_BONUS_PER_LEVEL) / m:.3f}"))
+            else:
+                tok = (config.TRIAL_TOKENS_BASE_POINTS_SHARE
+                       * config.TREASURY_TOKEN_BONUS_PER_LEVEL * weekly_base)
+                row.update(gain_gp_per_week=None, gain_tokens_per_member_week=tok,
+                           payback_weeks=None,
+                           recommendation=(f"tokens, not GP: +{tok:,.0f} per member a "
+                                           f"week (x{config.TRIAL_TOKENS_PARTICIPATION_MULTIPLIER:g} "
+                                           f"for participants)"))
+            ranked.append(row)
+
+    ranked.sort(key=lambda x: (x["payback_weeks"] is None, x["payback_weeks"] or 0.0,
+                               x["kind"], str(x["key"])))
+    for i, x in enumerate((x for x in ranked if x["payback_weeks"] is not None), start=1):
         x["rank"] = i
+    for x in ranked:
+        x.setdefault("rank", None)        # Treasury: tokens, not ranked against GP
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "guild": site.key,
         "guild_id": config.GUILD_IDS.get(site.key),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "gp_basis": "base",
+        "gp_basis": "received" if bh is not None else "base",
+        "gp_multiplier": m,
+        "builders_hall_level": bh,
+        "weekly_base_gp": weekly_base,
+        "notes": notes,
         "payback_unit": "weeks",
         "ranked": ranked,
         "combat": combat,
-        "skilling": {"scope": "this week's drawn skills",
+        "skilling": {"scope": "this week's drawn skills", "gp_basis": "base",
                      "weeks_between_draws": between, "upgrades": skilling},
-        "shrines": {"scope": "best case: full adoption", "upgrades": shrines},
+        "shrines": {"scope": "best case: full adoption", "gp_basis": "base",
+                    "upgrades": shrines},
     }
 
 
@@ -5850,11 +5986,12 @@ def _write_guild(
     # --- Every guild upgrade, ranked by payback (buildings.json) ---------------
     # Its own file, NOT a key on trials.json: the userscript fetches trials.json on
     # every panel open and has no use for this. Gated: the flag off removes it.
-    if config.BUILDING_VALUE_SOURCE_ENABLED:
+    # The same doc feeds the trials page's "Spending guild points" section.
+    spend = (_buildings_artefact(site, inputs, week)
+             if config.BUILDING_VALUE_SOURCE_ENABLED else None)
+    if spend is not None:
         (out / BUILDINGS_JSON).write_text(
-            json.dumps(_buildings_artefact(site, inputs, week), indent=2,
-                       ensure_ascii=False),
-            encoding="utf-8",
+            json.dumps(spend, indent=2, ensure_ascii=False), encoding="utf-8"
         )
     else:
         (out / BUILDINGS_JSON).unlink(missing_ok=True)
@@ -5906,6 +6043,7 @@ def _write_guild(
                 else None
             ),
             ladder=ladder,
+            guild_spend=spend,
         ),
         encoding="utf-8",
     )

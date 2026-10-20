@@ -817,6 +817,24 @@ def test_points_formula():
     assert trials.points_for_tier(11) == 1200
 
 
+def test_combat_points_mirror_csim():
+    c = trials.combat_points_for_credit
+    assert c(0, 0) == 0 and c(0, 0.5) == 100
+    assert c(1, 0) == 400 and c(2, 0) == 600
+    assert c(13, 0.05) == pytest.approx(2805)
+    assert c(12, 1.5) == pytest.approx(2700)       # fraction clamped to 1
+    for t in range(1, 21):
+        for f in (0.0, 0.3, 1.0):
+            assert c(t, f) == pytest.approx(200 * (t + 0.5 * f + 1))
+
+
+def test_gp_multiplier():
+    assert trials.gp_multiplier(None) == 1.0 and trials.gp_multiplier(0) == 1.0
+    assert trials.gp_multiplier(8) == pytest.approx(1.16)
+    assert trials.gp_multiplier(9) == pytest.approx(1.18)
+    assert config.GUILD_UTILITY_BUILDING_POINT_COSTS is config.GUILD_SHRINE_POINT_COSTS
+
+
 # ---------------------------------------------------------------------------
 # Guild shrines (patch 2026-08-11: "Shrine buffs now apply inside guild Trials")
 # ---------------------------------------------------------------------------
@@ -1433,6 +1451,28 @@ def _two_regime_weeks():
     with trials.community_buff_level(config.COMMUNITY_BUFF_MAX_LEVEL):
         maxed = trials.run_week(members, skills=skills, strategy="random").to_dict()
     return base, maxed
+
+
+def test_trials_page_places_the_guild_spend_table_above_the_upgrades():
+    from src import build
+
+    base, _ = _two_regime_weeks()
+    site = build.GUILD_SITES[0]
+    assert "guild-spend-section" not in build._render_trials_html(base, site)
+    base["building_upgrades"] = [
+        {"skill": "Foraging", "building": "Guild Garden", "reachable": True,
+         "levels_needed": 1, "from_level": 0, "to_level": 1, "skill_levels_now": 0,
+         "skill_levels_after": 2, "tier_now": 3, "tier_after": 4,
+         "points_gained": 100, "total_cost": 500, "draws_to_return": 5.0,
+         "weeks_to_return": 12.5}]
+    doc = {"ranked": [{"kind": "skilling", "name": "Guild Garden", "key": "Foraging",
+                       "from_level": 0, "to_level": 1, "cost": 500,
+                       "gain_gp_per_week": 40.0, "payback_weeks": 12.5,
+                       "confidence": "modelled", "recommendation": None, "rank": 1}],
+           "gp_basis": "base", "notes": [], "combat": {"available": True}}
+    page = build._render_trials_html(base, site, guild_spend=doc)
+    assert 'id="upgrades-section"' in page
+    assert page.index('id="guild-spend-section"') < page.index('id="upgrades-section"')
 
 
 def test_trials_page_switch_cross_links_and_marks_the_active_level():
