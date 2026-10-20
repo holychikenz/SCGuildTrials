@@ -427,6 +427,44 @@ def test_probe_prices_the_single_step_on_expected_points():
     assert u.at_cap is False
 
 
+def test_probe_multi_level_buy_agrees_with_the_real_model():
+    # A party inside a tier band (real model, no fakes): whatever k the probe picks,
+    # its fields must line up with a direct race and expectation at L+k.
+    party = [_member(f"M{i}", {"Brewing": 108}) for i in range(10)]
+    u = trials.probe_building_upgrade(party, "Brewing")
+    assert u.to_level == u.from_level + u.levels
+    bl = trials.building_skill_levels(u.to_level)
+    after = trials.simulate_race(party, "Brewing", None, bl)
+    assert u.skill_levels_after == bl
+    assert u.tier_after == after.tier_reached
+    assert u.points_after == pytest.approx(
+        trials.expected_credit_points(party, "Brewing", after, bl))
+    assert u.total_cost == trials.guild_building_upgrade_total_cost(0, u.to_level)
+    assert u.points_gained_per_level == pytest.approx(u.points_gained / u.levels)
+    # And it IS the best rate among every k it could have taken.
+    now = trials.simulate_race(party, "Brewing")
+    e0 = trials.expected_credit_points(party, "Brewing", now, 0)
+    rates = []
+    for k in range(1, config.BUILDING_UPGRADE_LOOKAHEAD + 1):
+        r = trials.simulate_race(party, "Brewing", None, trials.building_skill_levels(k))
+        gain = trials.expected_credit_points(
+            party, "Brewing", r, trials.building_skill_levels(k)) - e0
+        if gain > 0:
+            rates.append(trials.guild_building_upgrade_total_cost(0, k) / gain)
+    assert u.total_cost / u.points_gained == pytest.approx(min(rates))
+
+
+def test_expected_points_never_fall_as_the_building_rises():
+    for level in (95, 108, 113, 130):
+        party = [_member(f"M{i}", {"Brewing": level}) for i in range(10)]
+        values = []
+        for b in range(config.GUILD_BUILDING_MAX_LEVEL + 1):
+            bl = trials.building_skill_levels(b)
+            r = trials.simulate_race(party, "Brewing", None, bl)
+            values.append(trials.expected_credit_points(party, "Brewing", r, bl))
+        assert all(b >= a - 1e-9 for a, b in zip(values, values[1:])), level
+
+
 def _fake_expected(monkeypatch, by_level):
     """Pin expected points per BUILDING level, so the lookahead's choice is exact."""
     monkeypatch.setattr(
@@ -1066,7 +1104,9 @@ def test_credit_points_reduce_to_the_step_function_when_the_rate_is_zero(monkeyp
 def test_credit_points_are_monotone_in_party_throughput():
     """Stronger is never worth less -- including ACROSS tier boundaries.
 
-    The reason a building level never reads as a loss, and the reason partial credit does not punish a party for crossing a boundary: completing
+    The deterministic half of why a building level never reads as a loss (the probe
+    prices on expected points; see the expected-points sweep below), and the reason
+    partial credit does not punish a party for crossing a boundary: completing
     a tier gains TRIAL_POINTS_PER_TIER while surrendering at most rate*PER_TIER of
     partial credit, so with rate <= 1 the step always dominates the loss.
     """

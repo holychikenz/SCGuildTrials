@@ -2236,8 +2236,9 @@ def _render_upgrades_section(week: dict) -> str:
     """Bottom-of-page section: what is one more building level worth, and when does it pay?
 
     Reads the ``building_upgrades`` probes computed by
-    ``trials.probe_building_upgrade`` — one per drawn skill, each pricing exactly
-    one level (L -> L+1) on expected points (partial credit included). Rows are
+    ``trials.probe_building_upgrade`` — one per drawn skill, each the best-rate buy
+    L -> L+k (k <= config.BUILDING_UPGRADE_LOOKAHEAD) on expected points (partial
+    credit included). Rows are
     ordered by payback, soonest first; buildings at the cap or with no gain are
     summarised in one line so the reader can see they were checked rather than
     omitted.
@@ -2298,7 +2299,7 @@ def _render_upgrades_section(week: dict) -> str:
         rejected = ", ".join(
             f"{html.escape(u['building'])} "
             + ("(already at the level cap)" if u.get("at_cap")
-               else "(no expected gain within the next "
+               else "(no gain within the next "
                     f"{min(config.BUILDING_UPGRADE_LOOKAHEAD, config.GUILD_BUILDING_MAX_LEVEL - u['from_level'])}"
                     " levels)")
             for u in rejected_rows
@@ -5538,7 +5539,7 @@ def _compute_unit(job: dict) -> dict:
         if level is None:
             # The published unit also rates its own plan at every rung of the buff
             # ladder, for the page's level selector. It is the SAME search — one
-            # optimize() call, twenty score_assignment() calls at ~2ms each — so the
+            # optimize() call, twenty score_assignment() calls at ~20ms each — so the
             # ladder is free beside the unit that carries it, and could not be
             # computed anywhere else without redoing the search or shipping the
             # parties between processes.
@@ -5857,7 +5858,8 @@ def _buildings_artefact(site: "GuildSite", inputs: "_GuildInputs", week: dict) -
         if x["gain_gp_per_week"] is not None:
             x["gain_gp_per_week"] *= m
         x["payback_weeks"] /= m
-        if x.get("levels", 1) > 1:      # skilling multi-level buy: its average rate
+        if x.get("levels", 1) > 1 and x["gain_gp_per_week"] is not None:
+            # skilling multi-level buy: its average rate
             x["recommendation"] = (f"{x['levels']} levels, avg "
                                    f"+{x['gain_gp_per_week'] / x['levels']:.1f} GP/week each")
 

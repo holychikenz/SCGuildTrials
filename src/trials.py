@@ -1918,10 +1918,16 @@ def probe_building_upgrade(
     a tier, so a single deterministic step is lumpy; the expectation smooths it.
 
     The party is held FIXED, so the gain is a LOWER BOUND: re-optimising the
-    assignment with the stronger building could only do better.
+    assignment with the stronger building could only do better. Ranking is by rate
+    alone, with no ceiling on the bundle's total cost; ``next_level_cost`` is
+    carried so the single next step stays visible.
 
-    ``current`` may be passed to reuse the already-simulated race at the current
-    level (identical inputs give an identical race).
+    ``current`` may be passed to reuse the already-simulated race (and its
+    ``expected_points``, when run_week has attached it) at the current level.
+
+    shortcut: expected_credit_points prices at config.TARGET_SCALE whatever
+    ``target_scale`` the races use; identical on every published path (None), thread
+    it through if a caller ever passes a non-default scale.
     """
     from_level = guild_building_level(skill)
     at_cap = from_level >= config.GUILD_BUILDING_MAX_LEVEL
@@ -1950,7 +1956,10 @@ def probe_building_upgrade(
         simulate_race(party, skill, target_scale, building_skill_levels(from_level + k))
         for k in range(1, lookahead + 1)
     ]
-    expected = [expected_credit_points(party, skill, now, levels_now)] + [
+    e_now = (current.expected_points if current is not None
+             and current.expected_points is not None
+             else expected_credit_points(party, skill, now, levels_now))
+    expected = [e_now] + [
         expected_credit_points(
             party, skill, r, building_skill_levels(from_level + k)
         )
