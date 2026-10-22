@@ -1206,7 +1206,7 @@ def test_expected_points_reduces_to_the_deterministic_score_as_sigma_vanishes(
     party = _ramp_party()
     r = trials.simulate_race(party, "Foraging")
     monkeypatch.setattr(config, "RISK_SIGMA_SYSTEMATIC", 0.0)
-    monkeypatch.setattr(trials, "clear_sigma", lambda *a, **k: 0.0)
+    monkeypatch.setattr(trials, "_variance_rate", lambda *a, **k: 0.0)  # no dice
     assert trials.expected_credit_points(party, "Foraging", r) == pytest.approx(
         r.credit_points, abs=1e-9
     )
@@ -1273,6 +1273,63 @@ def test_cumulative_tier_times_race_past_the_buzzer():
     # A party that cannot move has no curve at all.
     blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
     assert trials._cumulative_tier_times([blank], "Foraging", 5) == []
+
+
+def _two_pass_reference(party, skill, sigma_tier, max_tier):
+    """The pre-2026-10 clear_sigma and _cumulative_tier_times, verbatim in their
+    arithmetic: two separate passes, each re-preparing the party. The one-pass
+    _clearing_curve must reproduce both BIT FOR BIT (one ULP re-seats parties)."""
+    prepared = [p for p in (trials._prepare_member(
+        m, skill, trials.guild_building_skill_levels(skill),
+        None if config.ROSTER_USE_SHRINES else trials.guild_shrine_bonuses(),
+    ) for m in party) if p is not None]
+    if not prepared:
+        return [], None
+    n = len(party)
+    sigma, cumulative, variance = None, 0.0, 0.0
+    for t in range(1, sigma_tier + 1):
+        rate = sum(trials.success(lv, t, sb, b) * d * wp / a
+                   for lv, sb, b, d, wp, a in prepared)
+        if rate <= 0:
+            break
+        target = trials.effective_target(t, n, config.TARGET_SCALE)
+        cumulative += target / rate
+        variance += target * trials._variance_rate(prepared, t) / rate ** 3
+    else:
+        sigma = math.sqrt(variance) / cumulative if sigma_tier >= 1 else None
+    taus, cumulative = [], 0.0
+    for t in range(1, max(1, max_tier) + 1):
+        rate = sum(trials.success(lv, t, sb, b) * d * wp / a
+                   for lv, sb, b, d, wp, a in prepared)
+        if rate <= 0:
+            break
+        cumulative += trials.effective_target(t, n, config.TARGET_SCALE) / rate
+        taus.append(cumulative)
+    return taus, sigma
+
+
+@pytest.mark.parametrize("skill", ["Foraging", "Milking", "Cooking", "Enhancing"])
+def test_one_pass_pricing_is_bit_identical_to_the_two_pass_original(skill):
+    from tests.golden_fixture import golden_members
+
+    members = golden_members()
+    blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
+    parties = [members[:5], members[5:20], members[::3], [blank] + members[20:24]]
+    for party in parties:
+        race = trials.simulate_race(party, skill)
+        lookahead = race.tier_reached + config.RISK_LOOKAHEAD_TIERS
+        for sigma_tier in (1, max(1, race.tier_reached), race.tier_reached + 2):
+            taus, sigma = _two_pass_reference(party, skill, sigma_tier, lookahead)
+            assert trials.clear_sigma(party, skill, sigma_tier) == sigma
+            assert trials._cumulative_tier_times(party, skill, lookahead) == taus
+        # Handing the race's preparation in changes nothing, to the bit.
+        prepared = trials._prepare_party(party, skill)
+        shared = trials.simulate_race(party, skill, prepared=prepared)
+        assert shared.to_dict() == race.to_dict()
+        assert trials.expected_credit_points(
+            party, skill, race, prepared=prepared
+        ) == trials.expected_credit_points(party, skill, race)
+    assert trials.expected_credit_points([blank], skill, race) is None
 
 
 # ---------------------------------------------------------------------------

@@ -1168,33 +1168,58 @@ def clear_sigma(
     """
     if tier < 1:
         return None
+    prepared = [p for p in _prepare_party(party, skill, building_levels) if p]
+    if not prepared:
+        return None
+    return _clearing_curve(prepared, len(party), tier, 0)[1]
+
+
+def _prepare_party(
+    party: list[MemberRow], skill: str, building_levels: Optional[int] = None
+) -> list[Optional[tuple]]:
+    """:func:`_prepare_member` for each member (None where they cannot contribute).
+
+    Resolved once so a race and its pricing (:func:`expected_credit_points`) can
+    share it — the optimizer pays for it once per evaluation instead of four times.
+    """
     if building_levels is None:
         building_levels = guild_building_skill_levels(skill)
     shrine = None if config.ROSTER_USE_SHRINES else guild_shrine_bonuses()
-    prepared = [
-        p
-        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
-        if p is not None
-    ]
-    if not prepared:
-        return None
+    return [_prepare_member(m, skill, building_levels, shrine) for m in party]
 
-    n = len(party)
+
+def _clearing_curve(
+    prepared: list[tuple], n: int, sigma_tier: int, max_tier: int
+) -> tuple[list[float], Optional[float]]:
+    """``(taus, sigma)`` in ONE pass over the tiers, each party rate summed once.
+
+    ``taus``: cumulative clear times for tiers ``1..max(1, max_tier)``, stopping at
+    the first tier the party cannot move in (:func:`_cumulative_tier_times`).
+    ``sigma``: the dice sd of ``ln(tau_sigma_tier)`` (:func:`clear_sigma`); None when
+    ``sigma_tier < 1`` or the party stalls at or below it. The same sums in the same
+    order as the two passes this replaced, so both stay bit-identical.
+    """
+    last_tau = max(1, max_tier)
     cumulative = 0.0
     variance = 0.0
-    for t in range(1, tier + 1):
+    taus: list[float] = []
+    sigma = None
+    for t in range(1, max(last_tau, sigma_tier) + 1):
         rate = sum(
             success(level, t, success_bonus, building) * double * wp / asec
             for level, success_bonus, building, double, wp, asec in prepared
         )
         if rate <= 0:
-            return None
+            break
         target = effective_target(t, n, config.TARGET_SCALE)
         cumulative += target / rate
-        variance += target * _variance_rate(prepared, t) / rate ** 3
-    if cumulative <= 0:
-        return None
-    return math.sqrt(variance) / cumulative
+        if t <= last_tau:
+            taus.append(cumulative)
+        if t <= sigma_tier:
+            variance += target * _variance_rate(prepared, t) / rate ** 3
+            if t == sigma_tier and cumulative > 0:
+                sigma = math.sqrt(variance) / cumulative
+    return taus, sigma
 
 
 def clear_probability(
@@ -1252,30 +1277,10 @@ def _cumulative_tier_times(
     second pass over the party and the optimizer calls the race ~87k times per
     pipeline. Both are wanted for the handful of races that get published.
     """
-    if building_levels is None:
-        building_levels = guild_building_skill_levels(skill)
-    shrine = None if config.ROSTER_USE_SHRINES else guild_shrine_bonuses()
-    prepared = [
-        p
-        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
-        if p is not None
-    ]
+    prepared = [p for p in _prepare_party(party, skill, building_levels) if p]
     if not prepared:
         return []
-
-    n = len(party)
-    cumulative = 0.0
-    out: list[float] = []
-    for tier in range(1, max(1, max_tier) + 1):
-        party_rate = sum(
-            success(level, tier, success_bonus, building) * double * wp / asec
-            for level, success_bonus, building, double, wp, asec in prepared
-        )
-        if party_rate <= 0:
-            break
-        cumulative += effective_target(tier, n, config.TARGET_SCALE) / party_rate
-        out.append(cumulative)
-    return out
+    return _clearing_curve(prepared, len(party), 0, max_tier)[0]
 
 
 def _normal_pdf(z: float) -> float:
@@ -1287,6 +1292,7 @@ def expected_credit_points(
     skill: str,
     result: "TrialResult",
     building_levels: Optional[int] = None,
+    prepared: Optional[list] = None,
 ) -> Optional[float]:
     """E[guild points] for this lineup, under the calibrated multiplicative shock.
 
@@ -1342,17 +1348,18 @@ def expected_credit_points(
 
     budget = config.TRIAL_TIME_BUDGET_SECONDS
     tier = max(1, result.tier_reached)
-    sigma_dice = clear_sigma(party, skill, tier, building_levels)
+    # ``prepared``: the race's own _prepare_party list, when the caller holds it.
+    if prepared is None:
+        prepared = _prepare_party(party, skill, building_levels)
+    movers = [p for p in prepared if p is not None]
+    if not movers:
+        return None
+    taus, sigma_dice = _clearing_curve(
+        movers, len(party), tier, result.tier_reached + config.RISK_LOOKAHEAD_TIERS
+    )
     if sigma_dice is None:
         return None
     sigma = math.hypot(sigma_dice, config.RISK_SIGMA_SYSTEMATIC)
-
-    taus = _cumulative_tier_times(
-        party,
-        skill,
-        result.tier_reached + config.RISK_LOOKAHEAD_TIERS,
-        building_levels,
-    )
     if not taus:
         return None
 
@@ -1613,6 +1620,7 @@ def simulate_race(
     skill: str,
     target_scale: Optional[float] = None,
     building_levels: Optional[int] = None,
+    prepared: Optional[list] = None,
 ) -> TrialResult:
     """Simulate the 1-hour cumulative tier race for ``party`` in ``skill``.
 
@@ -1657,12 +1665,12 @@ def simulate_race(
     tier_reached = 0
     partial_fraction = 0.0
 
-    # Tier-independent per-member factors, computed once for the whole race.
-    prepared = [
-        p
-        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
-        if p is not None
-    ]
+    # Tier-independent per-member factors, computed once for the whole race — or
+    # handed in (``_prepare_party``) by a caller that also prices the race.
+    each = prepared if prepared is not None else _prepare_party(
+        party, skill, building_levels
+    )
+    prepared = [p for p in each if p is not None]
 
     tier = 1
     while tier <= _MAX_TIER:
@@ -1730,9 +1738,8 @@ def simulate_race(
     # the two reported rates reuse the prepared factors.
     roster = []
     sheet_col = _sheet_column(skill)
-    for m in party:
+    for m, p in zip(party, each):
         b = member_bonuses(m, skill, building_levels, shrine)
-        p = _prepare_member(m, skill, building_levels, shrine)
         if p is None:
             rate_tier1 = rate_final = 0.0
         else:

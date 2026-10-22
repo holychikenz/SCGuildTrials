@@ -55,6 +55,7 @@ from . import config
 from .reader import MemberRow
 from .trials import (
     Assignment,
+    _prepare_party,
     clear_probability,
     expected_credit_points,
     guild_building_skill_levels,
@@ -69,7 +70,9 @@ from .trials import (
 _MISSING = object()
 
 
-def _objective_value(party: list[MemberRow], skill: str, result) -> float:
+def _objective_value(
+    party: list[MemberRow], skill: str, result, prepared: Optional[list] = None
+) -> float:
     """The number every strategy in this module maximises, per config.OPT_OBJECTIVE.
 
     ONE function, called from exactly one place (:meth:`AssignmentScorer._evaluate`),
@@ -102,7 +105,7 @@ def _objective_value(party: list[MemberRow], skill: str, result) -> float:
             "config.OPT_OBJECTIVE = 'expected' requires RISK_EXPECTED_POINTS = True; "
             "set OPT_OBJECTIVE = 'credit' to optimise the deterministic score."
         )
-    expected = expected_credit_points(party, skill, result)
+    expected = expected_credit_points(party, skill, result, prepared=prepared)
     return objective_of(result.credit_points, expected)
 
 
@@ -240,9 +243,11 @@ class AssignmentScorer:
             return cached
         party = [self.members[i] for i in key[1]]
         self.sim_calls += 1
-        result = simulate_race(party, skill, self.target_scale)
+        # One preparation shared by the race and its pricing (see _prepare_party).
+        prepared = _prepare_party(party, skill)
+        result = simulate_race(party, skill, self.target_scale, prepared=prepared)
         value = (
-            _objective_value(party, skill, result),
+            _objective_value(party, skill, result, prepared),
             time_slack_fraction(result),
             result.tier_reached,
         )
