@@ -1064,7 +1064,7 @@ def _expected_phrase(trial: dict) -> str:
     )
 
 
-def _marginal_seat_phrase(trial: dict, cap: int) -> str:
+def _marginal_seat_phrase(trial: dict) -> str:
     """The weakest seated member's share of party rate, against the break-even.
 
     WHY THIS IS ON THE PAGE. Partial credit prices a marginal seat: a member earns
@@ -1077,9 +1077,7 @@ def _marginal_seat_phrase(trial: dict, cap: int) -> str:
     2026-09-26 the cap is read off each guild's Skilling Encampment level
     (config.derived_party_cap: 20 + 2 x level, anchored on the measured level 4 -> 28,
     SC parties of exactly 28 in the 2026-08/09 captures). A level not read falls back
-    to config.TRIAL_PARTY_CAPS with a build warning. ``cap`` is THIS guild's, taken
-    from the week it rendered (``week["cap"]``) rather than re-read from config, so
-    the line quotes the number the plan on the page was actually built with. If the
+    to config.TRIAL_PARTY_CAPS with a build warning. If the
     real cap were 20 (the largest party once observed, research/trial-tabs.md) then
     every tier, margin and probability on a 28-seat page would be optimistic by eight
     phantom contributors; if the game seats more than 28 the guild is leaving points
@@ -1107,9 +1105,6 @@ def _marginal_seat_phrase(trial: dict, cap: int) -> str:
             if pays
             else "so the weakest seat costs more than it adds."
         )
-        + f' The cap ({cap}) is itself unconfirmed &mdash; 20 is the '
-          f'largest party ever observed &mdash; and partial credit is what made being '
-          f'wrong about it cost measurable points.'
     )
 
 
@@ -1341,7 +1336,7 @@ def _render_trial_card(
     # trials.json old enough to lack rate_final) — a property of the party, not of
     # the buff regime, so a card without this line has none at any level and needs
     # no slot for the selector to fill.
-    marginal = _marginal_seat_phrase(trial, cap)
+    marginal = _marginal_seat_phrase(trial)
     marginal_html = (
         f'<p class="meta" id="c{t_index}-marg">{marginal}</p>' if marginal else ""
     )
@@ -2038,7 +2033,7 @@ def _assignment_detail(week: dict) -> str:
         return f"random split (seed {week['seed']}, cap {week['cap']})"
     return (
         f"optimised assignment via {_strategy_phrase(strategy)} "
-        f"(cap {week['cap']}) &middot; {week['total_points']} guild points"
+        f"(cap {week['cap']}) · {week['total_points']} guild points"
     )
 
 
@@ -2747,7 +2742,7 @@ def _buff_ladder_payload(week: dict, ladder: dict) -> dict:
                 {
                     "head": _card_headline(rung_trial),
                     "safe": _card_safety(rung_trial),
-                    "marg": _marginal_seat_phrase(rung_trial, week["cap"]),
+                    "marg": _marginal_seat_phrase(rung_trial),
                     "rh": _rate_header(rung_trial),
                     "rates": rates,
                     "tl": _timeline_cells(rung_trial),
@@ -4491,7 +4486,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   <h3>How this page is built</h3>
   <ol>
     <li><strong>Sign-ups are enforced.</strong> Every member who ticked a trial on
-        the sheet's <em>SC Trial Signup</em> tab is locked into that trial and shown
+        the sheet's <em>{html.escape(site.signup_tab)}</em> tab is locked into that trial and shown
         <span style="color:var(--on)">green</span>; they are never moved or benched
         in the plan.</li>
     <li><strong>Open seats are recommended fills.</strong> Remaining seats (up to the
@@ -4660,14 +4655,14 @@ def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSit
   <section class="card">
     <h2>Sign-up optimiser is currently inactive</h2>
     <p>This page enforces the guild's per-member trial sign-ups (the tick-box
-       <em>SC Trial Signup</em> tab) and recommends fills for the open seats. It is
+       <em>{html.escape(site.signup_tab)}</em> tab) and recommends fills for the open seats. It is
        paused because that sign-up table is not currently published in the
        expected format:</p>
     <p class="meta"><code>{html.escape(reason)}</code></p>
     <p>The guild sheet presently runs trials as <strong>free-assigned</strong>
        (members pick their own trial), so there is no tick-box sign-up table to
        enforce. This page repopulates automatically once a parseable
-       <em>SC Trial Signup</em> tab exists again.</p>
+       <em>{html.escape(site.signup_tab)}</em> tab exists again.</p>
     <p>In the meantime, the <a href="trials.html">Guild Trials</a> page shows the
        full-roster optimal assignment.</p>
   </section>

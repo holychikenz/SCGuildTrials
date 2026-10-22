@@ -132,3 +132,25 @@ def test_li_render_crash_still_ships_sc(site_env, monkeypatch, capsys):
     assert build.main() == 0
     assert (out / "index.html").exists()
     assert "li skipped" in capsys.readouterr().err
+
+
+def test_rendered_pages_carry_the_right_text(site_env):
+    """Finding 6: no double-escaped separator, no stale cap claim, and each guild's
+    sign-up page names its OWN sign-up tab."""
+    out, _ = site_env
+    assert build.main() == 0
+    for d in (out, out / "li"):
+        trials = (d / "trials.html").read_text()
+        assert "&amp;middot;" not in trials
+        assert "optimised assignment via" in trials and " · " in trials
+        assert "largest party ever observed" not in trials
+        assert "Marginal seat:" in trials
+    li_signup = (out / "li" / "signup.html").read_text()
+    assert "LI Trial Signup" in li_signup and "SC Trial Signup" not in li_signup
+    assert "SC Trial Signup" in (out / "signup.html").read_text()
+
+
+def test_inactive_signup_page_names_the_guilds_own_tab():
+    li = [s for s in build.GUILD_SITES if s.key == "li"][0]
+    page = build._render_signup_inactive_html("reason", "now", li)
+    assert "LI Trial Signup" in page and "SC Trial Signup" not in page
