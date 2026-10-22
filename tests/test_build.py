@@ -568,3 +568,16 @@ def test_restarts_split_across_processes_match_the_serial_ensemble(monkeypatch):
         return results
 
     assert plan(split) == plan(serial)
+
+
+def test_a_failed_restart_in_the_pool_becomes_that_units_result(monkeypatch):
+    """Findings 1 x 8: in the parallel path a (unit, restart) job that raises must come
+    back as that unit's exception, not escape _run_units and take every guild down."""
+    good = _restart_job({}, None)
+    bad = {**good, "members": None}          # raises inside the child's restart
+    monkeypatch.setattr(config, "BUILD_PARALLEL", True)
+    monkeypatch.setattr(config, "BUILD_MAX_WORKERS", 4)
+    monkeypatch.setattr(config, "TRIALS_BUFF_LEVEL_SLIDER", False)
+    first, second = build._run_units([bad, good])
+    assert isinstance(first, Exception)
+    assert isinstance(second, dict) and "week" in second
