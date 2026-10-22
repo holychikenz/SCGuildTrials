@@ -92,8 +92,10 @@ def test_a_failing_unit_does_not_leave_levels_bound(monkeypatch):
     monkeypatch.setattr(build.trials_model, "run_week", boom)
     monkeypatch.setattr(config, "TRIALS_BUFF_LEVEL_SLIDER", False)
 
-    with pytest.raises(RuntimeError):
-        build._run_units([_job({"Foraging": 9})])
+    # _run_units hands a failing unit's exception back in place of its result, so
+    # main() can skip an optional guild and still render the others.
+    [result] = build._run_units([_job({"Foraging": 9})])
+    assert isinstance(result, RuntimeError) and "fell over" in str(result)
 
     assert config.GUILD_BUILDING_LEVELS is saved
 
