@@ -2577,10 +2577,14 @@ def choose_assignment(
         if any(v is not None for v in min_levels.values()):
             for skill in skills:
                 limit = min_levels.get(skill)
+                party = assignment.parties[skill]
                 assignment.parties[skill] = [
-                    m for m in assignment.parties[skill]
-                    if meets_min_level(m, skill, limit)
+                    m for m in party if meets_min_level(m, skill, limit)
                 ]
+                # Filtered out, not dropped: they sit on the bench like anyone unseated.
+                assignment.bench.extend(
+                    m for m in party if not meets_min_level(m, skill, limit)
+                )
         return assignment
 
     from .optimizer import optimize

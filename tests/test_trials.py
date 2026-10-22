@@ -2847,3 +2847,17 @@ def test_shrine_probe_observed_cap_is_clamped_to_the_game_maximum():
     parties = _probe_party({"force": config.GUILD_SHRINE_MAX_LEVEL})
     u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
     assert u.from_level == config.GUILD_SHRINE_MAX_LEVEL and u.at_cap
+
+
+def test_random_strategy_benches_members_below_the_min_level():
+    """Finding 10: the min-level filter must bench, not drop. 12 Foraging members at
+    levels 80..135 against a 110 minimum: 6 race, 6 sit on the bench, none vanish."""
+    members = [_member(f"f{i}", {"Foraging": 80 + 5 * i}) for i in range(12)]
+    a = trials.choose_assignment(
+        members, ["Foraging"], seed=1, cap=20, strategy="random",
+        min_levels={"Foraging": 110},
+    )
+    seated = a.parties["Foraging"]
+    assert len(seated) == 6 and len(a.bench) == 6
+    assert all(m.skills["Foraging"].level >= 110 for m in seated)
+    assert sorted(m.name for m in seated + a.bench) == sorted(m.name for m in members)
