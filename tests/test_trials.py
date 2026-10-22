@@ -15,6 +15,14 @@ import pytest
 from src import config
 from src.reader import MemberRow, SkillEntry
 from src import trials
+from tests.provenance_fixture import with_provenance
+
+
+def _trials_html(page, *args, **kwargs):
+    """build._render_trials_html on a dict that never went through _write_guild."""
+    from src import build
+
+    return build._render_trials_html(with_provenance(page, "member_count"), *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1508,7 +1516,7 @@ def test_trials_page_places_the_guild_spend_table_above_the_upgrades():
 
     base, _ = _two_regime_weeks()
     site = build.GUILD_SITES[0]
-    assert "guild-spend-section" not in build._render_trials_html(base, site)
+    assert "guild-spend-section" not in _trials_html(base, site)
     base["building_upgrades"] = [
         {"skill": "Foraging", "building": "Guild Garden", "from_level": 0,
          "to_level": 1, "levels": 1, "skill_levels_now": 0, "skill_levels_after": 2,
@@ -1521,7 +1529,7 @@ def test_trials_page_places_the_guild_spend_table_above_the_upgrades():
                        "gain_gp_per_week": 5.0, "payback_weeks": 100.0,
                        "confidence": "modelled", "recommendation": None, "rank": 1}],
            "gp_basis": "base", "notes": [], "combat": {"available": True}}
-    page = build._render_trials_html(base, site, guild_spend=doc)
+    page = _trials_html(base, site, guild_spend=doc)
     assert 'id="upgrades-section"' in page
     assert page.index('id="guild-spend-section"') < page.index('id="upgrades-section"')
     # The spend row is one level, L -> L+1, at that level's real gain.
@@ -1536,12 +1544,12 @@ def test_trials_page_switch_cross_links_and_marks_the_active_level():
 
     base, maxed = _two_regime_weeks()
     site = build.GUILD_SITES[0]
-    default_page = build._render_trials_html(
+    default_page = _trials_html(
         base, site, "",
         counterpart={"href": build.TRIALS_MAXBUFF_PAGE, "level": 20,
                      "total": maxed["total_credit_points"]},
     )
-    maxbuff_page = build._render_trials_html(
+    maxbuff_page = _trials_html(
         maxed, site, "",
         counterpart={"href": build.TRIALS_PAGE, "level": 1,
                      "total": base["total_credit_points"]},
@@ -1586,7 +1594,7 @@ def _ladder_page():
     )
     week = published.to_dict()
     ladder = {str(k): v.to_dict() for k, v in rungs.items()}
-    page = build._render_trials_html(week, build.GUILD_SITES[0], "", ladder=ladder)
+    page = _trials_html(week, build.GUILD_SITES[0], "", ladder=ladder)
     return build, week, ladder, page
 
 
@@ -1677,7 +1685,7 @@ def test_no_ladder_renders_the_page_exactly_as_before():
     """The rollback. TRIALS_BUFF_LEVEL_SLIDER = False passes ladder=None, and no
     control, no ladder and no island reach the page."""
     build, week, _, _ = _ladder_page()
-    bare = build._render_trials_html(week, build.GUILD_SITES[0], "", ladder=None)
+    bare = _trials_html(week, build.GUILD_SITES[0], "", ladder=None)
     body = bare.split("<body>")[1].split('<script id="assign-data"')[0]
     assert 'id="buff-range"' not in body
     assert 'class="bl-note"' not in body
@@ -1696,8 +1704,8 @@ def test_trials_page_footnote_states_the_level_it_was_built_at():
 
     base, maxed = _two_regime_weeks()
     site = build.GUILD_SITES[0]
-    assert "level 1</strong>" in build._render_trials_html(base, site)
-    assert "level 20</strong>" in build._render_trials_html(maxed, site)
+    assert "level 1</strong>" in _trials_html(base, site)
+    assert "level 20</strong>" in _trials_html(maxed, site)
 
 
 def test_trials_page_renders_without_a_counterpart():
@@ -1706,7 +1714,7 @@ def test_trials_page_renders_without_a_counterpart():
     from src import build
 
     base, _ = _two_regime_weeks()
-    body = build._render_trials_html(base, build.GUILD_SITES[0]).split("</style>", 1)[1]
+    body = _trials_html(base, build.GUILD_SITES[0]).split("</style>", 1)[1]
     assert "bufftoggle" not in body
     assert "bt-seg" not in body
 
@@ -1718,7 +1726,7 @@ def test_trials_page_switch_survives_a_pre_buff_trials_json():
 
     base, _ = _two_regime_weeks()
     del base["community_buff_level"]
-    page = build._render_trials_html(
+    page = _trials_html(
         base, build.GUILD_SITES[0], "",
         counterpart={"href": build.TRIALS_MAXBUFF_PAGE, "level": 20, "total": 1.0},
     )
@@ -1756,7 +1764,7 @@ def test_pin_key_is_namespaced_per_guild():
 
     base, _ = _two_regime_weeks()
     keys = {
-        site.key: build._render_trials_html(base, site)
+        site.key: _trials_html(base, site)
         .split('data-pin-key="', 1)[1]
         .split('"', 1)[0]
         for site in build.GUILD_SITES
@@ -1774,7 +1782,7 @@ def test_roster_rows_sort_on_the_bare_name_not_the_star():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     names = [e["n"] for e in _pin_index(page) if e["t"] != "Bench"]
     assert names
     for name in names:
@@ -1791,7 +1799,7 @@ def test_pinned_panel_ships_hidden_and_empty():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert '<section class="card pinned" id="pinned-section" hidden>' in page
     assert '<div id="pinned-list" class="pin-list"></div>' in page
     assert 'aria-pressed="true"' not in page
@@ -1805,7 +1813,7 @@ def test_assign_index_carries_the_pinned_panel_summary_as_plain_text():
     from src import build
 
     base, _ = _two_regime_weeks()
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     assert entries
     for e in entries:
         assert set(e) == {"n", "t", "r", "l", "d", "m", "b"}
@@ -1821,7 +1829,7 @@ def test_pinned_summary_bands_agree_with_the_trial_card():
     from src import build
 
     base, _ = _two_regime_weeks()
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     by_trial = {e["t"]: e for e in entries if e["t"] != "Bench"}
     for trial in base["trials"]:
         e = by_trial.get(trial["skill"])
@@ -1840,7 +1848,7 @@ def test_benched_members_can_be_pinned_too():
 
     base, _ = _two_regime_weeks()
     base["bench"] = ["Benched McBenchface"]
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'data-fav="Benched McBenchface"' in page
     entry = next(e for e in _pin_index(page) if e["n"] == "Benched McBenchface")
     assert entry["t"] == "Bench"
@@ -1855,7 +1863,7 @@ def test_pin_controls_reach_every_page_the_reader_can_land_on():
     from src import build
 
     base, maxed = _two_regime_weeks()
-    page = build._render_trials_html(
+    page = _trials_html(
         maxed, build.GUILD_SITES[0], "",
         counterpart={"href": build.TRIALS_PAGE, "level": 1,
                      "total": base["total_credit_points"]},
@@ -2523,7 +2531,7 @@ def test_a_combat_seat_reaches_the_search_index_under_terse_keys():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entry = next(e for e in _pin_index(build._render_trials_html(
+    entry = next(e for e in _pin_index(_trials_html(
         base, build.GUILD_SITES[0])) if e["n"] == who)
 
     # Prettified from the hrid, not carried as one: a member reads "Hedgehog".
@@ -2550,7 +2558,7 @@ def test_a_member_with_no_combat_seat_carries_NO_combat_key_at_all():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     others = [e for e in entries if e["n"] != who]
     assert others, "the fixture must have somebody without a seat"
     for e in others:
@@ -2571,7 +2579,7 @@ def test_a_nine_wide_seat_omits_the_label_independently():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", None),
     ])
-    entry = next(e for e in _pin_index(build._render_trials_html(
+    entry = next(e for e in _pin_index(_trials_html(
         base, build.GUILD_SITES[0])) if e["n"] == who)
     assert entry["cb"] == "Hedgehog" and entry["cs"] == "cursed 1"
     assert "cl" not in entry
@@ -2587,7 +2595,7 @@ def test_a_benched_member_keeps_their_combat_seat():
     base["combat"] = _combat_week(seats=[
         ("Benchy", "/guild_combat/swarm", "SC Team 2", "tank 1", "Tank"),
     ])
-    entry = next(e for e in _pin_index(build._render_trials_html(
+    entry = next(e for e in _pin_index(_trials_html(
         base, build.GUILD_SITES[0])) if e["n"] == "Benchy")
     assert entry["t"] == "Bench" and entry["r"] == "bench-section"
     assert entry["cb"] == "Swarm" and entry["cl"] == "Tank"
@@ -2606,7 +2614,7 @@ def test_a_combat_only_member_is_appended_with_an_empty_row_id():
     base["combat"] = _combat_week(seats=[
         ("Stranger", "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     entry = next(e for e in entries if e["n"] == "Stranger")
     assert entry["t"] == "Combat only"
     assert entry["r"] == ""
@@ -2625,7 +2633,7 @@ def test_a_seated_member_is_not_duplicated_as_combat_only():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     assert len([e for e in entries if e["n"] == who]) == 1
     assert not any(e["t"] == "Combat only" for e in entries)
 
@@ -2640,7 +2648,7 @@ def test_available_false_is_said_with_its_reason_and_not_swallowed():
         available=False,
         unavailable="the 'SC Combat Teams' tab could not be read: HTTP 403",
     )
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'data-combat-unavailable="the &#x27;SC Combat Teams&#x27; tab could not ' \
            'be read: HTTP 403"' in page
     # An unavailable block contributes no index keys either.
@@ -2654,7 +2662,7 @@ def test_an_available_block_leaves_the_attribute_empty():
     base["combat"] = _combat_week(seats=[
         (_seated(base), "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'data-combat-unavailable=""' in page
 
 
@@ -2667,13 +2675,13 @@ def test_a_week_with_no_combat_key_renders_exactly_todays_page():
 
     base, _ = _two_regime_weeks()
     assert "combat" not in base
-    before = build._render_trials_html(base, build.GUILD_SITES[0])
+    before = _trials_html(base, build.GUILD_SITES[0])
 
     base_with = dict(base)
     base_with["combat"] = _combat_week(seats=[
         (_seated(base), "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    after = build._render_trials_html(base_with, build.GUILD_SITES[0])
+    after = _trials_html(base_with, build.GUILD_SITES[0])
     assert before != after, "the fixture must actually change something"
 
     # And the empty-attribute page is the same as the no-key page but for that one
@@ -2699,7 +2707,7 @@ def test_a_combat_name_containing_a_left_angle_bracket_cannot_become_markup():
         ("Stranger", "/guild_combat/hedgehog", "SC Team 1", "cursed 1",
          "</script><img src=x onerror=alert(1)>"),
     ])
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     blob = page.split('id="assign-data"', 1)[1].split(">", 1)[1].split("</script>", 1)[0]
     assert "<" not in blob, "a raw < reached the script element"
     assert "\\u003c/script" in blob
@@ -2764,7 +2772,7 @@ def test_index_entries_carry_the_character_id_when_known():
     benched = "Benched McBenchface"
     base["bench"] = [benched]
     base["bench_character_ids"] = {benched: 7}
-    index = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    index = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     by_name = {e["n"]: e for e in index}
     assert by_name[first["name"]]["i"] == 102437
     assert by_name[benched]["i"] == 7
@@ -2776,7 +2784,7 @@ def test_pins_record_ids_and_migrate_on_load():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'PIN_KEY + ".ids"' in page
     assert "function migratePins" in page
     assert "migratePins();\n  renderPins();" in page
@@ -2812,7 +2820,7 @@ def test_migrate_pins_resolves_by_recorded_id_before_name():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
 
     # An alt took a pinned member's old name: the pin follows the id, not the name.
     data = [{"n": "Bob", "i": 9}, {"n": "Carol", "i": 2}]

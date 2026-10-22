@@ -13,7 +13,7 @@ import json
 import pytest
 
 from src.reader import MemberRow, SheetStructureError
-from src.scraper import GuildData, parse_gviz
+from src.scraper import parse_gviz
 
 # Skill-name header cells as gviz serves them: merged junk / trailing spaces.
 # 0-based col of each 5-column block's level cell -> observed header text.
@@ -189,21 +189,14 @@ def test_empty_csv_raises_structure_error():
         parse_gviz("")
 
 
-def test_guilddata_to_dict_is_json_serializable_and_shaped():
+def test_parsed_member_serialises_to_the_data_json_shape():
+    from src.reader import member_to_dict
+
     row = _data_cells("Feal", "Water", "Nature", ["", "", "", "", "47"],
                       _ten_skills("113"))
     members = parse_gviz(_csv(row))
-    gd = GuildData(
-        tab="SC Member Data", fetched_at="2026-07-17T00:00:00+00:00",
-        member_count=len(members), members=members,
-    )
-
-    d = gd.to_dict()
     # Round-trips through JSON without error.
-    round_tripped = json.loads(json.dumps(d))
-    assert round_tripped["tab"] == "SC Member Data"
-    assert round_tripped["member_count"] == 1
-    m = round_tripped["members"][0]
+    m = json.loads(json.dumps(member_to_dict(members[0])))
     # Member shape matches the existing data.json serialization (asdict).
     assert set(m.keys()) == {"name", "main_classes", "flex", "flex_levels", "skills"}
     assert m["skills"]["Milking"] == {

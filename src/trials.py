@@ -541,25 +541,6 @@ def guild_shrine_upgrade_cost(to_level: int) -> Optional[int]:
     return config.GUILD_SHRINE_POINT_COSTS.get(to_level)
 
 
-def guild_shrine_upgrade_total_cost(
-    from_level: int, to_level: int
-) -> Optional[int]:
-    """Cumulative guild points from ``from_level`` to ``to_level``, or None past the cap.
-
-    Same contract as :func:`guild_building_upgrade_total_cost`: 0 for a no-op, None if
-    any step in the range is unpriced, so a caller can never quote a truncated total.
-    """
-    if to_level <= from_level:
-        return 0
-    total = 0
-    for level in range(from_level + 1, to_level + 1):
-        step = guild_shrine_upgrade_cost(level)
-        if step is None:
-            return None
-        total += step
-    return total
-
-
 def guild_building_upgrade_cost(to_level: int) -> Optional[int]:
     """Guild points to raise a skilling building TO ``to_level`` (one step).
 

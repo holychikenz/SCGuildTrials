@@ -37,7 +37,6 @@ from .reader import (
     _to_bool,
     _to_int,
     fetch_text,
-    member_to_dict,
     warn_rows_after_blank,
 )
 
@@ -50,24 +49,6 @@ class GuildData:
     fetched_at: str  # UTC ISO-8601 timestamp
     member_count: int
     members: list[MemberRow] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        """Produce a JSON-serializable dict.
-
-        Members are serialized with ``dataclasses.asdict`` (recursively
-        flattening the nested ``SkillEntry`` values), matching the member
-        shape written to ``_site/data.json`` by the existing pipeline.
-
-        Unset roster-sourced keys are omitted — see
-        :func:`reader.member_to_dict`, which both this and ``processor.process``
-        go through so the two cannot disagree about the JSON shape.
-        """
-        return {
-            "tab": self.tab,
-            "fetched_at": self.fetched_at,
-            "member_count": self.member_count,
-            "members": [member_to_dict(m) for m in self.members],
-        }
 
 
 def fetch_tab_csv(tab_name: str, suffix: str = "") -> str:

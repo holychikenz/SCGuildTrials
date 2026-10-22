@@ -14,6 +14,14 @@ import pytest
 
 from src import config, signup
 from src.reader import MemberRow, SheetStructureError, SkillEntry
+from tests.provenance_fixture import with_provenance
+
+
+def _signup_html(page, *args, **kwargs):
+    """build._render_signup_html on a dict that never went through _write_guild."""
+    from src import build
+
+    return build._render_signup_html(with_provenance(page, "roster_count"), *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +389,7 @@ def test_signup_html_reports_the_margin_per_trial_and_in_the_strip():
     members, picks, draw = _scenario()
     site = build.GUILD_SITES[0]
     plan_dict = _plan(members, picks, draw).to_dict()
-    page = build._render_signup_html(plan_dict, site)
+    page = _signup_html(plan_dict, site)
 
     assert "Thinnest margin" in page
     # Every trial that banked a tier states when it banked it, out of the budget.
@@ -420,7 +428,7 @@ def test_points_equal_ceiling_still_warns_when_a_trial_is_on_the_buzzer():
     thin = dict(base, trials=[dict(t) for t in base["trials"]])
     thin["trials"][0]["slack_fraction"] = 0.01
     thin["trials"][0]["clear_seconds"] = 0.99 * 3600
-    page = _flat(build._render_signup_html(thin, site))
+    page = _flat(_signup_html(thin, site))
     assert "is not the same as being safe" in page
     assert "with only 1.0% of the hour spare" in page
     assert "against 80.0% for the unconstrained optimum" in page
@@ -432,7 +440,7 @@ def test_points_equal_ceiling_still_warns_when_a_trial_is_on_the_buzzer():
         t["slack_fraction"] = 0.40
         t["clear_seconds"] = 0.60 * 3600
     assert "is not the same as being safe" not in _flat(
-        build._render_signup_html(safe, site)
+        _signup_html(safe, site)
     )
 
 
@@ -661,7 +669,7 @@ def test_safety_section_renders_the_ladder_and_flags_overrides():
     p = signup.plan(
         members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4
     ).to_dict()
-    page = " ".join(build._render_signup_html(p, site).split())
+    page = " ".join(_signup_html(p, site).split())
     assert "Safety swaps" in page
 
     # A hand-built pair of moves, one of which overrides a sign-up, must render both
@@ -683,7 +691,7 @@ def test_safety_section_renders_the_ladder_and_flags_overrides():
          "min_prob_before": 0.88, "min_prob_after": 0.97,
          "trial_changes": []},
     ]
-    page = " ".join(build._render_signup_html(doctored, site).split())
+    page = " ".join(_signup_html(doctored, site).split())
     # Reported in odds, with the margin retained beside it — the reader needs both:
     # a probability alone cannot say whether it was bought with seconds or minutes.
     assert "These 2 move(s) take the weakest trial from" in page
@@ -705,7 +713,7 @@ def test_safety_section_renders_the_ladder_and_flags_overrides():
         dict(doctored["safety_swaps"][0]),
         dict(doctored["safety_swaps"][1], min_prob_after=0.995),
     ]
-    page = " ".join(build._render_signup_html(comfortable, site).split())
+    page = " ".join(_signup_html(comfortable, site).split())
     assert "comfortable." in page
 
 
@@ -754,12 +762,12 @@ def test_safety_section_says_so_when_nothing_helps():
 
     # Thin, but no move found: the page must NOT imply the risk is fixable.
     stuck = dict(base, safety_swaps=[], min_slack_fraction=0.02, safety_min_slack=0.02)
-    page = " ".join(build._render_signup_html(stuck, site).split())
+    page = " ".join(_signup_html(stuck, site).split())
     assert "None found" in page and "would cost points" in page
 
     # Comfortable: reassure, do not invent work.
     fine = dict(base, safety_swaps=[], min_slack_fraction=0.40, safety_min_slack=0.40)
-    page = " ".join(build._render_signup_html(fine, site).split())
+    page = " ".join(_signup_html(fine, site).split())
     assert "None needed" in page
 
 
@@ -861,7 +869,7 @@ def test_signup_html_flags_missing_players_in_red():
         members, {"Real": {"Foraging"}, "Ghosty": {"Woodcutting"}},
         optimal_total=0, optimal_summary=[], draw=draw, cap=3,
     ).to_dict()
-    html_text = build._render_signup_html(with_missing, site)
+    html_text = _signup_html(with_missing, site)
     assert 'id="missing-data"' in html_text
     assert "Ghosty" in html_text
     assert "missing data" in html_text  # header count
@@ -870,7 +878,7 @@ def test_signup_html_flags_missing_players_in_red():
         members, {"Real": {"Foraging"}},
         optimal_total=0, optimal_summary=[], draw=draw, cap=3,
     ).to_dict()
-    assert 'id="missing-data"' not in build._render_signup_html(none_missing, site)
+    assert 'id="missing-data"' not in _signup_html(none_missing, site)
 
 
 def test_signup_conflict_is_recorded_and_resolved_to_first_choice():

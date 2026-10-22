@@ -56,7 +56,6 @@ COL_FLEX = 2
 
 # Five flex-related threshold level columns: 30+, 25+, 35+, 35+, 35+.
 FLEX_LEVEL_COLS = [3, 4, 5, 6, 7]
-FLEX_THRESHOLDS = ["30+", "25+", "35+", "35+", "35+"]
 
 # Each skill occupies a 5-column block: [level, H (house level), Tool, Top, Bot].
 # The first block (Milking) starts at column 8; blocks are contiguous.

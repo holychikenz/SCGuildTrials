@@ -41,7 +41,7 @@ class SkillEntry:
     # the item's name (so a Rainbow Chisel is not scored as a Holy one) and its
     # enhancement level (which the model otherwise assumes is +7 for everybody).
     # Both default to None so every existing constructor call is untouched, and
-    # scraper.GuildData.to_dict omits them while they are unset so data.json stays
+    # member_to_dict omits them while they are unset so data.json stays
     # byte-identical with config.ROSTER_SOURCE_ENABLED off.
     tool_item: Optional[str] = None      # e.g. "Celestial Brush"
     tool_enhance: Optional[int] = None   # observed enhancement level, 0..20
@@ -129,10 +129,7 @@ def member_to_dict(member: MemberRow) -> dict:
     The filter is per FIELD rather than all-or-nothing, so a roster-backed member
     whose row named no tool does not carry a null for it either.
 
-    Shared by ``processor.process`` (which writes ``_site/data.json``) and
-    ``scraper.GuildData.to_dict``, for the same reason ``norm_name`` is shared:
-    two copies of a rule about JSON shape will drift, and the drift shows up as a
-    diff nobody expected.
+    Used by ``processor.process``, which writes ``_site/data.json``.
     """
     d = asdict(member)
     for key in _NEVER_SERIALISED:

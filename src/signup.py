@@ -71,7 +71,6 @@ from .trials import (
     expected_credit_points,
     meets_min_level,
     member_skill_level as trials_member_level,
-    rate,
     simulate_race,
     clear_probability,
     tier_clear_seconds,
@@ -336,7 +335,6 @@ class SignupRosterEntry:
     # rider seated under config.TRIAL_FILL_MAX_POINT_COST has a cost, and the page
     # prints it rather than implying the seat was free.
     fill_gain: Optional[float] = None
-    lifts_tier: bool = False  # True when the fill strictly raised the party's points
     # Forwarded verbatim from trials.RosterEntry so the sign-up page can caption
     # its rows exactly as the full-optimum page does. See that dataclass for why.
     tool_item: Optional[str] = None
@@ -1282,7 +1280,6 @@ def plan(
                         name=r.name, level=r.level, tool=r.tool, top=r.top,
                         bot=r.bot, rate_final=r.rate_final, status="recommended",
                         fill_gain=gain,
-                        lifts_tier=gain > config.OPT_POINTS_EPS,
                         tool_item=r.tool_item, tool_enhance=r.tool_enhance,
                         source=r.source, tool_source=r.tool_source,
                         character_id=r.character_id,

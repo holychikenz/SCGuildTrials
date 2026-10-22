@@ -439,23 +439,6 @@ def _caveat_texts(prov: dict) -> dict:
     }
 
 
-def _provenance_placeholder(member_count: int) -> dict:
-    """The pre-roster answer, for a page rendered from a JSON that predates R4.
-
-    trials.json is a published artefact and old copies exist; a page built from
-    one must still render, and must say the honest thing rather than nothing.
-    """
-    return {
-        "enabled": False, "source": "manual tab", "roster_backed": 0,
-        "manual_backed": member_count, "admitted": 0, "admitted_names": [],
-        "reported_not_seated": [], "captured_at": "", "age_days": None,
-        "stale": False, "gear_hidden": 0, "unknown_tools": 0,
-        "unknown_tool_items": {}, "blank_enhancements": 0,
-        "unmatched_roster": [], "unmatched_members": [], "normalized_matches": [],
-        "ambiguous": [], "refused": "", "unavailable": "",
-    }
-
-
 def _render_provenance_strip(prov: dict) -> str:
     """The per-guild "Member data" strip, beside the buff strip and styled alike.
 
@@ -1056,7 +1039,7 @@ def _expected_phrase(trial: dict) -> str:
     if expected is None:
         return ""
     deterministic = _credit_points(trial)
-    if deterministic is None or abs(deterministic - expected) < 0.5:
+    if abs(deterministic - expected) < 0.5:
         return ""
     return (
         f' &middot; <strong>{_cp(expected)} expected</strong> '
@@ -2063,7 +2046,7 @@ def _buildings_source_phrase(week: dict) -> str:
     fall back.
 
     Reads the provenance block attached to ``week`` with ``.get``, following
-    ``_provenance_placeholder``'s established convention — an old published
+    the manual-provenance convention — an old published
     trials.json must still render, and it carries none of these keys.
     """
     prov = week.get("provenance") or {}
@@ -2956,7 +2939,7 @@ def _render_trials_html(
     page, the selector re-rates this one.
     """
     strip = _stat_strip(week)
-    _prov = week.get("provenance") or _provenance_placeholder(week["member_count"])
+    _prov = week["provenance"]
     provenance_strip = _render_provenance_strip(_prov)
     _caveats = _caveat_texts(_prov)
     tool_caveat = _caveats["tool_caveat"]
@@ -3969,7 +3952,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             p.get('optimal_total'), p.get('optimal_credit_total'))}</div></div>"""\
         f"""{safety_tile}{odds_tile}"""
 
-    _prov = p.get("provenance") or _provenance_placeholder(p["roster_count"])
+    _prov = p["provenance"]
     provenance_strip = _render_provenance_strip(_prov)
     sigma_enh_clause = _caveat_texts(_prov)["sigma_enh_clause"]
 
