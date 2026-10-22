@@ -1,12 +1,13 @@
 """Bake-off harness: compare optimizer strategies on points AND speed.
 
-Runnable: ``python -m src.optimize_bakeoff [--live] [--seeds N] [--csv]``
+Runnable: ``python -m src.optimize_bakeoff [--live] [--seeds N] [--sizes 40,86]``
 
 Each strategy is run against the same roster(s) and the same per-strategy seed
 sequence, and judged on:
 
-  * **credit points** — the objective the strategies maximise, partial-tier credit
-    included (mean and worst-case across seeds); PRIMARY
+  * **objective** — ``scorer.total_points``, the quantity the strategies maximise
+    (``optimizer.objective_of``: expected points under the risk model, partial-tier
+    credit included), mean and worst case across seeds; PRIMARY
   * **step points** — the integer award for the tiers actually banked, reported
     alongside so a strategy cannot win by farming partial progress while banking
     fewer tiers
@@ -15,7 +16,9 @@ sequence, and judged on:
                   "how quickly" axis, free of wall-clock noise
 
 Rosters: synthetic by default (varied size/level spread, to stress the headcount
-trade-off) and — with ``--live`` — the real SURVEY CORPS member sheet. A ninth
+trade-off) and — with ``--live`` — the real SURVEY CORPS members, assembled exactly
+as the build assembles them (``build._fetch_guild``: roster merge, gear, shrine
+levels, renames). A ninth
 contestant, ``scipy_lap`` (linear-assignment on the rate proxy), is included ONLY
 if SciPy is installed (a ``[dev]`` extra); it is soft-imported and skipped
 otherwise, so this harness never puts SciPy on the CI build path.
@@ -110,12 +113,14 @@ def _synthetic_roster(
     return members
 
 
-def _live_roster() -> Optional[list[MemberRow]]:
-    """Fetch the live SC member roster; returns None on any network failure."""
+def _live_roster(skills: list[str]) -> Optional[list[MemberRow]]:
+    """The live SC members as the build assembles them; None on any failure."""
     try:
-        from .scraper import scrape_member_tab
+        from . import draw as draw_model
+        from .build import GUILD_SITES, _fetch_guild
 
-        return scrape_member_tab(config.TABS["sc"]).members
+        site = next(s for s in GUILD_SITES if s.key == "sc")
+        return _fetch_guild(site, draw_model.TrialDraw(skills=skills, date="")).members
     except Exception as exc:  # network / structure — degrade gracefully
         print(f"  (live roster unavailable: {exc})", file=sys.stderr)
         return None
@@ -169,8 +174,9 @@ def _scipy_lap_parties(
 class Row:
     """One strategy's aggregate over the seeds.
 
-    TWO point columns since the 2026-08-11 patch, and both are needed. ``credit`` is
-    the objective the strategies actually maximise (partial-tier credit included);
+    TWO point columns since the 2026-08-11 patch, and both are needed. ``objective``
+    is ``scorer.total_points``, what the strategies actually maximise (see the module
+    docstring);
     ``step`` is the integer award for the tiers banked, which is what the guild sees
     in game. Ranking on the objective alone would hide a strategy that farms partial
     progress while banking fewer tiers, and ranking on the step total alone would be
@@ -181,8 +187,8 @@ class Row:
     """
 
     strategy: str
-    mean_credit: float
-    min_credit: float
+    mean_objective: float
+    min_objective: float
     mean_step: float
     min_step: int
     mean_ms: float
@@ -195,7 +201,7 @@ def _run_one(
     strategy: str,
     seed: int,
 ) -> tuple[float, int, float, int]:
-    """Run one strategy once; return (credit_points, step_points, ms, sim_calls).
+    """Run one strategy once; return (objective, step_points, ms, sim_calls).
 
     The step total is recomputed from the winning parties rather than read off the
     scorer, whose cache holds only the objective.
@@ -209,7 +215,7 @@ def _run_one(
     else:
         parties = run_strategy(scorer, strategy, seed)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    credit = scorer.total_points(parties)
+    objective = scorer.total_points(parties)
     step = sum(
         simulate_race(
             [members[i] for i in sorted(parties[s])],
@@ -218,7 +224,7 @@ def _run_one(
         ).points
         for s in range(len(skills))
     )
-    return credit, step, elapsed_ms, scorer.sim_calls
+    return objective, step, elapsed_ms, scorer.sim_calls
 
 
 def bake_off(
@@ -230,44 +236,44 @@ def bake_off(
     """Run every strategy over every seed; return aggregated rows (best first)."""
     rows: list[Row] = []
     for strat in strategies:
-        credit: list[float] = []
+        objective: list[float] = []
         step: list[int] = []
         ms: list[float] = []
         sims: list[int] = []
         for sd in seeds:
             c, st, t, s = _run_one(members, skills, strat, sd)
-            credit.append(c)
+            objective.append(c)
             step.append(st)
             ms.append(t)
             sims.append(s)
         rows.append(
             Row(
                 strategy=strat,
-                mean_credit=statistics.mean(credit),
-                min_credit=min(credit),
+                mean_objective=statistics.mean(objective),
+                min_objective=min(objective),
                 mean_step=statistics.mean(step),
                 min_step=min(step),
                 mean_ms=statistics.mean(ms),
                 mean_sims=statistics.mean(sims),
             )
         )
-    # Ranked on the OBJECTIVE (credit), which is what the strategies optimise; the
-    # step columns are there to catch a strategy that wins on credit while banking
+    # Ranked on the OBJECTIVE, which is what the strategies optimise; the
+    # step columns are there to catch a strategy that wins on it while banking
     # fewer tiers, which the objective alone cannot see.
-    rows.sort(key=lambda r: (-r.mean_credit, r.mean_ms))
+    rows.sort(key=lambda r: (-r.mean_objective, r.mean_ms))
     return rows
 
 
 def _print_table(title: str, rows: list[Row]) -> None:
     print(f"\n=== {title} ===")
     print(
-        f"{'strategy':<28} {'mean_cr':>9} {'min_cr':>9} {'mean_st':>8} "
+        f"{'strategy':<28} {'mean_obj':>9} {'min_obj':>9} {'mean_st':>8} "
         f"{'min_st':>7} {'mean_ms':>9} {'mean_sims':>10}"
     )
     print("-" * 84)
     for r in rows:
         print(
-            f"{r.strategy:<28} {r.mean_credit:>9.1f} {r.min_credit:>9.1f} "
+            f"{r.strategy:<28} {r.mean_objective:>9.1f} {r.min_objective:>9.1f} "
             f"{r.mean_step:>8.1f} {r.min_step:>7d} "
             f"{r.mean_ms:>9.1f} {r.mean_sims:>10.0f}"
         )
@@ -304,7 +310,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         _print_table(f"synthetic roster n={n} ({args.seeds} seeds)", rows)
 
     if args.live:
-        roster = _live_roster()
+        roster = _live_roster(skills)
         if roster:
             rows = bake_off(roster, skills, seeds, strategies)
             _print_table(f"LIVE SC roster n={len(roster)}", rows)
