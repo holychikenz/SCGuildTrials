@@ -106,10 +106,10 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
 // the way a concurrent write from another browser would (name_history only).
 function load(sheetsByName, { lock = {} } = {}) {
     const { granted = true } = lock;
-    const lockCalls = { tried: 0, released: 0, flushes: [] };
+    const lockCalls = { tried: 0, released: 0, flushes: [], opened: [] };
     const ctx = {
         SpreadsheetApp: {
-            openById: () => ({ getSheetByName: (n) => sheetsByName[n] || null }),
+            openById: (id) => { lockCalls.opened.push(id); return { getSheetByName: (n) => sheetsByName[n] || null }; },
             // Records how many releases had happened when the flush ran, so a test
             // can pin that pending writes commit BEFORE the lock is let go.
             flush: () => { lockCalls.flushes.push({ releasedBefore: lockCalls.released }); },
@@ -679,4 +679,50 @@ test("the name history grows the sheet when it runs out of rows", (t) => {
                             rows: [["1", "A", "4", T1, T1], ["2", "B", "4", T1, T1], ["3", "C", "4", T1, T1]] });
     assert.strictEqual(res.ok, true, res.error);
     assert.strictEqual(sh.getLastRow(), 4);
+});
+
+// --- audit 2026-10: the spreadsheet id is pinned; every rewrite takes the lock ---
+
+test("a caller-supplied spreadsheetId is ignored: SPREADSHEET_ID is always opened", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Buildings": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Buildings", header: B_HEADER,
+                            rows: buildingsRows(4), spreadsheetId: "attacker-sheet" });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.deepStrictEqual(ctx._lockCalls.opened, [ctx.SPREADSHEET_ID]);
+});
+
+for (const [tab, header, rows] of [
+    ["SC Trial Signup", S_HEADER, S_ROWS],
+    ["SC Buildings", B_HEADER, buildingsRows(4)],
+    ["SC Combat Teams", C_HEADER, combatRows(4)],
+]) {
+    test(`a ${tab} rewrite under a busy lock refuses and leaves the tab untouched`, (t) => {
+        const before = [["old", "a", "b"], ["x", "y", "z"]];
+        const sh = makeSheet(before, { maxCols: 26 });
+        const ctx = load({ [tab]: sh }, { lock: { granted: false } });
+        const res = post(ctx, { secret: SECRET, tab, header, rows });
+        assert.strictEqual(res.ok, false);
+        assert.match(res.error, /busy/);
+        assert.deepStrictEqual(sh._grid.map(r => r.slice(0, 3)), before);
+    });
+
+    test(`a ${tab} rewrite flushes, then releases the lock`, (t) => {
+        const sh = makeSheet([], { maxCols: 26 });
+        const ctx = load({ [tab]: sh });
+        const res = post(ctx, { secret: SECRET, tab, header, rows });
+        assert.strictEqual(res.ok, true, res.error);
+        assert.strictEqual(ctx._lockCalls.tried, 1);
+        assert.strictEqual(ctx._lockCalls.released, 1);
+        assert.deepStrictEqual(ctx._lockCalls.flushes, [{ releasedBefore: 0 }]);
+    });
+}
+
+test("a rewrite that throws mid-write still releases the lock", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    sh.getMaxColumns = () => { throw new Error("sheet gone"); };
+    const ctx = load({ "SC Buildings": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Buildings", header: B_HEADER, rows: buildingsRows(4) });
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(ctx._lockCalls.released, 1);
 });

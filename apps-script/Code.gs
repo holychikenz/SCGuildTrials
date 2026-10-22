@@ -188,8 +188,9 @@ function doPost(e) {
     }
 
     // --- Open sheet (do NOT create — the tab must already exist) ------------
-    var ssId = String(body.spreadsheetId || SPREADSHEET_ID);
-    var ss = SpreadsheetApp.openById(ssId);
+    // Always SPREADSHEET_ID: this runs as the sheet OWNER, so honouring a
+    // caller-supplied id would let anyone with the secret write any owner sheet.
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sh = ss.getSheetByName(tab);
     if (!sh) {
       return json_({ ok: false, error: 'tab not found: "' + tab + '" — create it first' });
@@ -216,19 +217,31 @@ function doPost(e) {
       out.push(line);
     }
 
-    var newRows = out.length;                      // header + members
-    var maxRows = sh.getMaxRows();
-    var clearRows = Math.min(Math.max(sh.getLastRow(), newRows, 1), maxRows);
+    // Under the script lock, like upsertNameHistory_: two concurrent posts must not
+    // interleave their clear and write (one's clear landing after the other's rows).
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(LOCK_WAIT_MS)) {
+      return json_({ ok: false, error: 'busy: another write holds the lock; retry in a moment' });
+    }
+    try {
+      var newRows = out.length;                      // header + members
+      var maxRows = sh.getMaxRows();
+      var clearRows = Math.min(Math.max(sh.getLastRow(), newRows, 1), maxRows);
 
-    // Overwrite semantics. Clear the whole PREVIOUSLY-USED region (up to the old
-    // last column, capped at 30 as a runaway guard) so that when the layout
-    // SHRINKS week-to-week — e.g. from a 13-column full-skills write down to a
-    // 7-column compact draw — no stale columns linger to the right. Then write
-    // the fresh block from A1. Anything beyond column 30 is left untouched.
-    var maxCols = sh.getMaxColumns();
-    var clearCols = Math.min(Math.max(nCols, sh.getLastColumn(), 1), maxCols, 30);
-    sh.getRange(1, 1, clearRows, clearCols).clearContent();
-    sh.getRange(1, 1, newRows, nCols).setValues(out);
+      // Overwrite semantics. Clear the whole PREVIOUSLY-USED region (up to the old
+      // last column, capped at 30 as a runaway guard) so that when the layout
+      // SHRINKS week-to-week — e.g. from a 13-column full-skills write down to a
+      // 7-column compact draw — no stale columns linger to the right. Then write
+      // the fresh block from A1. Anything beyond column 30 is left untouched.
+      var maxCols = sh.getMaxColumns();
+      var clearCols = Math.min(Math.max(nCols, sh.getLastColumn(), 1), maxCols, 30);
+      sh.getRange(1, 1, clearRows, clearCols).clearContent();
+      sh.getRange(1, 1, newRows, nCols).setValues(out);
+
+      SpreadsheetApp.flush();                      // commit BEFORE the release
+    } finally {
+      lock.releaseLock();
+    }
 
     return json_({
       ok: true,

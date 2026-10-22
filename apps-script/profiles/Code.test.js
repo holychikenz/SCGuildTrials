@@ -99,9 +99,9 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
 // the way a concurrent write from another machine would.
 function load(sheetsByName, { lock = {} } = {}) {
     const { granted = true } = lock;
-    const lockCalls = { tried: 0, released: 0 };
+    const lockCalls = { tried: 0, released: 0, opened: [] };
     const ctx = {
-        SpreadsheetApp: { openById: () => ({ getSheetByName: (n) => sheetsByName[n] || null }) },
+        SpreadsheetApp: { openById: (id) => { lockCalls.opened.push(id); return { getSheetByName: (n) => sheetsByName[n] || null }; } },
         // The gear column is MERGED rather than overwritten, which makes the
         // read-modify-write racy for the first time; Code.gs takes a script lock
         // around it. Without this stub the vm context throws ReferenceError.
@@ -1019,4 +1019,62 @@ test("a legacy tab with NEITHER union column accepts a header growing by both", 
     assert.deepStrictEqual(JSON.parse(cellOf(sh, 60486, ABIL)).items,
         [{ hrid: "/abilities/berserk", level: 62 }],
         "an empty sheet cell merges cleanly — no special case needed");
+});
+
+// --- audit 2026-10: pinned spreadsheet id; an older capture never wins --------
+const TAB = "SC Roster";
+
+test("a caller-supplied spreadsheetId is ignored: SPREADSHEET_ID is always opened", (t) => {
+    const sh = makeSheet([header()]);
+    const ctx = load({ [TAB]: sh });
+    const res = post(ctx, { secret: SECRET, tab: TAB, header: header(),
+                            rows: [row("Yedic", 1)], spreadsheetId: "attacker-sheet" });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.deepStrictEqual(ctx._lockCalls.opened, [ctx.SPREADSHEET_ID]);
+});
+
+const CAP = "capturedAt";
+const capHeader = () => header([CAP, GEAR]);
+const capRow = (name, id, at, gearCell, opts = {}) =>
+    row(name, id, Object.assign({}, opts, { extra: [at, gearCell] }));
+const T_OLD = "2026-10-01T10:00:00.000Z", T_NEW = "2026-10-02T10:00:00.000Z";
+
+test("an OLDER capture keeps the stored levels but still merges its gear", (t) => {
+    const h = capHeader();
+    const sh = makeSheet([h, capRow("Yedic", 1, T_NEW, gj([{ hrid: "/items/a", level: 3 }]), { total: 2100 })]);
+    const ctx = load({ [TAB]: sh });
+    const res = post(ctx, { secret: SECRET, tab: TAB, header: h,
+        rows: [capRow("Yedic", 1, T_OLD, gj([{ hrid: "/items/b", level: 5 }]), { total: 2000 })] });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(cellOf(sh, 1, "totalLevel"), 2100, "levels must not go backwards");
+    assert.strictEqual(cellOf(sh, 1, CAP), T_NEW);
+    const items = JSON.parse(cellOf(sh, 1, GEAR)).items.map(i => i.hrid).sort();
+    assert.deepStrictEqual(items, ["/items/a", "/items/b"], "gear still unions");
+});
+
+test("an older capture is detected against a stored cell Sheets parsed into a Date", (t) => {
+    const h = capHeader();
+    const sh = makeSheet([h, capRow("Yedic", 1, new Date(T_NEW), "", { total: 2100 })]);
+    const ctx = load({ [TAB]: sh });
+    post(ctx, { secret: SECRET, tab: TAB, header: h, rows: [capRow("Yedic", 1, T_OLD, "", { total: 2000 })] });
+    assert.strictEqual(cellOf(sh, 1, "totalLevel"), 2100);
+});
+
+test("a NEWER capture replaces the stored row", (t) => {
+    const h = capHeader();
+    const sh = makeSheet([h, capRow("Yedic", 1, T_OLD, "", { total: 2000 })]);
+    const ctx = load({ [TAB]: sh });
+    post(ctx, { secret: SECRET, tab: TAB, header: h, rows: [capRow("Yedic", 1, T_NEW, "", { total: 2100 })] });
+    assert.strictEqual(cellOf(sh, 1, "totalLevel"), 2100);
+    assert.strictEqual(cellOf(sh, 1, CAP), T_NEW);
+});
+
+test("a blank incoming or stored capturedAt behaves as before: the payload wins", (t) => {
+    const h = capHeader();
+    for (const [stored, incoming] of [[T_NEW, ""], ["", T_OLD]]) {
+        const sh = makeSheet([h, capRow("Yedic", 1, stored, "", { total: 2100 })]);
+        const ctx = load({ [TAB]: sh });
+        post(ctx, { secret: SECRET, tab: TAB, header: h, rows: [capRow("Yedic", 1, incoming, "", { total: 2000 })] });
+        assert.strictEqual(cellOf(sh, 1, "totalLevel"), 2000);
+    }
 });
