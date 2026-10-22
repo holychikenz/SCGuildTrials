@@ -6310,12 +6310,15 @@ def main() -> int:
                 f"other guilds continue:\n{exc}",
                 file=sys.stderr,
             )
-        except RuntimeError as exc:
+        except Exception as exc:  # noqa: BLE001 — network or anything else
             if site.required:
+                if not isinstance(exc, RuntimeError):
+                    raise
                 print(f"ERROR ({site.key}): {exc}", file=sys.stderr)
                 return 1
             print(
-                f"WARNING: {site.key} skipped ({exc}); other guilds continue.",
+                f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
+                f"other guilds continue.",
                 file=sys.stderr,
             )
 
@@ -6323,7 +6326,14 @@ def main() -> int:
     jobs: list[dict] = []
     spans: list[tuple[GuildSite, _GuildInputs, int, int]] = []
     for site, inputs in fetched:
-        site_jobs = _unit_jobs(site, inputs, week_draw)
+        try:
+            site_jobs = _unit_jobs(site, inputs, week_draw)
+        except Exception as exc:  # noqa: BLE001 — optional guild only
+            if site.required:
+                raise
+            print(f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
+                  f"other guilds continue.", file=sys.stderr)
+            continue
         spans.append((site, inputs, len(jobs), len(jobs) + len(site_jobs)))
         jobs.extend(site_jobs)
 

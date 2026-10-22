@@ -154,3 +154,33 @@ def test_inactive_signup_page_names_the_guilds_own_tab():
     li = [s for s in build.GUILD_SITES if s.key == "li"][0]
     page = build._render_signup_inactive_html("reason", "now", li)
     assert "LI Trial Signup" in page and "SC Trial Signup" not in page
+
+
+def test_li_non_runtime_fetch_error_still_ships_sc(site_env, monkeypatch, capsys):
+    out, _ = site_env
+    real = build.scrape_member_tab
+
+    def scrape(tab):
+        if tab == _tab("li"):
+            raise ValueError("odd cell")
+        return real(tab)
+
+    monkeypatch.setattr(build, "scrape_member_tab", scrape)
+    assert build.main() == 0
+    assert (out / "index.html").exists() and not (out / "li" / "index.html").exists()
+    assert "li skipped (ValueError: odd cell)" in capsys.readouterr().err
+
+
+def test_li_unit_jobs_error_still_ships_sc(site_env, monkeypatch, capsys):
+    out, _ = site_env
+    real = build._unit_jobs
+
+    def unit_jobs(site, inputs, draw):
+        if site.key == "li":
+            raise KeyError("cap")
+        return real(site, inputs, draw)
+
+    monkeypatch.setattr(build, "_unit_jobs", unit_jobs)
+    assert build.main() == 0
+    assert (out / "index.html").exists()
+    assert "li skipped (KeyError" in capsys.readouterr().err

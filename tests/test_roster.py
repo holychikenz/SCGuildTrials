@@ -1122,12 +1122,20 @@ def test_an_id_conflict_is_quarantined_not_admitted(monkeypatch):
     assert prov.admitted == 0
 
 
-def test_a_name_the_member_tab_holds_twice_joins_to_nobody():
-    # Exact hit or not: two "Bob" member rows must not become one roster Bob plus
-    # one 'manual' Bob (the optimiser could seat the person twice).
+def test_a_name_the_member_tab_holds_twice_is_modelled_once():
+    # "Bob" typed twice is one person: the first copy joins the roster, the second is
+    # reported and dropped by merge, so the optimiser cannot seat Bob twice.
     members = [_member("Bob"), _member("Bob")]
     rows = roster.parse(_roster_csv([{"name": "Bob"}]))
     report = roster.join(members, rows)
-    assert report.matched == {}
-    assert report.ambiguous == ["Bob", "Bob"]
-    assert report.unmatched_roster == ["Bob"]
+    assert list(report.matched) == [0]
+    assert report.duplicates == {1} and report.ambiguous == ["Bob"]
+    merged, _ = roster.merge(members, report)   # refused (1 of 2 joined): still once
+    assert [m.name for m in merged] == ["Bob"]
+    # and on the accepted path
+    names = ["Bob", "Ann", "Cid", "Dee", "Eve", "Bob"]
+    members = [_member(n) for n in names]
+    rows = roster.parse(_roster_csv([{"name": n} for n in names[:5]]))
+    merged, prov = roster.merge(members, roster.join(members, rows))
+    assert not prov.refused
+    assert [m.name for m in merged] == names[:5]

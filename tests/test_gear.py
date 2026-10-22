@@ -814,3 +814,22 @@ def test_an_owned_garment_of_unknown_level_prices_at_the_garment_mean():
     seen = gear.resolve(_member({body: None}), _STATS)
     ticked = gear.resolve(_member(top=True), _STATS)   # garment imputed at the mean
     assert seen["Milking"] == ticked["Milking"] != gear.resolve(_member(), _STATS)["Milking"]
+
+
+def test_an_unknown_level_piece_is_imputed_for_the_hook_and_obeys_the_switch(monkeypatch):
+    """Review: it is an IMPUTED level (the hook sees observed=False and the pool), and
+    GEAR_IMPUTE_FAMILY_PIECE = False turns it off like every other family imputation."""
+    calls = []
+
+    class Recorder(gear.Perturbation):
+        def level(self, level, observed, pool=None):
+            calls.append((observed, pool is not None))
+            return level
+
+    m = _member({"/items/collectors_boots": None})
+    gear.resolve(m, _STATS, perturb=Recorder(), skills=("Milking",))
+    assert calls == [(False, True)]
+    monkeypatch.setattr(config, "GEAR_IMPUTE_FAMILY_PIECE", False)
+    off = gear.resolve(m, _STATS, skills=("Milking",))
+    plus0 = gear.item_terms("/items/collectors_boots", "Milking", 0)["efficiency"]
+    assert off["Milking"][1] == pytest.approx(plus0)

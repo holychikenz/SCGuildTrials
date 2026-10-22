@@ -310,6 +310,9 @@ class JoinReport:
     # (``"Bob (member id 5, roster id 9)"``) and listed in unmatched_roster, but
     # never in roster_only, so admission cannot seat a second "Bob".
     id_conflicts: list[str] = field(default_factory=list)
+    # Member-tab indices repeating an earlier row's exact name: one person typed
+    # twice. Listed in ``ambiguous`` and never modelled (merge skips them).
+    duplicates: set[int] = field(default_factory=set)
 
     def join_rate(self, member_count: int) -> float:
         """Fraction of the MANUAL tab's members that joined a roster row."""
@@ -345,10 +348,17 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
 
     member_norm = [norm_name(m.name) for m in members]
     roster_norm = [norm_name(r.name) for r in rows]
-    member_dup = {k for k, c in Counter(member_norm).items() if c > 1}
-    ambiguous_keys = member_dup | {
-        k for k, c in Counter(roster_norm).items() if c > 1
-    }
+    # A name typed TWICE on the member tab is one person: the later copies are
+    # dropped (merge skips them), or the optimiser could seat that person twice.
+    # Distinct spellings that merely fold together ("bob"/"BOB") stay ambiguous.
+    first: dict[str, int] = {}
+    for idx, m in enumerate(members):
+        if first.setdefault(m.name, idx) != idx:
+            report.duplicates.add(idx)
+            report.ambiguous.append(m.name)
+    ambiguous_keys = {
+        k for k, c in Counter(norm_name(n) for n in first).items() if c > 1
+    } | {k for k, c in Counter(roster_norm).items() if c > 1}
 
     roster_by_exact: dict[str, int] = {}
     for i, row in enumerate(rows):
@@ -368,6 +378,8 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
         roster_by_id = {c: j for j, c in enumerate(r_ids) if c is not None and c not in dup}
         for idx, member in enumerate(members):
             cid = m_ids[idx]
+            if idx in report.duplicates:
+                continue
             if cid is None or cid in dup or cid not in roster_by_id:
                 continue
             j = roster_by_id[cid]
@@ -381,13 +393,10 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
                 report.normalized_matches.append(f"{rows[j].name} ≈ {member.name}")
 
     for idx, member in enumerate(members):
-        if idx in report.matched:
+        if idx in report.matched or idx in report.duplicates:
             continue
         key = member_norm[idx]
-        # A name the MEMBER tab holds twice is ambiguous even on an exact hit:
-        # otherwise the first copy takes the roster row and the second runs as a
-        # 'manual' twin, and one person can be seated twice.
-        j = None if key in member_dup else roster_by_exact.get(member.name)
+        j = roster_by_exact.get(member.name)
         if j is None:
             if key in ambiguous_keys:
                 report.ambiguous.append(member.name)
@@ -677,7 +686,7 @@ def merge(
         ambiguous=list(report.ambiguous),
     )
 
-    rate = report.join_rate(len(members))
+    rate = report.join_rate(len(members) - len(report.duplicates))
     if members and rate < config.ROSTER_MIN_JOIN_RATE:
         prov.refused = (
             f"only {len(report.matched)} of {len(members)} members "
@@ -688,14 +697,18 @@ def merge(
             f"usually means gviz served a different tab, or the roster tab was "
             f"rebuilt for a different guild."
         )
-        prov.member_count = len(members)
-        prov.manual_backed = len(members)
+        prov.member_count = len(members) - len(report.duplicates)
+        prov.manual_backed = prov.member_count
         prov.reported_not_seated = list(report.unmatched_roster)
-        return [copy.deepcopy(m) for m in members], prov
+        return [
+            copy.deepcopy(m) for i, m in enumerate(members) if i not in report.duplicates
+        ], prov
 
     merged: list[MemberRow] = []
     captures: list[str] = []
     for idx, member in enumerate(members):
+        if idx in report.duplicates:
+            continue
         row = report.matched.get(idx)
         member_provenance: dict[str, str] = {"member": ROSTER if row else MANUAL}
         skills = {
