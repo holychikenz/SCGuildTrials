@@ -541,25 +541,6 @@ def guild_shrine_upgrade_cost(to_level: int) -> Optional[int]:
     return config.GUILD_SHRINE_POINT_COSTS.get(to_level)
 
 
-def guild_shrine_upgrade_total_cost(
-    from_level: int, to_level: int
-) -> Optional[int]:
-    """Cumulative guild points from ``from_level`` to ``to_level``, or None past the cap.
-
-    Same contract as :func:`guild_building_upgrade_total_cost`: 0 for a no-op, None if
-    any step in the range is unpriced, so a caller can never quote a truncated total.
-    """
-    if to_level <= from_level:
-        return 0
-    total = 0
-    for level in range(from_level + 1, to_level + 1):
-        step = guild_shrine_upgrade_cost(level)
-        if step is None:
-            return None
-        total += step
-    return total
-
-
 def guild_building_upgrade_cost(to_level: int) -> Optional[int]:
     """Guild points to raise a skilling building TO ``to_level`` (one step).
 
@@ -1187,33 +1168,58 @@ def clear_sigma(
     """
     if tier < 1:
         return None
+    prepared = [p for p in _prepare_party(party, skill, building_levels) if p]
+    if not prepared:
+        return None
+    return _clearing_curve(prepared, len(party), tier, 0)[1]
+
+
+def _prepare_party(
+    party: list[MemberRow], skill: str, building_levels: Optional[int] = None
+) -> list[Optional[tuple]]:
+    """:func:`_prepare_member` for each member (None where they cannot contribute).
+
+    Resolved once so a race and its pricing (:func:`expected_credit_points`) can
+    share it — the optimizer pays for it once per evaluation instead of four times.
+    """
     if building_levels is None:
         building_levels = guild_building_skill_levels(skill)
     shrine = None if config.ROSTER_USE_SHRINES else guild_shrine_bonuses()
-    prepared = [
-        p
-        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
-        if p is not None
-    ]
-    if not prepared:
-        return None
+    return [_prepare_member(m, skill, building_levels, shrine) for m in party]
 
-    n = len(party)
+
+def _clearing_curve(
+    prepared: list[tuple], n: int, sigma_tier: int, max_tier: int
+) -> tuple[list[float], Optional[float]]:
+    """``(taus, sigma)`` in ONE pass over the tiers, each party rate summed once.
+
+    ``taus``: cumulative clear times for tiers ``1..max(1, max_tier)``, stopping at
+    the first tier the party cannot move in (:func:`_cumulative_tier_times`).
+    ``sigma``: the dice sd of ``ln(tau_sigma_tier)`` (:func:`clear_sigma`); None when
+    ``sigma_tier < 1`` or the party stalls at or below it. The same sums in the same
+    order as the two passes this replaced, so both stay bit-identical.
+    """
+    last_tau = max(1, max_tier)
     cumulative = 0.0
     variance = 0.0
-    for t in range(1, tier + 1):
+    taus: list[float] = []
+    sigma = None
+    for t in range(1, max(last_tau, sigma_tier) + 1):
         rate = sum(
             success(level, t, success_bonus, building) * double * wp / asec
             for level, success_bonus, building, double, wp, asec in prepared
         )
         if rate <= 0:
-            return None
+            break
         target = effective_target(t, n, config.TARGET_SCALE)
         cumulative += target / rate
-        variance += target * _variance_rate(prepared, t) / rate ** 3
-    if cumulative <= 0:
-        return None
-    return math.sqrt(variance) / cumulative
+        if t <= last_tau:
+            taus.append(cumulative)
+        if t <= sigma_tier:
+            variance += target * _variance_rate(prepared, t) / rate ** 3
+            if t == sigma_tier and cumulative > 0:
+                sigma = math.sqrt(variance) / cumulative
+    return taus, sigma
 
 
 def clear_probability(
@@ -1271,30 +1277,10 @@ def _cumulative_tier_times(
     second pass over the party and the optimizer calls the race ~87k times per
     pipeline. Both are wanted for the handful of races that get published.
     """
-    if building_levels is None:
-        building_levels = guild_building_skill_levels(skill)
-    shrine = None if config.ROSTER_USE_SHRINES else guild_shrine_bonuses()
-    prepared = [
-        p
-        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
-        if p is not None
-    ]
+    prepared = [p for p in _prepare_party(party, skill, building_levels) if p]
     if not prepared:
         return []
-
-    n = len(party)
-    cumulative = 0.0
-    out: list[float] = []
-    for tier in range(1, max(1, max_tier) + 1):
-        party_rate = sum(
-            success(level, tier, success_bonus, building) * double * wp / asec
-            for level, success_bonus, building, double, wp, asec in prepared
-        )
-        if party_rate <= 0:
-            break
-        cumulative += effective_target(tier, n, config.TARGET_SCALE) / party_rate
-        out.append(cumulative)
-    return out
+    return _clearing_curve(prepared, len(party), 0, max_tier)[0]
 
 
 def _normal_pdf(z: float) -> float:
@@ -1306,6 +1292,7 @@ def expected_credit_points(
     skill: str,
     result: "TrialResult",
     building_levels: Optional[int] = None,
+    prepared: Optional[list] = None,
 ) -> Optional[float]:
     """E[guild points] for this lineup, under the calibrated multiplicative shock.
 
@@ -1361,17 +1348,18 @@ def expected_credit_points(
 
     budget = config.TRIAL_TIME_BUDGET_SECONDS
     tier = max(1, result.tier_reached)
-    sigma_dice = clear_sigma(party, skill, tier, building_levels)
+    # ``prepared``: the race's own _prepare_party list, when the caller holds it.
+    if prepared is None:
+        prepared = _prepare_party(party, skill, building_levels)
+    movers = [p for p in prepared if p is not None]
+    if not movers:
+        return None
+    taus, sigma_dice = _clearing_curve(
+        movers, len(party), tier, result.tier_reached + config.RISK_LOOKAHEAD_TIERS
+    )
     if sigma_dice is None:
         return None
     sigma = math.hypot(sigma_dice, config.RISK_SIGMA_SYSTEMATIC)
-
-    taus = _cumulative_tier_times(
-        party,
-        skill,
-        result.tier_reached + config.RISK_LOOKAHEAD_TIERS,
-        building_levels,
-    )
     if not taus:
         return None
 
@@ -1632,6 +1620,7 @@ def simulate_race(
     skill: str,
     target_scale: Optional[float] = None,
     building_levels: Optional[int] = None,
+    prepared: Optional[list] = None,
 ) -> TrialResult:
     """Simulate the 1-hour cumulative tier race for ``party`` in ``skill``.
 
@@ -1676,12 +1665,12 @@ def simulate_race(
     tier_reached = 0
     partial_fraction = 0.0
 
-    # Tier-independent per-member factors, computed once for the whole race.
-    prepared = [
-        p
-        for p in (_prepare_member(m, skill, building_levels, shrine) for m in party)
-        if p is not None
-    ]
+    # Tier-independent per-member factors, computed once for the whole race — or
+    # handed in (``_prepare_party``) by a caller that also prices the race.
+    each = prepared if prepared is not None else _prepare_party(
+        party, skill, building_levels
+    )
+    prepared = [p for p in each if p is not None]
 
     tier = 1
     while tier <= _MAX_TIER:
@@ -1749,9 +1738,8 @@ def simulate_race(
     # the two reported rates reuse the prepared factors.
     roster = []
     sheet_col = _sheet_column(skill)
-    for m in party:
+    for m, p in zip(party, each):
         b = member_bonuses(m, skill, building_levels, shrine)
-        p = _prepare_member(m, skill, building_levels, shrine)
         if p is None:
             rate_tier1 = rate_final = 0.0
         else:
@@ -2224,6 +2212,13 @@ def _seated(parties: dict[str, list[MemberRow]], skills: list[str]):
         yield from parties[skill]
 
 
+def _observed_cap(caps: dict[str, int], shrine: str, seats) -> int:
+    """``shrine``'s cap: the configured one, or the highest level a seated member
+    already holds if that is higher, clamped to ``GUILD_SHRINE_MAX_LEVEL``."""
+    held = [member_shrine_level(m, shrine) for m in seats]
+    return max(0, min(config.GUILD_SHRINE_MAX_LEVEL, max([caps.get(shrine) or 0, *held])))
+
+
 def probe_shrine_upgrade(
     parties: dict[str, list[MemberRow]],
     skills: list[str],
@@ -2256,7 +2251,11 @@ def probe_shrine_upgrade(
     buff, per_level, channel = config.GUILD_SHRINE_SKILLING_BUFFS.get(
         shrine, ("unknown", 0.0, None)
     )
-    from_level = max(0, min(config.GUILD_SHRINE_MAX_LEVEL, caps.get(shrine) or 0))
+    seats = list(_seated(parties, skills))
+    # The configured cap is a dated FLOOR: a seated member already holding more
+    # proves the cap is at least that, and pricing from the floor would sell an
+    # owned level as the next purchase.
+    from_level = _observed_cap(caps, shrine, seats)
     at_cap = from_level >= config.GUILD_SHRINE_MAX_LEVEL
     speed_now, efficiency_now = (
         (per_level * from_level, 0.0) if channel == "speed"
@@ -2264,7 +2263,6 @@ def probe_shrine_upgrade(
         else (0.0, 0.0)
     )
 
-    seats = list(_seated(parties, skills))
     at_the_cap = [m for m in seats if member_shrine_level(m, shrine) >= from_level]
 
     def raise_those_at_the_cap(member: MemberRow) -> MemberRow:
@@ -2333,9 +2331,8 @@ def probe_shrine_adoption(
     buff, _per_level, channel = config.GUILD_SHRINE_SKILLING_BUFFS.get(
         shrine, ("unknown", 0.0, None)
     )
-    cap = max(0, min(config.GUILD_SHRINE_MAX_LEVEL, caps.get(shrine) or 0))
-
     seats = list(_seated(parties, skills))
+    cap = _observed_cap(caps, shrine, seats)
     levels = [member_shrine_level(m, shrine) for m in seats]
     below = [lv for lv in levels if lv < cap]
 
@@ -2568,10 +2565,14 @@ def choose_assignment(
         if any(v is not None for v in min_levels.values()):
             for skill in skills:
                 limit = min_levels.get(skill)
+                party = assignment.parties[skill]
                 assignment.parties[skill] = [
-                    m for m in assignment.parties[skill]
-                    if meets_min_level(m, skill, limit)
+                    m for m in party if meets_min_level(m, skill, limit)
                 ]
+                # Filtered out, not dropped: they sit on the bench like anyone unseated.
+                assignment.bench.extend(
+                    m for m in party if not meets_min_level(m, skill, limit)
+                )
         return assignment
 
     from .optimizer import optimize

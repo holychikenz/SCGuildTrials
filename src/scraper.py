@@ -28,8 +28,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-import requests
-
 from . import config
 from .reader import (
     MemberRow,
@@ -38,7 +36,8 @@ from .reader import (
     _cell,
     _to_bool,
     _to_int,
-    member_to_dict,
+    fetch_text,
+    warn_rows_after_blank,
 )
 
 
@@ -51,49 +50,20 @@ class GuildData:
     member_count: int
     members: list[MemberRow] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
-        """Produce a JSON-serializable dict.
 
-        Members are serialized with ``dataclasses.asdict`` (recursively
-        flattening the nested ``SkillEntry`` values), matching the member
-        shape written to ``_site/data.json`` by the existing pipeline.
-
-        Unset roster-sourced keys are omitted — see
-        :func:`reader.member_to_dict`, which both this and ``processor.process``
-        go through so the two cannot disagree about the JSON shape.
-        """
-        return {
-            "tab": self.tab,
-            "fetched_at": self.fetched_at,
-            "member_count": self.member_count,
-            "members": [member_to_dict(m) for m in self.members],
-        }
-
-
-def fetch_tab_csv(tab_name: str) -> str:
+def fetch_tab_csv(tab_name: str, suffix: str = "") -> str:
     """Fetch a tab's gviz CSV export as text, addressed by tab name.
+
+    ``suffix`` is appended to the URL (Name History's ``&headers=1``).
 
     Raises:
         RuntimeError: on 401/403 (sheet sharing likely revoked) or other
-            HTTP/network errors, with a message pointing at the likely cause.
+            HTTP/network errors after one retry (see :func:`reader.fetch_text`).
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name))
-    try:
-        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(
-            f"Failed to reach Google Sheets gviz endpoint: {exc}"
-        ) from exc
-
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Google Sheets returned {resp.status_code} for the gviz export of "
-            f"tab {tab_name!r}. The sheet's 'anyone with the link' sharing may "
-            f"have been revoked. URL: {url}"
-        )
-
-    resp.raise_for_status()
-    return resp.text
+    return fetch_text(
+        config.GVIZ_URL.format(sheet=quote(tab_name)) + suffix,
+        f"the gviz export of tab {tab_name!r}",
+    )
 
 
 def _validate_gviz_header(header: list[str]) -> None:
@@ -138,11 +108,12 @@ def parse_gviz(csv_text: str) -> list[MemberRow]:
     _validate_gviz_header(rows[0])
 
     members: list[MemberRow] = []
-    for raw in rows[1:]:
+    for i, raw in enumerate(rows[1:], start=1):
         row = raw[: config.GVIZ_LAST_COL + 1]  # drop trailing summary columns
         name = _cell(row, config.COL_NAME)
         if name == "":
             # First blank Member cell marks the end of the member list.
+            warn_rows_after_blank(rows[i + 1 :], "the gviz member tab")
             break
 
         flex_levels = [_to_int(_cell(row, c)) for c in config.FLEX_LEVEL_COLS]

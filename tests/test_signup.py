@@ -14,6 +14,14 @@ import pytest
 
 from src import config, signup
 from src.reader import MemberRow, SheetStructureError, SkillEntry
+from tests.provenance_fixture import with_provenance
+
+
+def _signup_html(page, *args, **kwargs):
+    """build._render_signup_html on a dict that never went through _write_guild."""
+    from src import build
+
+    return build._render_signup_html(with_provenance(page, "roster_count"), *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -258,76 +266,9 @@ def test_swaps_are_strictly_improving_and_consistent():
     p = _plan(members, picks, draw)
     for s in p.swaps:
         assert s.gain > 0
-        assert s.action in ("recruit", "bench", "move", "swap", "reshuffle")
-        # A reshuffle carries its component swaps; a single move never does.
-        if s.action == "reshuffle":
-            assert s.moves and all(
-                {"in", "out", "from_skill"} <= set(m) for m in s.moves
-            )
-        else:
-            assert not s.moves
+        assert s.action in ("recruit", "bench", "move", "swap")
     assert p.reachable_total == p.enforced_total + sum(s.gain for s in p.swaps)
     assert p.reachable_total >= p.enforced_total
-
-
-def test_compound_reshuffle_crosses_a_tier_plateau():
-    """A stalled single-move climb still closes a tier gap via a grouped reshuffle.
-
-    Points are a STEP function of tier, so it is normal for NO single swap to
-    change the score even when the party is one tier short — a strict single-move
-    climb then recommends nothing. This models that exactly: skill A crosses to
-    the higher tier only once its combined strength reaches 30, which needs TWO
-    swaps (each individually worth 0). The engine must record the pair as one
-    strictly-positive ``reshuffle`` and reach the optimal ceiling.
-    """
-    import types
-
-    from src import signup as signup_mod
-
-    draw = ["A", "B"]
-    # A-strength per member index; B's score ignores composition (donor trial).
-    str_a = {0: 9, 1: 8, 2: 8, 3: 12, 4: 11, 5: 10}
-    members = [types.SimpleNamespace(name=f"m{i}") for i in range(6)]
-
-    class FakeScorer:
-        skills = draw
-        def __init__(self):
-            self.members = members
-        def party_points(self, s, ids):
-            if self.skills[s] == "A":
-                return 200 if sum(str_a[i] for i in ids) >= 30 else 100
-            return 100  # skill B: fixed, so donor swaps never regress
-        def total_points(self, parties):
-            return sum(self.party_points(s, parties[s]) for s in range(len(parties)))
-
-        def can_place(self, skill_idx, member):
-            # No minimum sign-up level in this fixture: everyone is admissible
-            # everywhere. Part of AssignmentScorer's interface since the 2026-08-11
-            # patch, and the search helpers consult it before proposing any move.
-            return True
-
-    scorer = FakeScorer()
-    # φ (progress potential) reads member A-strength; tier arg is irrelevant here.
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(signup_mod, "rate", lambda m, skill, tier: str_a[int(m.name[1:])] if skill == "A" else 0.0)
-    try:
-        enforced = [{0, 1, 2}, {3, 4, 5}]  # A = 25 (< 30) -> 100 pts; total 200
-        assert scorer.total_points(enforced) == 200
-        swaps, reachable = signup_mod._improving_swaps(
-            enforced, scorer, cap=3, draw=draw, members=members,
-            optimal_points={"A": 200, "B": 100}, optimal_tier={"A": 5, "B": 5},
-        )
-    finally:
-        monkey.undo()
-
-    assert reachable == 300  # crossed to A's higher tier
-    assert reachable == 200 + sum(s.gain for s in swaps)
-    assert all(s.gain > 0 for s in swaps)
-    reshuffles = [s for s in swaps if s.action == "reshuffle"]
-    assert len(reshuffles) == 1
-    grp = reshuffles[0]
-    assert grp.gain == 100 and grp.to_skill == "A"
-    assert len(grp.moves) == 2  # two individually-break-even swaps, one crossing
 
 
 def test_plan_is_deterministic():
@@ -448,7 +389,7 @@ def test_signup_html_reports_the_margin_per_trial_and_in_the_strip():
     members, picks, draw = _scenario()
     site = build.GUILD_SITES[0]
     plan_dict = _plan(members, picks, draw).to_dict()
-    page = build._render_signup_html(plan_dict, site)
+    page = _signup_html(plan_dict, site)
 
     assert "Thinnest margin" in page
     # Every trial that banked a tier states when it banked it, out of the budget.
@@ -487,7 +428,7 @@ def test_points_equal_ceiling_still_warns_when_a_trial_is_on_the_buzzer():
     thin = dict(base, trials=[dict(t) for t in base["trials"]])
     thin["trials"][0]["slack_fraction"] = 0.01
     thin["trials"][0]["clear_seconds"] = 0.99 * 3600
-    page = _flat(build._render_signup_html(thin, site))
+    page = _flat(_signup_html(thin, site))
     assert "is not the same as being safe" in page
     assert "with only 1.0% of the hour spare" in page
     assert "against 80.0% for the unconstrained optimum" in page
@@ -499,7 +440,7 @@ def test_points_equal_ceiling_still_warns_when_a_trial_is_on_the_buzzer():
         t["slack_fraction"] = 0.40
         t["clear_seconds"] = 0.60 * 3600
     assert "is not the same as being safe" not in _flat(
-        build._render_signup_html(safe, site)
+        _signup_html(safe, site)
     )
 
 
@@ -728,7 +669,7 @@ def test_safety_section_renders_the_ladder_and_flags_overrides():
     p = signup.plan(
         members, picks, optimal_total=0, optimal_summary=[], draw=draw, cap=4
     ).to_dict()
-    page = " ".join(build._render_signup_html(p, site).split())
+    page = " ".join(_signup_html(p, site).split())
     assert "Safety swaps" in page
 
     # A hand-built pair of moves, one of which overrides a sign-up, must render both
@@ -750,7 +691,7 @@ def test_safety_section_renders_the_ladder_and_flags_overrides():
          "min_prob_before": 0.88, "min_prob_after": 0.97,
          "trial_changes": []},
     ]
-    page = " ".join(build._render_signup_html(doctored, site).split())
+    page = " ".join(_signup_html(doctored, site).split())
     # Reported in odds, with the margin retained beside it — the reader needs both:
     # a probability alone cannot say whether it was bought with seconds or minutes.
     assert "These 2 move(s) take the weakest trial from" in page
@@ -772,7 +713,7 @@ def test_safety_section_renders_the_ladder_and_flags_overrides():
         dict(doctored["safety_swaps"][0]),
         dict(doctored["safety_swaps"][1], min_prob_after=0.995),
     ]
-    page = " ".join(build._render_signup_html(comfortable, site).split())
+    page = " ".join(_signup_html(comfortable, site).split())
     assert "comfortable." in page
 
 
@@ -821,12 +762,12 @@ def test_safety_section_says_so_when_nothing_helps():
 
     # Thin, but no move found: the page must NOT imply the risk is fixable.
     stuck = dict(base, safety_swaps=[], min_slack_fraction=0.02, safety_min_slack=0.02)
-    page = " ".join(build._render_signup_html(stuck, site).split())
+    page = " ".join(_signup_html(stuck, site).split())
     assert "None found" in page and "would cost points" in page
 
     # Comfortable: reassure, do not invent work.
     fine = dict(base, safety_swaps=[], min_slack_fraction=0.40, safety_min_slack=0.40)
-    page = " ".join(build._render_signup_html(fine, site).split())
+    page = " ".join(_signup_html(fine, site).split())
     assert "None needed" in page
 
 
@@ -928,7 +869,7 @@ def test_signup_html_flags_missing_players_in_red():
         members, {"Real": {"Foraging"}, "Ghosty": {"Woodcutting"}},
         optimal_total=0, optimal_summary=[], draw=draw, cap=3,
     ).to_dict()
-    html_text = build._render_signup_html(with_missing, site)
+    html_text = _signup_html(with_missing, site)
     assert 'id="missing-data"' in html_text
     assert "Ghosty" in html_text
     assert "missing data" in html_text  # header count
@@ -937,7 +878,7 @@ def test_signup_html_flags_missing_players_in_red():
         members, {"Real": {"Foraging"}},
         optimal_total=0, optimal_summary=[], draw=draw, cap=3,
     ).to_dict()
-    assert 'id="missing-data"' not in build._render_signup_html(none_missing, site)
+    assert 'id="missing-data"' not in _signup_html(none_missing, site)
 
 
 def test_signup_conflict_is_recorded_and_resolved_to_first_choice():
@@ -1140,3 +1081,15 @@ def test_filter_departed_flag_off_ignores_ids(monkeypatch):
     kept, departed, _ = signup.filter_departed(
         members, ["NewName", "Other", "Third"], {"NewName": 102437, "Other": 9, "Third": 3})
     assert departed == ["OldName"]
+
+
+def test_swap_json_shape_after_the_reshuffle_phase_was_removed():
+    """Finding 16: signup.json swaps carry exactly these keys — no 'moves' group, and
+    the compound reshuffle (which never fired under the continuous objective) is gone."""
+    import dataclasses
+
+    assert [f.name for f in dataclasses.fields(signup.Swap)] == [
+        "member", "action", "from_skill", "to_skill", "note", "partner", "gain",
+    ]
+    assert not hasattr(signup, "_compound_reshuffle_into")
+    assert "lifts_tier" not in {f.name for f in dataclasses.fields(signup.SignupRosterEntry)}

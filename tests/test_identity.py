@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src import config, identity
+from src import config, identity, reader
 from src.identity import HistoryRow, Resolver, canonicalise, find_member, parse_id
 from src.reader import MemberRow
 
@@ -224,7 +224,7 @@ def test_fetch_name_history_url_forces_one_header_row(monkeypatch):
         seen["url"] = url
         return R()
     monkeypatch.undo()   # drop the conftest stub for this test
-    monkeypatch.setattr(identity.requests, "get", get)
+    monkeypatch.setattr(reader.requests, "get", get)
     assert identity.fetch_name_history_csv("SC Name History") == _H
     assert seen["url"].endswith("&headers=1") and "SC%20Name%20History" in seen["url"]
 
@@ -233,3 +233,13 @@ def test_resolver_history_two_ids_carried_bob_latest_wins():
     r = Resolver(history=[HistoryRow(1, "Bob", last_seen="2026-01-01"),
                           HistoryRow(2, "Bob", last_seen="2026-05-01")])
     assert r.id_for("bob") == 2
+
+
+def test_canonicalise_drops_a_second_row_resolving_to_the_same_id():
+    # "Bob" typed twice on the member tab: both resolve to the roll's id 7.
+    members = [_m("Bob"), _m("Bob")]
+    out, renames, notes = canonicalise(members, Resolver(roll=[("Bob", 7)]))
+    assert [(m.name, m.character_id) for m in out] == [("Bob", "7")]
+    assert renames == {}
+    assert notes == ["Bob (id 7) is a second member-tab row for an id already modelled, "
+                     "so it is not modelled"]

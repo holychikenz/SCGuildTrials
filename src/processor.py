@@ -16,19 +16,6 @@ from . import config
 from .reader import MemberRow, member_to_dict
 
 
-def _serialize_member(member: MemberRow) -> dict:
-    """Convert a MemberRow (with nested SkillEntry dataclasses) to plain dict.
-
-    Goes through :func:`reader.member_to_dict` so the optional roster-sourced
-    fields do not emit ``null`` keys into ``_site/data.json`` while unset — the
-    property that keeps ``ROSTER_SOURCE_ENABLED = False`` a byte-for-byte
-    rollback. NB this register is built from the UNMERGED member rows on
-    purpose: index.html mirrors the officers' own tab, stale cells included, and
-    that is the page an officer uses to notice a stale cell.
-    """
-    return member_to_dict(member)
-
-
 def _skill_summary(rows: list[MemberRow]) -> list[dict]:
     """Per-skill aggregate: average level and counts of tool/top/bot owned."""
     summary = []
@@ -71,5 +58,8 @@ def process(rows: list[MemberRow]) -> dict:
         "member_count": len(rows),
         "skills": list(config.SKILLS),
         "skill_summary": _skill_summary(rows),
-        "members": [_serialize_member(m) for m in rows],
+        # member_to_dict omits unset roster keys (ROSTER_SOURCE_ENABLED = False is a
+        # byte-for-byte rollback). Built from the UNMERGED rows on purpose: index.html
+        # mirrors the officers' own tab, stale cells included.
+        "members": [member_to_dict(m) for m in rows],
     }

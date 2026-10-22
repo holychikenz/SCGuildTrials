@@ -174,6 +174,10 @@ var ABILITIES_COLUMN = 'abilitiesSeen';
 // parseGear_ / mergeGear_ are shape-generic and serve every entry here.
 var MERGE_COLUMNS = [GEAR_COLUMN, ABILITIES_COLUMN];
 
+// The ISO-8601 capture time of a row (guild-profile-sheet). An upsert never lets an
+// older capture overwrite a newer one; see doPost.
+var CAPTURED_COLUMN = 'capturedAt';
+
 // The catalogue yields 200 tracked items; these are slack to bound a runaway
 // (a restructured catalogue, or a bug adding untracked hrids) rather than
 // letting a cell grow into the ~50,000-character Sheets limit mid-write.
@@ -274,8 +278,9 @@ function doPost(e) {
     try {
 
     // --- Open sheet (do NOT create — the tab must already exist) ------------
-    var ssId = String(body.spreadsheetId || SPREADSHEET_ID);
-    var ss = SpreadsheetApp.openById(ssId);
+    // Always SPREADSHEET_ID: this runs as the sheet OWNER, so honouring a
+    // caller-supplied id would let anyone with the secret write any owner sheet.
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sh = ss.getSheetByName(tab);
     if (!sh) {
       return json_({ ok: false, error: 'tab not found: "' + tab + '" — create it first' });
@@ -363,6 +368,7 @@ function doPost(e) {
         if (ek !== '') index[ek] = x;
       }
       out = existing;
+      var capIdx = header.indexOf(CAPTURED_COLUMN);
       for (var r = 0; r < rows.length; r++) {
         var row = normaliseRow_(rows[r], nCols);
         var key = String(row[keyIdx]);
@@ -377,6 +383,15 @@ function doPost(e) {
             row[mc.idx] = m.text;
             if (m.ok) { merged[mc.name] = (merged[mc.name] || 0) + 1; }
             else      { skipped[mc.name] = (skipped[mc.name] || 0) + 1; }
+          }
+          // Captures arrive from several machines: an OLDER capture than the
+          // stored one keeps the stored row (levels never go backwards) and
+          // contributes only its merge columns.
+          if (capIdx >= 0 && isoText_(row[capIdx]) !== '' &&
+              isoText_(row[capIdx]) < isoText_(out[index[key]][capIdx])) {
+            var kept = out[index[key]].slice();
+            for (var mo = 0; mo < mergeCols.length; mo++) kept[mergeCols[mo].idx] = row[mergeCols[mo].idx];
+            row = kept;
           }
           out[index[key]] = row;
           updated++;
@@ -438,6 +453,14 @@ function doGet() {
     allowedTabs: ALLOWED_TABS,
     keyColumn: KEY_COLUMN
   });
+}
+
+// A capturedAt cell as ISO text: Sheets may have parsed the stored string into a
+// Date, which compares lexically only once turned back into ISO. Blank -> ''.
+function isoText_(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object' && typeof v.toISOString === 'function') return v.toISOString();
+  return String(v);
 }
 
 // Sheets cannot hold null/undefined; both become an empty cell. A blank is the

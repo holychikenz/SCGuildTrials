@@ -26,12 +26,10 @@ import io
 import re
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
-from urllib.parse import quote
-
-import requests
 
 from . import config
 from .reader import MemberRow, SheetStructureError, _cell, norm_name
+from .scraper import fetch_tab_csv
 
 _ID_RE = re.compile(r"\s*\d+\s*")
 
@@ -94,22 +92,7 @@ def fetch_name_history_csv(tab_name: str) -> str:
     Raises:
         RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name)) + "&headers=1"
-    try:
-        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Failed to reach Google Sheets gviz endpoint: {exc}") from exc
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Google Sheets returned {resp.status_code} for the gviz export of tab "
-            f"{tab_name!r}. The sheet's 'anyone with the link' sharing may have been "
-            f"revoked. URL: {url}"
-        )
-    try:
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise RuntimeError(f"gviz export of {tab_name!r} failed: {exc}") from exc
-    return resp.text
+    return fetch_tab_csv(tab_name, "&headers=1")
 
 
 def parse_name_history(csv_text: str, tab: str = "") -> list[HistoryRow]:
@@ -150,7 +133,7 @@ def load_name_history(tab_name: str) -> tuple[list[HistoryRow], str]:
         return [], ""
     try:
         return parse_name_history(fetch_name_history_csv(tab_name), tab_name), ""
-    except (SheetStructureError, RuntimeError, requests.RequestException) as exc:
+    except (SheetStructureError, RuntimeError) as exc:
         return [], f"{tab_name!r}: {exc}"
 
 
@@ -255,6 +238,7 @@ def canonicalise(
         if cid is None or cur is None or norm_name(cur) == norm_name(m.name)
     }
     claimed: set[str] = set()
+    emitted: set[int] = set()
     out: list[MemberRow] = []
     renames: dict[str, str] = {}
     notes: list[str] = []
@@ -263,6 +247,16 @@ def canonicalise(
             out.append(m)
             continue
         if cur is None or norm_name(cur) == norm_name(m.name):
+            if cid in emitted:
+                # Two member-tab rows resolve to ONE person (e.g. "Bob" typed twice):
+                # model the first only, or the optimiser can seat one person twice.
+                # (A second RENAMED row already lands in the collision branch below.)
+                notes.append(
+                    f"{m.name} (id {cid}) is a second member-tab row for an id "
+                    f"already modelled, so it is not modelled"
+                )
+                continue
+            emitted.add(cid)
             out.append(m if own == cid else replace(m, character_id=str(cid)))
             continue
         k = norm_name(cur)
@@ -274,6 +268,7 @@ def canonicalise(
                 f"for {cur}, so the {m.name} row is not modelled"
             )
             continue
+        emitted.add(cid)
         out.append(replace(m, name=cur, character_id=str(cid)))
         renames[m.name] = cur
         claimed.add(k)

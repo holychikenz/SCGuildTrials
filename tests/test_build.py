@@ -92,8 +92,10 @@ def test_a_failing_unit_does_not_leave_levels_bound(monkeypatch):
     monkeypatch.setattr(build.trials_model, "run_week", boom)
     monkeypatch.setattr(config, "TRIALS_BUFF_LEVEL_SLIDER", False)
 
-    with pytest.raises(RuntimeError):
-        build._run_units([_job({"Foraging": 9})])
+    # _run_units hands a failing unit's exception back in place of its result, so
+    # main() can skip an optional guild and still render the others.
+    [result] = build._run_units([_job({"Foraging": 9})])
+    assert isinstance(result, RuntimeError) and "fell over" in str(result)
 
     assert config.GUILD_BUILDING_LEVELS is saved
 
@@ -495,3 +497,87 @@ def test_fetch_guild_with_an_invalid_level_cell_falls_back(monkeypatch, capsys):
     assert inputs.party_cap.source.startswith("FALLBACK constant")
     assert "invalid" in inputs.party_cap.source
     assert "invalid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("module, name", [
+    ("config", "FLEX_THRESHOLDS"),
+    ("trials", "guild_shrine_upgrade_total_cost"),
+    ("build", "_provenance_placeholder"),
+    ("processor", "_serialize_member"),
+])
+def test_dead_code_stays_deleted(module, name):
+    """Finding 18: unreferenced code removed; nothing in this tree or the sibling
+    repos read it. Re-adding one is a decision, not a drift."""
+    import importlib
+
+    assert not hasattr(importlib.import_module(f"src.{module}"), name)
+    from src import scraper
+
+    assert not hasattr(scraper.GuildData, "to_dict")
+
+
+def _restart_job(levels, level):
+    """20 golden members, the golden draw, cap 8: small enough to be quick, tight
+    enough that restarts land on DIFFERENT parties (restart 0 scores below the rest),
+    so a restart run with the wrong seed or scope cannot pass by coincidence."""
+    from tests.golden_fixture import GOLDEN_DRAW, golden_members
+
+    return {**_job(levels, cap=8), "members": golden_members()[:20],
+            "skills": list(GOLDEN_DRAW), "level": level}
+
+
+def test_each_restart_job_reproduces_that_restart_of_the_units_ensemble(monkeypatch):
+    """_compute_restart(i) must be EXACTLY restart i of the unit's own serial ensemble:
+    same scorer inputs, same seed, same building and buff scopes."""
+    from src import optimizer
+
+    monkeypatch.setattr(config, "TRIALS_BUFF_LEVEL_SLIDER", False)
+    for job in (_restart_job({"Milking": 3}, 5), _restart_job({}, None)):
+        seen = []
+        real = optimizer.run_restart
+
+        def spy(scorer, i, seed):
+            parties = real(scorer, i, seed)
+            seen.append([set(p) for p in parties])  # later passes mutate in place
+            return parties
+
+        monkeypatch.setattr(optimizer, "run_restart", spy)
+        build._compute_unit(job)
+        monkeypatch.setattr(optimizer, "run_restart", real)
+        assert len(seen) == len(config.OPT_ENSEMBLE_PIPELINES)
+        assert len({str(p) for p in seen}) > 1, "restarts must differ to test anything"
+        for i, parties in enumerate(seen):
+            assert build._compute_restart({**job, "restart": i}) == parties
+
+
+def test_restarts_split_across_processes_match_the_serial_ensemble(monkeypatch):
+    """One pool job per (unit, restart) ships the SAME weeks as each unit running its
+    own ensemble serially: same parties, same tie rule, same order."""
+    jobs = [_restart_job({"Milking": 3}, 5), _restart_job({}, None)]
+    monkeypatch.setattr(config, "BUILD_PARALLEL", False)
+    serial = build._run_units(jobs)
+    monkeypatch.setattr(config, "BUILD_PARALLEL", True)
+    monkeypatch.setattr(config, "BUILD_MAX_WORKERS", 4)
+    split = build._run_units(jobs)
+
+    def plan(results):  # the clock is not the plan
+        for r in results:
+            for week in (r["week"], *r["ladder"].values()):
+                week.pop("generated_at")
+                week.pop("week_date")
+        return results
+
+    assert plan(split) == plan(serial)
+
+
+def test_a_failed_restart_in_the_pool_becomes_that_units_result(monkeypatch):
+    """Findings 1 x 8: in the parallel path a (unit, restart) job that raises must come
+    back as that unit's exception, not escape _run_units and take every guild down."""
+    good = _restart_job({}, None)
+    bad = {**good, "members": None}          # raises inside the child's restart
+    monkeypatch.setattr(config, "BUILD_PARALLEL", True)
+    monkeypatch.setattr(config, "BUILD_MAX_WORKERS", 4)
+    monkeypatch.setattr(config, "TRIALS_BUFF_LEVEL_SLIDER", False)
+    first, second = build._run_units([bad, good])
+    assert isinstance(first, Exception)
+    assert isinstance(second, dict) and "week" in second

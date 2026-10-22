@@ -894,37 +894,6 @@ def _prepare_perturbed(
 # ---------------------------------------------------------------------------
 # The race
 # ---------------------------------------------------------------------------
-def variance_rate(prepared: list[tuple], tier: int) -> float:
-    """``V_t`` — the party's work-VARIANCE per second at ``tier``.
-
-    The aleatoric term, derived exactly rather than assumed. Each action is
-    ``X = W * S * (1 + D)`` with ``S ~ Bern(p)`` the success roll and
-    ``D ~ Bern(delta)`` the doubling roll, independent, so::
-
-        E[X]   = W * p * (1 + delta)                    (= the shipped model)
-        E[X^2] = W^2 * p * (1 + 3*delta)                since E[(1+D)^2] = 1+3d
-        Var[X] = W^2 * [ p(1+3d) - p^2 (1+d)^2 ]        (-> W^2 p(1-p) at d=0)
-
-    The ACTION COUNT is deterministic (``action_seconds`` is fixed, so a member
-    performs exactly tau/a actions in time tau and only the payload is random),
-    which is the textbook setting for the CLT — hence a variance RATE, additive
-    across members exactly as the drift is.
-
-    ``prepared`` carries ``double = 1 + delta``, so ``(1 + 3*delta)`` is
-    ``3*double - 2``.
-
-    FLAGGED ASSUMPTION (research §2A): efficiency is treated as contributing NO
-    variance — the capture in research/trial-messages.md shows the engine folding
-    efficiency deterministically into progressPerAction. If a later capture shows
-    it behaving as an instant-repeat CHANCE, a compound-Poisson term belongs here.
-    """
-    total = 0.0
-    for level, success_bonus, building, double, wp, asec in prepared:
-        p = trials.success(level, tier, success_bonus, building)
-        total += wp * wp * (p * (3.0 * double - 2.0) - p * p * double * double) / asec
-    return total
-
-
 def race(
     prepared: list[tuple],
     n: int,
@@ -971,7 +940,7 @@ def race(
         eff_target = trials.effective_target(tier, n, config.TARGET_SCALE) * target_mult
         ttc = eff_target / party_rate
         if stochastic and rng is not None:
-            var_rate = variance_rate(prepared, tier)
+            var_rate = trials._variance_rate(prepared, tier)
             if var_rate > 0:
                 sd = math.sqrt(eff_target * var_rate / party_rate ** 3)
                 ttc = rng.gauss(ttc, sd)
@@ -1107,11 +1076,6 @@ def run_trial(
 # ---------------------------------------------------------------------------
 # The bridge: margin -> probability
 # ---------------------------------------------------------------------------
-def phi(z: float) -> float:
-    """Standard normal CDF."""
-    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
-
-
 def p_from_margin(margin: float, sigma: float, bias: float = 0.0) -> float:
     """``Phi( (-ln(1 - m) - b) / sigma )`` — research §4.2 with a bias term.
 
@@ -1122,7 +1086,7 @@ def p_from_margin(margin: float, sigma: float, bias: float = 0.0) -> float:
     """
     if sigma <= 0:
         return 1.0 if margin > 0 else 0.0
-    return phi((-math.log(max(1e-12, 1.0 - margin)) - bias) / sigma)
+    return trials._normal_cdf((-math.log(max(1e-12, 1.0 - margin)) - bias) / sigma)
 
 
 def expected_points(cal: TrialCalibration) -> float:
@@ -1503,7 +1467,7 @@ def direct_tier_check(
     Returns ``(mean_direct, sd_direct, mean_analytic, sd_analytic)`` for the
     time to clear ``tier`` alone.
 
-    WHY BOTHER, given :func:`variance_rate` is derived exactly? Because the
+    WHY BOTHER, given :func:`trials._variance_rate` is derived exactly? Because the
     derivation rests on THREE things that could each be wrong, and only a direct
     roll tests them jointly: (a) that the CLT has bitten at this action count,
     (b) that first passage is Wald-distributed rather than merely
@@ -1554,7 +1518,7 @@ def direct_tier_check(
     ok = crossed[np.arange(reps), first]
     tt = times[first[ok]]
 
-    var_rate = variance_rate(prepared, tier)
+    var_rate = trials._variance_rate(prepared, tier)
     rate = sum(
         trials.success(lv, tier, sb, b) * d * wp / a
         for lv, sb, b, d, wp, a in prepared

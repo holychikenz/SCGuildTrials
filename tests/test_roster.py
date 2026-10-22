@@ -16,6 +16,7 @@ import pytest
 
 from src import config, roster
 from src.reader import SheetStructureError
+from tests.provenance_fixture import manual_provenance
 
 # The live column set, in the live order (verified 2026-08-31). Columns the
 # parser never reads are present here on purpose: the guard must tolerate them.
@@ -893,7 +894,7 @@ def _prov_on(**overrides):
 def test_provenance_strip_says_manual_when_the_roster_is_off():
     """Nothing may ship with better numbers than the page admits to."""
     html_ = build_model._render_provenance_strip(
-        build_model._provenance_placeholder(107)
+        manual_provenance(107)
     )
     assert "107" in html_
     assert "hand-maintained member tab" in html_
@@ -968,7 +969,7 @@ def test_tool_badge_is_outlined_for_an_unmodelled_item():
 
 
 def test_caveats_state_the_assumption_while_the_roster_is_off():
-    texts = build_model._caveat_texts(build_model._provenance_placeholder(107))
+    texts = build_model._caveat_texts(manual_provenance(107))
     assert "assumed to run a <code>+7</code> tool" in texts["tool_caveat"]
     assert "assumed default" in texts["house_caveat"]
     assert texts["sigma_enh_clause"] == "enhancement levels away from the assumed +7"
@@ -1119,3 +1120,22 @@ def test_an_id_conflict_is_quarantined_not_admitted(monkeypatch):
     merged, prov = roster.merge(members, report, "sc")
     assert [m.name for m in merged] == ["Bob"]
     assert prov.admitted == 0
+
+
+def test_a_name_the_member_tab_holds_twice_is_modelled_once():
+    # "Bob" typed twice is one person: the first copy joins the roster, the second is
+    # reported and dropped by merge, so the optimiser cannot seat Bob twice.
+    members = [_member("Bob"), _member("Bob")]
+    rows = roster.parse(_roster_csv([{"name": "Bob"}]))
+    report = roster.join(members, rows)
+    assert list(report.matched) == [0]
+    assert report.duplicates == {1} and report.ambiguous == ["Bob"]
+    merged, _ = roster.merge(members, report)   # refused (1 of 2 joined): still once
+    assert [m.name for m in merged] == ["Bob"]
+    # and on the accepted path
+    names = ["Bob", "Ann", "Cid", "Dee", "Eve", "Bob"]
+    members = [_member(n) for n in names]
+    rows = roster.parse(_roster_csv([{"name": n} for n in names[:5]]))
+    merged, prov = roster.merge(members, roster.join(members, rows))
+    assert not prov.refused
+    assert [m.name for m in merged] == names[:5]

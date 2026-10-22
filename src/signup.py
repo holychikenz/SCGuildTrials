@@ -61,19 +61,16 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import quote
-
-import requests
 
 from . import config, identity
 from .reader import MemberRow, SheetStructureError, _cell, _to_bool, norm_name
+from .scraper import fetch_tab_csv
 from .optimizer import AssignmentScorer, _min_banking, objective_of
 from .trials import (
     RosterEntry,
     expected_credit_points,
     meets_min_level,
     member_skill_level as trials_member_level,
-    rate,
     simulate_race,
     clear_probability,
     tier_clear_seconds,
@@ -110,23 +107,7 @@ def fetch_signup_csv(tab_name: str = SIGNUP_TAB) -> str:
     Raises:
         RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name))
-    try:
-        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(
-            f"Failed to reach Google Sheets gviz endpoint: {exc}"
-        ) from exc
-
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Google Sheets returned {resp.status_code} for the gviz export of "
-            f"tab {tab_name!r}. The sheet's 'anyone with the link' sharing may "
-            f"have been revoked. URL: {url}"
-        )
-
-    resp.raise_for_status()
-    return resp.text
+    return fetch_tab_csv(tab_name)
 
 
 def _norm_header(text: str) -> str:
@@ -354,7 +335,6 @@ class SignupRosterEntry:
     # rider seated under config.TRIAL_FILL_MAX_POINT_COST has a cost, and the page
     # prints it rather than implying the seat was free.
     fill_gain: Optional[float] = None
-    lifts_tier: bool = False  # True when the fill strictly raised the party's points
     # Forwarded verbatim from trials.RosterEntry so the sign-up page can caption
     # its rows exactly as the full-optimum page does. See that dataclass for why.
     tool_item: Optional[str] = None
@@ -414,35 +394,24 @@ class SignupTrial:
 
 @dataclass
 class Swap:
-    """One advisory, strictly-improving move (or move-group) from the enforced plan.
+    """One advisory, strictly-improving move from the enforced plan.
 
-    Each entry RAISES total guild points by ``gain > 0``. Two kinds occur:
+    Each entry RAISES total guild points by ``gain > 0``: a single move (``action``
+    in ``recruit`` / ``bench`` / ``move`` / ``swap``) that improves points on its
+    own — a best-improvement hill-climb step.
 
-    * a **single** move (``action`` in ``recruit`` / ``bench`` / ``move`` /
-      ``swap``) that improves points on its own — the classic best-improvement
-      hill-climb step; and
-    * a **reshuffle** (``action == "reshuffle"``): a short *sequence* of
-      individually break-even swaps into one under-tier trial that together cross
-      its next tier threshold. It exists because points are a STEP function of
-      tier — no single swap crosses the line, so a strict single-move climb stalls
-      one tier below the optimum and (before this) recommended nothing. The
-      component swaps are listed in ``moves``; ``gain`` is the whole group's net.
-
-    The list is still the minimal set of strictly-improving moves — every entry
+    The list is the minimal set of strictly-improving moves — every entry
     raises the score — in contrast to a naive diff against the global optimum,
     which reshuffles the whole guild for no real gain.
     """
 
     member: str
-    action: str  # "recruit" | "bench" | "move" | "swap" | "reshuffle"
+    action: str  # "recruit" | "bench" | "move" | "swap"
     from_skill: Optional[str]
     to_skill: Optional[str]
     note: str
     partner: Optional[str] = None  # the other member, for an "action == swap"
-    gain: float = 0.0  # credit points this move (or group) adds
-    # For ``action == "reshuffle"``: the component swaps, each
-    # ``{"in": name, "out": name, "from_skill": donor_trial}``. ``None`` otherwise.
-    moves: Optional[list[dict]] = None
+    gain: float = 0.0  # credit points this move adds
 
 
 @dataclass
@@ -796,180 +765,27 @@ def _single_move_climb(
     return total
 
 
-def _compound_reshuffle_into(
-    parties: list[set[int]],
-    s: int,
-    scorer: AssignmentScorer,
-    draw: list[str],
-    members: list[MemberRow],
-    target_tier: int,
-) -> Optional[tuple[list[set[int]], "Swap"]]:
-    """Cross one tier threshold in slot ``s`` via a short break-even swap run.
-
-    Points are a STEP function of tier, so a single swap that upgrades a party's
-    throughput usually crosses no threshold and scores Δ0 — which a strict
-    single-move climb refuses, stranding the plan one tier below the optimum.
-    This finds the *shortest* run of swaps into ``s`` that together lift it a
-    tier, then records the whole run as one :class:`Swap` (``action ==
-    "reshuffle"``) whose ``gain`` is the net points.
-
-    Each step swaps a current ``s`` member out for an outsider in, requiring:
-
-    * **Δpoints >= 0** for the swap (over the two touched parties) — so no trial
-      ever regresses; the run's net gain is therefore exactly its final crossing.
-    * a **strict rise** in ``s``'s throughput at ``target_tier`` — a monotone
-      potential that both steers toward the threshold and guarantees termination.
-
-    Returns ``(new_parties, swap)`` on success, or ``None`` if no crossing is
-    reachable within a party's worth of swaps. Deterministic; ``parties`` is not
-    mutated (a copy is returned).
-    """
-    from .optimizer import _swap_delta
-
-    S = len(scorer.skills)
-    parties = [set(p) for p in parties]
-    base = scorer.total_points(parties)
-    skill = draw[s]
-
-    def throughput(members_in_s: set[int]) -> float:
-        return sum(rate(members[m], skill, target_tier) for m in members_in_s)
-
-    cur_phi = throughput(parties[s])
-    moves: list[dict] = []
-
-    # At most one full party's worth of replacements; the strict-φ guard means
-    # each step is distinct, so this bound is never a silent truncation.
-    for _ in range(len(parties[s]) + 1):
-        best = None  # (sort_key, m_out, m_in, donor_slot, new_phi)
-        for m_out in sorted(parties[s]):
-            rate_out = rate(members[m_out], skill, target_tier)
-            for b in range(S):
-                if b == s:
-                    continue
-                for m_in in sorted(parties[b]):
-                    if not (
-                        scorer.can_place(s, m_in) and scorer.can_place(b, m_out)
-                    ):
-                        continue
-                    delta = _swap_delta(scorer, parties, m_out, s, m_in, b)
-                    if delta < -config.OPT_POINTS_EPS:
-                        continue  # never let any trial regress
-                    new_phi = cur_phi - rate_out + rate(
-                        members[m_in], skill, target_tier
-                    )
-                    if new_phi - cur_phi <= 1e-9:
-                        continue  # require strict progress toward the threshold
-                    # Prefer an immediate crossing (Δ), then most progress (Δφ),
-                    # then lowest member indices — a fixed, deterministic order.
-                    key = (delta, new_phi - cur_phi, -m_out, -m_in)
-                    if best is None or key > best[0]:
-                        best = (key, m_out, m_in, b, new_phi)
-        if best is None:
-            return None  # plateau has no break-even, progressing swap left
-
-        _, m_out, m_in, b, new_phi = best
-        parties[s].discard(m_out)
-        parties[s].add(m_in)
-        parties[b].discard(m_in)
-        parties[b].add(m_out)
-        moves.append(
-            {
-                "in": members[m_in].name,
-                "out": members[m_out].name,
-                "from_skill": draw[b],
-            }
-        )
-        cur_phi = new_phi
-
-        gain = scorer.total_points(parties) - base
-        if gain > config.OPT_POINTS_EPS:
-            ins = ", ".join(m["in"] for m in moves)
-            outs = ", ".join(m["out"] for m in moves)
-            n = len(moves)
-            note = (
-                f"Lift {skill} a tier (+{gain:.1f}) with {n} "
-                f"swap{'s' if n != 1 else ''}: bring in {ins}; send out {outs}."
-            )
-            return parties, Swap(
-                member=moves[-1]["in"],
-                action="reshuffle",
-                from_skill=None,
-                to_skill=skill,
-                note=note,
-                gain=gain,
-                moves=moves,
-            )
-
-    return None
-
-
 def _improving_swaps(
     parties: list[set[int]],
     scorer: AssignmentScorer,
     cap: int,
     draw: list[str],
     members: list[MemberRow],
-    optimal_points: Optional[dict[str, int]] = None,
-    optimal_tier: Optional[dict[str, int]] = None,
 ) -> tuple[list["Swap"], int]:
     """Advisory strictly-improving moves from ``parties``, and their reachable total.
 
-    Two phases, both recording every applied move as a :class:`Swap` (so each
-    entry has ``gain > 0`` and ``reachable_total == start + sum(gains)``):
+    A best-improvement single-move hill-climb (relocate + swap), recording every
+    applied move as a :class:`Swap` (so each entry has ``gain > 0`` and
+    ``reachable_total == start + sum(gains)``). Deterministic.
 
-    1. A best-improvement **single-move** hill-climb (relocate + swap), exactly as
-       before — cheap wins that improve on their own.
-    2. When that stalls one or more tiers below the optimum, a **compound
-       reshuffle** per under-tier trial: the shortest break-even swap run that
-       crosses that trial's next tier (see :func:`_compound_reshuffle_into`).
-       Points being a step function, this is the ONLY way to record the moves
-       that close a tier gap — a strict single-move climb never can. After each
-       reshuffle the single-move climb is re-run (the new roster may open fresh
-       single wins), so the two phases interleave until nothing helps.
-
-    Phase 2 runs only when ``optimal_points`` / ``optimal_tier`` (per trial skill)
-    are supplied — the caller derives them from the optimal summary; without them
-    the behaviour is the classic single-move climb. Deterministic throughout.
+    A compound "reshuffle" phase (break-even swap runs across a tier plateau) used to
+    follow; under the continuous partial-credit objective a single move always moves
+    the score, so it never fired on real rosters and was removed (audit 2026-10).
     """
-    S = len(scorer.skills)
     parties = [set(p) for p in parties]
     swaps: list[Swap] = []
     total = scorer.total_points(parties)
     total = _single_move_climb(parties, scorer, cap, draw, members, swaps, total)
-
-    if optimal_points is None or optimal_tier is None:
-        return swaps, total
-
-    # Phase 2: close remaining tier gaps trial-by-trial. Re-scan after every
-    # reshuffle (a lift can unlock further single moves or another crossing);
-    # the loop ends when no under-tier trial admits a break-even crossing.
-    ceiling = sum(optimal_points.get(draw[s], 0.0) for s in range(S))
-    while total < ceiling - config.OPT_POINTS_EPS:
-        progressed = False
-        for s in range(S):
-            skill = draw[s]
-            target = optimal_points.get(skill)
-            tier = optimal_tier.get(skill)
-            if target is None or tier is None:
-                continue
-            if scorer.party_points(s, parties[s]) >= target - config.OPT_POINTS_EPS:
-                continue  # this trial already at (or above) its optimal tier
-            result = _compound_reshuffle_into(
-                parties, s, scorer, draw, members, tier
-            )
-            if result is None:
-                continue
-            parties, swap = result
-            swaps.append(swap)
-            total += swap.gain
-            total = _single_move_climb(
-                parties, scorer, cap, draw, members, swaps, total
-            )
-            progressed = True
-            break  # restart the scan on the updated roster
-        if not progressed:
-            break
-
     return swaps, total
 
 
@@ -1464,7 +1280,6 @@ def plan(
                         name=r.name, level=r.level, tool=r.tool, top=r.top,
                         bot=r.bot, rate_final=r.rate_final, status="recommended",
                         fill_gain=gain,
-                        lifts_tier=gain > config.OPT_POINTS_EPS,
                         tool_item=r.tool_item, tool_enhance=r.tool_enhance,
                         source=r.source, tool_source=r.tool_source,
                         character_id=r.character_id,
@@ -1523,24 +1338,8 @@ def plan(
     # A best-improvement hill-climb from the enforced plan, recording each move
     # and the points it gains. Unlike a diff against the arbitrary global
     # optimum (which reshuffles the whole guild for no net gain), every entry
-    # here strictly raises the score, so the list is short and actionable. The
-    # optimal per-trial tiers/points (from the summary) let a stalled climb cross
-    # a tier plateau with a short break-even reshuffle — see _improving_swaps.
-    # The objective's currency, for the same reason: _improving_swaps compares this
-    # ceiling against a running scorer total. ``.get`` falls back to the step points so
-    # a hand-built summary (the tests do this) still works, and objective_of falls back
-    # to credit for a summary entry with no expectation recorded.
-    optimal_points = {
-        o["skill"]: objective_of(
-            o.get("credit_points", o["points"]), o.get("expected_points")
-        )
-        for o in optimal_summary
-    }
-    optimal_tier = {o["skill"]: o["tier_reached"] for o in optimal_summary}
-    swaps, reachable_total = _improving_swaps(
-        enforced, scorer, cap, draw, members,
-        optimal_points=optimal_points, optimal_tier=optimal_tier,
-    )
+    # here strictly raises the score, so the list is short and actionable.
+    swaps, reachable_total = _improving_swaps(enforced, scorer, cap, draw, members)
 
     # --- Advisory safety swaps: same points, more room ----------------------
     # Runs from the SHIPPED plan (``enforced``, which _improving_swaps copies rather

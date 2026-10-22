@@ -129,6 +129,23 @@ def test_stops_at_blank_member_cell():
     assert [m.name for m in members] == ["Alpha"]
 
 
+def test_rows_named_below_the_blank_stop_are_warned_about(capsys):
+    r1 = _member_row("Alpha", "A", "", ["", "", "", "", ""], _ten_skills())
+    blank = ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,"
+    r2 = _member_row("Beta", "B", "", ["", "", "", "", ""], _ten_skills())
+    r3 = _member_row("Gamma", "B", "", ["", "", "", "", ""], _ten_skills())
+    assert [m.name for m in parse(_csv(r1, blank, r2, blank, r3))] == ["Alpha"]
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "2 named row(s)" in err and "Beta, Gamma" in err
+
+
+def test_no_warning_when_nothing_follows_the_blank_stop(capsys):
+    r1 = _member_row("Alpha", "A", "", ["", "", "", "", ""], _ten_skills())
+    blank = ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,"
+    parse(_csv(r1, blank, blank))
+    assert capsys.readouterr().err == ""
+
+
 def test_quoted_flex_with_commas():
     row = _member_row(
         "Nidras", "Smash/Stab", "Cursed, Regal, Bulwark",

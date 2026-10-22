@@ -94,7 +94,7 @@ class Party:
     work: np.ndarray       # floor(work_power) per member
     asec: np.ndarray       # action_seconds per member
     p: np.ndarray          # success rate, shape (tier, member)
-    delta: float           # doubling chance (gathering only)
+    delta: np.ndarray      # doubling chance per member (gathering only)
     max_tier: int
 
     def targets(self) -> np.ndarray:
@@ -116,13 +116,13 @@ def build_party(members: list[MemberRow], skill: str, max_tier: int = 16) -> Par
             if p is not None]
     work = np.array([wp for _, _, _, _, wp, _ in prep], dtype=np.float64)
     asec = np.array([a for _, _, _, _, _, a in prep], dtype=np.float64)
-    double = prep[0][3]
     p = np.array([
         [trials.success(lv, t, sb, b) for lv, sb, b, _, _, _ in prep]
         for t in range(1, max_tier + 1)
     ])
     return Party(skill=skill, n=len(members), work=work, asec=asec, p=p,
-                 delta=double - 1.0, max_tier=max_tier)
+                 delta=np.array([d - 1.0 for _, _, _, d, _, _ in prep]),
+                 max_tier=max_tier)
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ def simulate(
         p_now = party.p[idx]                                  # (runs, members)
         n_b = np.broadcast_to(n_act, (runs, n_mem))
         succ = rng.binomial(n_b, p_now)
-        if party.delta > 0:
+        if party.delta.any():
             succ = succ + rng.binomial(succ, party.delta)
         gained = (succ * party.work).sum(axis=1)              # (runs,)
 
@@ -517,8 +517,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--dt", type=float, default=2.0)
     ap.add_argument("--seed", type=int, default=20260801)
     ap.add_argument("--guild", default="sc", choices=sorted(config.TABS))
-    ap.add_argument("--sigma-published", type=float, default=0.0231,
-                    help="sigma incl. systematics, from the calibration campaign")
+    ap.add_argument("--sigma-published", type=float, default=None,
+                    help="sigma incl. systematics (default: this party's dice "
+                         "sigma in quadrature with config.RISK_SIGMA_SYSTEMATIC)")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-carryover", dest="carryover", action="store_false",
                     help="discard surplus work at a tier boundary (grid-biased "
@@ -575,6 +576,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     finite = np.isfinite(col)
     s_emp = float(np.log(col[finite]).std(ddof=1))
     s_ana = float(sds[top - 1])
+    sigma_pub = (args.sigma_published if args.sigma_published is not None
+                 else math.hypot(s_ana, config.RISK_SIGMA_SYSTEMATIC))
     print(f"\nsigma at tier {top}:  simulated {s_emp:.5f}   analytic(Wald) {s_ana:.5f}"
           f"   ratio {s_emp / s_ana:.4f}")
     print(f"mean tau: simulated {col[finite].mean():.1f}s  "
@@ -586,13 +589,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     h = os.path.join(outdir, f"{args.skill.lower()}_clear_time.png")
     p_emp = plot_histogram(col, top, taus_det[top - 1], s_ana, budget, h, args.skill)
     c = os.path.join(outdir, f"{args.skill.lower()}_coverage.png")
-    plot_coverage(col, taus_det[top - 1], s_ana, args.sigma_published, c,
+    plot_coverage(col, taus_det[top - 1], s_ana, sigma_pub, c,
                   args.skill, top)
     s = os.path.join(outdir, f"{args.skill.lower()}_sigma_by_tier.png")
     plot_sigma_by_tier(sim, taus_det, sds, s, args.skill, top)
 
     p_dice = float(phi(math.log(budget / taus_det[top - 1]) / s_ana))
-    p_pub = float(phi(math.log(budget / taus_det[top - 1]) / args.sigma_published))
+    p_pub = float(phi(math.log(budget / taus_det[top - 1]) / sigma_pub))
     print(f"\nP(tier {top} holds):")
     print(f"   simulated (truth)            {p_emp:.4f}")
     print(f"   model, dice-only sigma       {p_dice:.4f}   "
@@ -605,7 +608,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     t = col[finite]
     deadlines = np.percentile(t, np.linspace(0.5, 99.5, 400))
     emp = np.array([(t <= b).mean() for b in deadlines])
-    for label, sg in (("dice-only", s_ana), ("published", args.sigma_published)):
+    for label, sg in (("dice-only", s_ana), ("published", sigma_pub)):
         mod = np.asarray(phi(np.log(deadlines / taus_det[top - 1]) / sg))
         print(f"   coverage sweep [{label:>10}]  mean |error| {np.abs(mod - emp).mean():.4f}"
               f"   max |error| {np.abs(mod - emp).max():.4f}"

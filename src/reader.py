@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import csv
 import io
+import sys
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
@@ -39,7 +41,7 @@ class SkillEntry:
     # the item's name (so a Rainbow Chisel is not scored as a Holy one) and its
     # enhancement level (which the model otherwise assumes is +7 for everybody).
     # Both default to None so every existing constructor call is untouched, and
-    # scraper.GuildData.to_dict omits them while they are unset so data.json stays
+    # member_to_dict omits them while they are unset so data.json stays
     # byte-identical with config.ROSTER_SOURCE_ENABLED off.
     tool_item: Optional[str] = None      # e.g. "Celestial Brush"
     tool_enhance: Optional[int] = None   # observed enhancement level, 0..20
@@ -127,10 +129,7 @@ def member_to_dict(member: MemberRow) -> dict:
     The filter is per FIELD rather than all-or-nothing, so a roster-backed member
     whose row named no tool does not carry a null for it either.
 
-    Shared by ``processor.process`` (which writes ``_site/data.json``) and
-    ``scraper.GuildData.to_dict``, for the same reason ``norm_name`` is shared:
-    two copies of a rule about JSON shape will drift, and the drift shows up as a
-    diff nobody expected.
+    Used by ``processor.process``, which writes ``_site/data.json``.
     """
     d = asdict(member)
     for key in _NEVER_SERIALISED:
@@ -145,28 +144,38 @@ def member_to_dict(member: MemberRow) -> dict:
     return d
 
 
-def fetch_csv() -> str:
-    """Fetch the published CSV export as text.
+def fetch_text(url: str, what: str) -> str:
+    """GET ``url`` as text: the ONE network path every sheet fetcher goes through.
+
+    A 401/403 fails at once (sharing revoked; retrying cannot help). Any other
+    failure — network error, 5xx, 429 — is retried once after a short backoff, then
+    raised as ``RuntimeError`` so build.main's skip-an-optional-guild rule sees it
+    (a bare ``requests.HTTPError`` used to escape that rule and kill every guild).
 
     Raises:
-        RuntimeError: on 401/403 (sheet sharing likely revoked) or other
-            HTTP errors, with a message pointing at the likely cause.
+        RuntimeError: on 401/403, or on any other failure after the retry.
     """
-    try:
-        resp = requests.get(config.CSV_URL, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(f"Failed to reach Google Sheets export: {exc}") from exc
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    f"Google Sheets returned {resp.status_code} for {what}. The "
+                    f"sheet's 'anyone with the link' sharing may have been revoked. "
+                    f"URL: {url}"
+                )
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException as exc:
+            if attempt:
+                raise RuntimeError(f"Failed to fetch {what}: {exc}") from exc
+            time.sleep(2)
+    raise AssertionError("unreachable")
 
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            "Google Sheets returned "
-            f"{resp.status_code} for the CSV export. The sheet's "
-            "'anyone with the link' sharing may have been revoked. "
-            f"URL: {config.CSV_URL}"
-        )
 
-    resp.raise_for_status()
-    return resp.text
+def fetch_csv() -> str:
+    """Fetch the published CSV export as text (see :func:`fetch_text`)."""
+    return fetch_text(config.CSV_URL, "the CSV export")
 
 
 def _cell(row: list[str], idx: int) -> str:
@@ -254,6 +263,19 @@ def _validate_header(rows: list[list[str]]) -> None:
         )
 
 
+def warn_rows_after_blank(rest: list[list[str]], where: str) -> None:
+    """The member list ends at the first blank Member cell, BY DESIGN — but a member
+    typed below a stray blank row would vanish silently, so name any that did."""
+    later = [n for r in rest if (n := _cell(r, config.COL_NAME))]
+    if later:
+        print(
+            f"WARNING: {where}: the member list stops at the first blank Member "
+            f"cell, so {len(later)} named row(s) below it are IGNORED: "
+            f"{', '.join(later)}",
+            file=sys.stderr,
+        )
+
+
 def parse(csv_text: str) -> list[MemberRow]:
     """Parse the CSV text into a list of ``MemberRow``.
 
@@ -264,10 +286,12 @@ def parse(csv_text: str) -> list[MemberRow]:
     _validate_header(rows)
 
     members: list[MemberRow] = []
-    for row in rows[config.FIRST_DATA_ROW_INDEX :]:
+    data = rows[config.FIRST_DATA_ROW_INDEX :]
+    for i, row in enumerate(data):
         name = _cell(row, config.COL_NAME)
         if name == "":
             # First blank Member cell marks the end of the member list.
+            warn_rows_after_blank(data[i + 1 :], "the register CSV")
             break
 
         flex_levels = [_to_int(_cell(row, c)) for c in config.FLEX_LEVEL_COLS]

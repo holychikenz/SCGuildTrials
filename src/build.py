@@ -7,6 +7,7 @@ Exits non-zero on any fetch/parse/structure error so CI fails loudly.
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import os
@@ -25,6 +26,7 @@ from . import config
 from . import draw as draw_model
 from . import gear as gear_model
 from . import identity
+from . import optimizer as optimizer_model
 from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
@@ -436,23 +438,6 @@ def _caveat_texts(prov: dict) -> dict:
         "tool_caveat": tool,
         "house_caveat": house,
         "sigma_enh_clause": sigma_enh,
-    }
-
-
-def _provenance_placeholder(member_count: int) -> dict:
-    """The pre-roster answer, for a page rendered from a JSON that predates R4.
-
-    trials.json is a published artefact and old copies exist; a page built from
-    one must still render, and must say the honest thing rather than nothing.
-    """
-    return {
-        "enabled": False, "source": "manual tab", "roster_backed": 0,
-        "manual_backed": member_count, "admitted": 0, "admitted_names": [],
-        "reported_not_seated": [], "captured_at": "", "age_days": None,
-        "stale": False, "gear_hidden": 0, "unknown_tools": 0,
-        "unknown_tool_items": {}, "blank_enhancements": 0,
-        "unmatched_roster": [], "unmatched_members": [], "normalized_matches": [],
-        "ambiguous": [], "refused": "", "unavailable": "",
     }
 
 
@@ -1056,7 +1041,7 @@ def _expected_phrase(trial: dict) -> str:
     if expected is None:
         return ""
     deterministic = _credit_points(trial)
-    if deterministic is None or abs(deterministic - expected) < 0.5:
+    if abs(deterministic - expected) < 0.5:
         return ""
     return (
         f' &middot; <strong>{_cp(expected)} expected</strong> '
@@ -1064,7 +1049,7 @@ def _expected_phrase(trial: dict) -> str:
     )
 
 
-def _marginal_seat_phrase(trial: dict, cap: int) -> str:
+def _marginal_seat_phrase(trial: dict) -> str:
     """The weakest seated member's share of party rate, against the break-even.
 
     WHY THIS IS ON THE PAGE. Partial credit prices a marginal seat: a member earns
@@ -1077,9 +1062,7 @@ def _marginal_seat_phrase(trial: dict, cap: int) -> str:
     2026-09-26 the cap is read off each guild's Skilling Encampment level
     (config.derived_party_cap: 20 + 2 x level, anchored on the measured level 4 -> 28,
     SC parties of exactly 28 in the 2026-08/09 captures). A level not read falls back
-    to config.TRIAL_PARTY_CAPS with a build warning. ``cap`` is THIS guild's, taken
-    from the week it rendered (``week["cap"]``) rather than re-read from config, so
-    the line quotes the number the plan on the page was actually built with. If the
+    to config.TRIAL_PARTY_CAPS with a build warning. If the
     real cap were 20 (the largest party once observed, research/trial-tabs.md) then
     every tier, margin and probability on a 28-seat page would be optimistic by eight
     phantom contributors; if the game seats more than 28 the guild is leaving points
@@ -1107,9 +1090,6 @@ def _marginal_seat_phrase(trial: dict, cap: int) -> str:
             if pays
             else "so the weakest seat costs more than it adds."
         )
-        + f' The cap ({cap}) is itself unconfirmed &mdash; 20 is the '
-          f'largest party ever observed &mdash; and partial credit is what made being '
-          f'wrong about it cost measurable points.'
     )
 
 
@@ -1341,7 +1321,7 @@ def _render_trial_card(
     # trials.json old enough to lack rate_final) — a property of the party, not of
     # the buff regime, so a card without this line has none at any level and needs
     # no slot for the selector to fill.
-    marginal = _marginal_seat_phrase(trial, cap)
+    marginal = _marginal_seat_phrase(trial)
     marginal_html = (
         f'<p class="meta" id="c{t_index}-marg">{marginal}</p>' if marginal else ""
     )
@@ -2038,7 +2018,7 @@ def _assignment_detail(week: dict) -> str:
         return f"random split (seed {week['seed']}, cap {week['cap']})"
     return (
         f"optimised assignment via {_strategy_phrase(strategy)} "
-        f"(cap {week['cap']}) &middot; {week['total_points']} guild points"
+        f"(cap {week['cap']}) · {week['total_points']} guild points"
     )
 
 
@@ -2068,7 +2048,7 @@ def _buildings_source_phrase(week: dict) -> str:
     fall back.
 
     Reads the provenance block attached to ``week`` with ``.get``, following
-    ``_provenance_placeholder``'s established convention — an old published
+    the manual-provenance convention — an old published
     trials.json must still render, and it carries none of these keys.
     """
     prov = week.get("provenance") or {}
@@ -2747,7 +2727,7 @@ def _buff_ladder_payload(week: dict, ladder: dict) -> dict:
                 {
                     "head": _card_headline(rung_trial),
                     "safe": _card_safety(rung_trial),
-                    "marg": _marginal_seat_phrase(rung_trial, week["cap"]),
+                    "marg": _marginal_seat_phrase(rung_trial),
                     "rh": _rate_header(rung_trial),
                     "rates": rates,
                     "tl": _timeline_cells(rung_trial),
@@ -2868,6 +2848,7 @@ def _combat_index(week: dict) -> dict[str, dict]:
     if not block or not block.get("available"):
         return {}
     out: dict[str, dict] = {}
+    names: set[str] = set()
     for trial in block.get("trials") or []:
         boss = _pretty_boss(trial.get("hrid") or "")
         team = trial.get("team") or ""
@@ -2885,6 +2866,12 @@ def _combat_index(week: dict) -> dict[str, dict]:
             if label:
                 entry["cl"] = label
             out[norm_name(name)] = entry
+            names.add(name)
+    # _attach_week's rule: a folded key held by two DISTINCT names ("FeaI"/"Feai")
+    # matches nobody, rather than last-wins handing one member the other's seat.
+    for key, count in Counter(norm_name(n) for n in names).items():
+        if count > 1:
+            del out[key]
     return out
 
 
@@ -2954,7 +2941,7 @@ def _render_trials_html(
     page, the selector re-rates this one.
     """
     strip = _stat_strip(week)
-    _prov = week.get("provenance") or _provenance_placeholder(week["member_count"])
+    _prov = week["provenance"]
     provenance_strip = _render_provenance_strip(_prov)
     _caveats = _caveat_texts(_prov)
     tool_caveat = _caveats["tool_caveat"]
@@ -3967,7 +3954,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
             p.get('optimal_total'), p.get('optimal_credit_total'))}</div></div>"""\
         f"""{safety_tile}{odds_tile}"""
 
-    _prov = p.get("provenance") or _provenance_placeholder(p["roster_count"])
+    _prov = p["provenance"]
     provenance_strip = _render_provenance_strip(_prov)
     sigma_enh_clause = _caveat_texts(_prov)["sigma_enh_clause"]
 
@@ -4075,19 +4062,6 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     cards_html = "".join(cards)
 
     # --- Swaps to reach optimal --------------------------------------------
-    def _swap_detail(s: dict) -> str:
-        """Detail cell: the note, plus the component moves for a reshuffle."""
-        detail = html.escape(s["note"])
-        if s.get("moves"):
-            items = "".join(
-                f'<li>in <strong>{html.escape(m["in"])}</strong>, '
-                f'out {html.escape(m["out"])} '
-                f'<span class="meta">(from {html.escape(m["from_skill"])})</span></li>'
-                for m in s["moves"]
-            )
-            detail += f'<ul class="swap-moves">{items}</ul>'
-        return detail
-
     # A points-equal plan is NOT necessarily a safe one, and the swap list only
     # knows about points. Where the thinnest trial is below the comfortable band,
     # say so here too — otherwise "already matches the optimal ceiling. Nothing to
@@ -4115,7 +4089,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         swap_rows = "".join(
             f'<tr><td><span class="chip {html.escape(s["action"])}">'
             f'{html.escape(s["action"])}</span></td>'
-            f'<td>{_swap_detail(s)}</td>'
+            f'<td>{html.escape(s["note"])}</td>'
             f'<td class=num>+{_cp(s["gain"])}</td></tr>'
             for s in p["swaps"]
         )
@@ -4130,8 +4104,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
                 f"These {len(p['swaps'])} move(s) raise the likely "
                 f"{_cp(p['enforced_total'])} to {_cp(p['reachable_total'])} points "
                 "&mdash; the optimal ceiling. Each is purely advisory and "
-                "overrides a sign-up; a &ldquo;reshuffle&rdquo; is a small group "
-                "of swaps that together lift one trial a tier."
+                "overrides a sign-up."
             )
         else:
             swap_lead = (
@@ -4363,8 +4336,6 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
                border: 1px solid rgba(224,179,65,.45); }}
   .chip.swap {{ background: rgba(224,179,65,.20); color: var(--warn);
                text-transform: capitalize; }}
-  .chip.reshuffle {{ background: rgba(110,168,254,.20); color: var(--accent);
-               text-transform: capitalize; }}
   .chip.missing {{ background: rgba(245,100,90,.18); color: var(--danger);
                border: 1px solid rgba(245,100,90,.55); }}
   /* Safety swaps: green (they buy margin, never points), with overrides flagged. */
@@ -4491,7 +4462,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   <h3>How this page is built</h3>
   <ol>
     <li><strong>Sign-ups are enforced.</strong> Every member who ticked a trial on
-        the sheet's <em>SC Trial Signup</em> tab is locked into that trial and shown
+        the sheet's <em>{html.escape(site.signup_tab)}</em> tab is locked into that trial and shown
         <span style="color:var(--on)">green</span>; they are never moved or benched
         in the plan.</li>
     <li><strong>Open seats are recommended fills.</strong> Remaining seats (up to the
@@ -4660,14 +4631,14 @@ def _render_signup_inactive_html(reason: str, generated_at: str, site: "GuildSit
   <section class="card">
     <h2>Sign-up optimiser is currently inactive</h2>
     <p>This page enforces the guild's per-member trial sign-ups (the tick-box
-       <em>SC Trial Signup</em> tab) and recommends fills for the open seats. It is
+       <em>{html.escape(site.signup_tab)}</em> tab) and recommends fills for the open seats. It is
        paused because that sign-up table is not currently published in the
        expected format:</p>
     <p class="meta"><code>{html.escape(reason)}</code></p>
     <p>The guild sheet presently runs trials as <strong>free-assigned</strong>
        (members pick their own trial), so there is no tick-box sign-up table to
        enforce. This page repopulates automatically once a parseable
-       <em>SC Trial Signup</em> tab exists again.</p>
+       <em>{html.escape(site.signup_tab)}</em> tab exists again.</p>
     <p>In the meantime, the <a href="trials.html">Guild Trials</a> page shows the
        full-roster optimal assignment.</p>
   </section>
@@ -5539,7 +5510,11 @@ def _compute_unit(job: dict) -> dict:
     # config fallback. A missing `cap` must raise, because a default there would
     # silently mis-plan a page — which is what that test guards. The link that could
     # actually break here is _unit_jobs dropping the key, and that has its own test.
-    with trials_model.guild_building_levels_scope(job.get("building_levels")):
+    # ``job["restarts"]``, when present, is this unit's ensemble already run one
+    # restart per process (see _run_units); None runs the ensemble here as before.
+    with trials_model.guild_building_levels_scope(
+        job.get("building_levels")
+    ), optimizer_model.ensemble_restarts(job.get("restarts")):
         if level is None:
             # The published unit also rates its own plan at every rung of the buff
             # ladder, for the page's level selector. It is the SAME search — one
@@ -6226,6 +6201,28 @@ def _unit_jobs(site: "GuildSite", inputs: _GuildInputs, week_draw) -> list[dict]
     return jobs
 
 
+def _compute_restart(job: dict) -> list:
+    """ONE ensemble restart (``job["restart"]``) of a unit. A child-process entry point.
+
+    Same scopes as :func:`_compute_unit`, and the scorer built exactly as
+    ``optimizer.optimize`` builds it for that unit's ``trials.choose_assignment``
+    (default target scale, ``TRIAL_OPTIMIZER_SEED``), so the parties are the ones the
+    unit's own ensemble would have produced — pinned by tests/test_build.py.
+    """
+    level = job["level"]
+    with trials_model.guild_building_levels_scope(job.get("building_levels")), (
+        contextlib.nullcontext() if level is None
+        else trials_model.community_buff_level(level)
+    ):
+        scorer = optimizer_model.AssignmentScorer(
+            job["members"], job["skills"], config.TARGET_SCALE, job["cap"],
+            job["min_levels"],
+        )
+        return optimizer_model.run_restart(
+            scorer, job["restart"], config.TRIAL_OPTIMIZER_SEED
+        )
+
+
 def _run_units(jobs: list[dict]) -> list[dict]:
     """Run every unit and return the results in the order the jobs were given.
 
@@ -6233,16 +6230,55 @@ def _run_units(jobs: list[dict]) -> list[dict]:
     each, synchronising on a per-guild barrier would idle a core waiting for that
     guild's slower half. The pool is sized to the smaller of the units and the
     machine, so a 2-vCPU runner degrades to two-at-a-time rather than thrashing.
+
+    A unit that raises yields its exception IN PLACE of a result, so main() can skip
+    an optional guild without losing the others; a required guild's re-raises there.
     """
     if not config.BUILD_PARALLEL or len(jobs) == 1:
-        return [_compute_unit(job) for job in jobs]
+        out: list = []
+        for job in jobs:
+            try:
+                out.append(_compute_unit(job))
+            except Exception as exc:  # noqa: BLE001 — main() decides per guild
+                out.append(exc)
+        return out
 
-    workers = min(len(jobs), config.BUILD_MAX_WORKERS or (os.cpu_count() or 1))
+    # Each (unit, ensemble restart) is a pool job of its own: the restarts are ~98% of
+    # a unit and independent, so one-unit-per-guild left half a 4-core runner idle.
+    # The unit then picks the best restart in the original order with the original
+    # tie rule (optimizer._run_ensemble), so the output is byte-identical.
+    restarts = (
+        len(config.OPT_ENSEMBLE_PIPELINES)
+        if config.TRIAL_OPTIMIZER_STRATEGY in optimizer_model._ENSEMBLE_ALIASES
+        else 0
+    )
+    workers = min(
+        len(jobs) * max(1, restarts),
+        config.BUILD_MAX_WORKERS or (os.cpu_count() or 1),
+    )
     with futures.ProcessPoolExecutor(max_workers=workers) as pool:
+        # Every restart is queued before any unit, so a unit's tail (the bench fill,
+        # the safety pass, the ladder, the sign-up plan) overlaps other restarts.
+        runs = [
+            [pool.submit(_compute_restart, {**job, "restart": i})
+             for i in range(restarts)]
+            for job in jobs
+        ]
         # Submitted in order and read back in order: map() would do, but submit()
         # lets an exception surface against the job that caused it.
-        pending = [pool.submit(_compute_unit, job) for job in jobs]
-        return [f.result() for f in pending]
+        # A failed restart becomes that unit's result (an exception), never a raise.
+        pending: list = []
+        for job, fs in zip(jobs, runs):
+            failed = next((f.exception() for f in fs if f.exception()), None)
+            if failed is not None:
+                pending.append(failed)
+                continue
+            unit = {**job, "restarts": [f.result() for f in fs]} if fs else job
+            pending.append(pool.submit(_compute_unit, unit))
+        return [
+            p if isinstance(p, BaseException) else (p.exception() or p.result())
+            for p in pending
+        ]
 
 
 def main() -> int:
@@ -6274,12 +6310,15 @@ def main() -> int:
                 f"other guilds continue:\n{exc}",
                 file=sys.stderr,
             )
-        except RuntimeError as exc:
+        except Exception as exc:  # noqa: BLE001 — network or anything else
             if site.required:
+                if not isinstance(exc, RuntimeError):
+                    raise
                 print(f"ERROR ({site.key}): {exc}", file=sys.stderr)
                 return 1
             print(
-                f"WARNING: {site.key} skipped ({exc}); other guilds continue.",
+                f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
+                f"other guilds continue.",
                 file=sys.stderr,
             )
 
@@ -6287,7 +6326,14 @@ def main() -> int:
     jobs: list[dict] = []
     spans: list[tuple[GuildSite, _GuildInputs, int, int]] = []
     for site, inputs in fetched:
-        site_jobs = _unit_jobs(site, inputs, week_draw)
+        try:
+            site_jobs = _unit_jobs(site, inputs, week_draw)
+        except Exception as exc:  # noqa: BLE001 — optional guild only
+            if site.required:
+                raise
+            print(f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
+                  f"other guilds continue.", file=sys.stderr)
+            continue
         spans.append((site, inputs, len(jobs), len(jobs) + len(site_jobs)))
         jobs.extend(site_jobs)
 
@@ -6296,16 +6342,28 @@ def main() -> int:
     # --- Phase 3: render (parent — both regimes must be in hand) ------------
     notes: list[str] = []
     for site, inputs, start, end in spans:
-        span = results[start:end]
-        week = span[0]["week"]
-        inputs.plan_dict = span[0].get("plan")
-        week_maxbuff = span[1]["week"] if len(span) > 1 else None
-        notes.append(
-            _write_guild(
-                site, inputs, week, week_maxbuff, week_draw, draw_warning,
-                ladder=span[0].get("ladder") or None,
+        try:
+            span = results[start:end]
+            for result in span:
+                if isinstance(result, BaseException):
+                    raise result
+            week = span[0]["week"]
+            inputs.plan_dict = span[0].get("plan")
+            week_maxbuff = span[1]["week"] if len(span) > 1 else None
+            notes.append(
+                _write_guild(
+                    site, inputs, week, week_maxbuff, week_draw, draw_warning,
+                    ladder=span[0].get("ladder") or None,
+                )
             )
-        )
+        except Exception as exc:  # noqa: BLE001 — phases 2/3, optional guild only
+            if site.required:
+                raise
+            print(
+                f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
+                f"other guilds continue.",
+                file=sys.stderr,
+            )
 
     print("Built _site/:")
     for note in notes:

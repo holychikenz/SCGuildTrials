@@ -47,6 +47,7 @@ it in place. A bare refiner (no constructor token) defaults to a
 
 from __future__ import annotations
 
+import contextlib
 import math
 import random
 from typing import Callable, Optional
@@ -55,6 +56,7 @@ from . import config
 from .reader import MemberRow
 from .trials import (
     Assignment,
+    _prepare_party,
     clear_probability,
     expected_credit_points,
     guild_building_skill_levels,
@@ -69,7 +71,9 @@ from .trials import (
 _MISSING = object()
 
 
-def _objective_value(party: list[MemberRow], skill: str, result) -> float:
+def _objective_value(
+    party: list[MemberRow], skill: str, result, prepared: Optional[list] = None
+) -> float:
     """The number every strategy in this module maximises, per config.OPT_OBJECTIVE.
 
     ONE function, called from exactly one place (:meth:`AssignmentScorer._evaluate`),
@@ -102,7 +106,7 @@ def _objective_value(party: list[MemberRow], skill: str, result) -> float:
             "config.OPT_OBJECTIVE = 'expected' requires RISK_EXPECTED_POINTS = True; "
             "set OPT_OBJECTIVE = 'credit' to optimise the deterministic score."
         )
-    expected = expected_credit_points(party, skill, result)
+    expected = expected_credit_points(party, skill, result, prepared=prepared)
     return objective_of(result.credit_points, expected)
 
 
@@ -240,9 +244,11 @@ class AssignmentScorer:
             return cached
         party = [self.members[i] for i in key[1]]
         self.sim_calls += 1
-        result = simulate_race(party, skill, self.target_scale)
+        # One preparation shared by the race and its pricing (see _prepare_party).
+        prepared = _prepare_party(party, skill)
+        result = simulate_race(party, skill, self.target_scale, prepared=prepared)
         value = (
-            _objective_value(party, skill, result),
+            _objective_value(party, skill, result, prepared),
             time_slack_fraction(result),
             result.tier_reached,
         )
@@ -904,6 +910,34 @@ def _run_pipeline(
     return parties
 
 
+# Restarts already run elsewhere, one per process (build._run_units); see
+# ensemble_restarts. None means "run them here", the only state outside a build unit.
+_RESTARTS: Optional[list[Parties]] = None
+
+
+@contextlib.contextmanager
+def ensemble_restarts(restarts: Optional[list[Parties]]):
+    """Have :func:`_run_ensemble` take its restarts' parties from ``restarts``.
+
+    ``restarts[i]`` must be :func:`run_restart` ``(…, i, seed)`` on the same inputs;
+    None is a no-op. Same contract as ``trials.community_buff_level``: one unit per
+    process, restored on the way out.
+    """
+    global _RESTARTS
+    saved, _RESTARTS = _RESTARTS, restarts
+    try:
+        yield
+    finally:
+        _RESTARTS = saved
+
+
+def run_restart(scorer: AssignmentScorer, i: int, seed: int) -> Parties:
+    """Restart ``i`` of the ensemble: its pipeline under its own derived seed."""
+    return _run_pipeline(
+        scorer, config.OPT_ENSEMBLE_PIPELINES[i], random.Random(seed + 1 + i)
+    )
+
+
 def _run_ensemble(scorer: AssignmentScorer, seed: int) -> Parties:
     """Run every pipeline in ``config.OPT_ENSEMBLE_PIPELINES``; return the best.
 
@@ -917,8 +951,10 @@ def _run_ensemble(scorer: AssignmentScorer, seed: int) -> Parties:
     """
     best_parties: Optional[Parties] = None
     best = -math.inf
-    for i, pipe in enumerate(config.OPT_ENSEMBLE_PIPELINES):
-        parties = _run_pipeline(scorer, pipe, random.Random(seed + 1 + i))
+    for i in range(len(config.OPT_ENSEMBLE_PIPELINES)):
+        parties = (
+            run_restart(scorer, i, seed) if _RESTARTS is None else _RESTARTS[i]
+        )
         pts = scorer.total_points(parties)
         # Float-safe since the objective became continuous: "strictly better" needs the
         # epsilon, and "tied" is a band rather than an equality. Two restarts that land

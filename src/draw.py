@@ -74,14 +74,13 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
-from urllib.parse import quote
 
 from typing import Optional
 
-import requests
-
 from . import config
 from .reader import SheetStructureError, _cell
+from .scraper import fetch_tab_csv
+from .signup import _HEADER_TO_SKILL, _norm_header
 
 
 # ---------------------------------------------------------------------------
@@ -107,21 +106,12 @@ SKILLING_COL_START = 1
 # model is never fed a mis-sized week silently.
 EXPECTED_TRIALS = 4
 
-# Sheet-label -> internal trial-skill name. Identity for every skill whose sheet
-# label already matches an internal name; only these two differ. Built
-# case-insensitively from ``config.TRIAL_SKILL_TO_SHEET_COLUMN`` (the authority
-# on which trial-skill names the rest of the pipeline understands).
-_SKILL_ALIASES = {
-    "cheesesmithing": "C.Smithing",
-    # The member tab calls the Alchemy column "Bell Farming". The game heads the
-    # SIGN-UP column "Alchemy", so this alias should never fire — it is here so
-    # that if the game ever switches to the sheet's own label, the draw keeps
-    # reading rather than failing on a name we already understand.
-    "bellfarming": "Alchemy",
-    "bell farming": "Alchemy",
-}
-_KNOWN_SKILLS = {
-    name.lower(): name for name in config.TRIAL_SKILL_TO_SHEET_COLUMN
+# Sheet-label -> internal trial-skill name, by signup.py's ONE header rule
+# (case/punctuation-insensitive, "Alchemy"/"Cheesesmithing" aliases), then mapped
+# from the sheet-column name to the trial name. Two normalisers here once let
+# "Cheese Smithing" parse as a sign-up yet fail the draw.
+_SHEET_TO_TRIAL = {
+    sheet: trial for trial, sheet in config.TRIAL_SKILL_TO_SHEET_COLUMN.items()
 }
 
 
@@ -159,8 +149,7 @@ def _normalise_skill(raw: str, column: int) -> str:
             typo, a new skill, a combat boss that has drifted left into the
             skilling block, or the wrong tab served by gviz).
     """
-    key = raw.strip().lower()
-    name = _SKILL_ALIASES.get(key) or _KNOWN_SKILLS.get(key)
+    name = _SHEET_TO_TRIAL.get(_HEADER_TO_SKILL.get(_norm_header(raw)))
     if name is None:
         raise SheetStructureError(
             f"{DRAW_TAB!r} column {column} (spreadsheet "
@@ -188,23 +177,7 @@ def fetch_draw_csv(tab_name: str = DRAW_TAB) -> str:
     Raises:
         RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name))
-    try:
-        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(
-            f"Failed to reach Google Sheets gviz endpoint: {exc}"
-        ) from exc
-
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Google Sheets returned {resp.status_code} for the gviz export of "
-            f"tab {tab_name!r}. The sheet's 'anyone with the link' sharing may "
-            f"have been revoked. URL: {url}"
-        )
-
-    resp.raise_for_status()
-    return resp.text
+    return fetch_tab_csv(tab_name)
 
 
 def trial_columns(csv_text: str, tab_label: str = DRAW_TAB) -> list[str]:

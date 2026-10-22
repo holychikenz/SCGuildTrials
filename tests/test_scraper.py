@@ -13,7 +13,7 @@ import json
 import pytest
 
 from src.reader import MemberRow, SheetStructureError
-from src.scraper import GuildData, parse_gviz
+from src.scraper import parse_gviz
 
 # Skill-name header cells as gviz serves them: merged junk / trailing spaces.
 # 0-based col of each 5-column block's level cell -> observed header text.
@@ -151,6 +151,15 @@ def test_stops_at_blank_member_cell():
     assert [m.name for m in members] == ["Alpha"]
 
 
+def test_gviz_rows_named_below_the_blank_stop_are_warned_about(capsys):
+    r1 = _data_cells("Alpha", "A", "", ["", "", "", "", ""], _ten_skills())
+    blank = [""] * _N_COLS
+    r2 = _data_cells("Beta", "B", "", ["", "", "", "", ""], _ten_skills())
+    assert [m.name for m in parse_gviz(_csv(r1, blank, r2))] == ["Alpha"]
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "IGNORED: Beta" in err
+
+
 def test_wrong_tab_guard_rejects_trial_assignments_shape():
     # gviz silently serves "Trial Assignments" for unknown names; its header
     # begins "    ","ALL TRIALS ARE FREE ASSIGNED...","Cut-Off(30)",...
@@ -180,24 +189,101 @@ def test_empty_csv_raises_structure_error():
         parse_gviz("")
 
 
-def test_guilddata_to_dict_is_json_serializable_and_shaped():
+def test_parsed_member_serialises_to_the_data_json_shape():
+    from src.reader import member_to_dict
+
     row = _data_cells("Feal", "Water", "Nature", ["", "", "", "", "47"],
                       _ten_skills("113"))
     members = parse_gviz(_csv(row))
-    gd = GuildData(
-        tab="SC Member Data", fetched_at="2026-07-17T00:00:00+00:00",
-        member_count=len(members), members=members,
-    )
-
-    d = gd.to_dict()
     # Round-trips through JSON without error.
-    round_tripped = json.loads(json.dumps(d))
-    assert round_tripped["tab"] == "SC Member Data"
-    assert round_tripped["member_count"] == 1
-    m = round_tripped["members"][0]
+    m = json.loads(json.dumps(member_to_dict(members[0])))
     # Member shape matches the existing data.json serialization (asdict).
     assert set(m.keys()) == {"name", "main_classes", "flex", "flex_levels", "skills"}
     assert m["skills"]["Milking"] == {
         "level": 113, "tool": False, "top": False, "bot": False, "house": None,
     }
     assert isinstance(members[0], MemberRow)
+
+
+# --- reader.fetch_text: the one network path (finding 1) ----------------------
+class _Resp:
+    def __init__(self, status, text="ok"):
+        self.status_code, self.text = status, text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(f"{self.status_code} Server Error")
+
+
+def _fake_get(monkeypatch, statuses):
+    from src import reader
+
+    calls, sleeps = [], []
+
+    def get(url, timeout):
+        calls.append(url)
+        return _Resp(statuses[len(calls) - 1])
+
+    monkeypatch.setattr(reader.requests, "get", get)
+    monkeypatch.setattr(reader.time, "sleep", sleeps.append)
+    return calls, sleeps
+
+
+def test_fetch_503_twice_raises_runtime_error(monkeypatch):
+    from src.scraper import fetch_tab_csv
+
+    calls, sleeps = _fake_get(monkeypatch, [503, 503])
+    with pytest.raises(RuntimeError, match="503"):
+        fetch_tab_csv("SC Member Data")
+    assert len(calls) == 2 and len(sleeps) == 1
+
+
+def test_fetch_retries_once_then_succeeds(monkeypatch):
+    from src.scraper import fetch_tab_csv
+
+    calls, _ = _fake_get(monkeypatch, [429, 200])
+    assert fetch_tab_csv("SC Member Data") == "ok"
+    assert len(calls) == 2
+
+
+def test_fetch_network_error_becomes_runtime_error(monkeypatch):
+    import requests
+
+    from src import reader
+
+    def get(url, timeout):
+        raise requests.ConnectionError("down")
+
+    monkeypatch.setattr(reader.requests, "get", get)
+    monkeypatch.setattr(reader.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="down"):
+        reader.fetch_csv()
+
+
+def test_fetch_403_is_not_retried(monkeypatch):
+    from src.scraper import fetch_tab_csv
+
+    calls, _ = _fake_get(monkeypatch, [403, 200])
+    with pytest.raises(RuntimeError, match="sharing may have been revoked"):
+        fetch_tab_csv("SC Member Data")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "fetch",
+    [
+        "src.draw:fetch_draw_csv", "src.signup:fetch_signup_csv",
+        "src.buildings:fetch_buildings_csv", "src.combat:fetch_combat_csv",
+        "src.identity:fetch_name_history_csv",
+    ],
+)
+def test_every_tab_fetcher_converts_503(monkeypatch, fetch):
+    import importlib
+
+    mod, fn = fetch.split(":")
+    monkeypatch.undo()  # drop conftest's Name History stub: the real fetcher runs
+    _fake_get(monkeypatch, [503, 503])
+    with pytest.raises(RuntimeError):
+        getattr(importlib.import_module(mod), fn)("SC Trial Signup")

@@ -15,6 +15,14 @@ import pytest
 from src import config
 from src.reader import MemberRow, SkillEntry
 from src import trials
+from tests.provenance_fixture import with_provenance
+
+
+def _trials_html(page, *args, **kwargs):
+    """build._render_trials_html on a dict that never went through _write_guild."""
+    from src import build
+
+    return build._render_trials_html(with_provenance(page, "member_count"), *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1198,7 +1206,7 @@ def test_expected_points_reduces_to_the_deterministic_score_as_sigma_vanishes(
     party = _ramp_party()
     r = trials.simulate_race(party, "Foraging")
     monkeypatch.setattr(config, "RISK_SIGMA_SYSTEMATIC", 0.0)
-    monkeypatch.setattr(trials, "clear_sigma", lambda *a, **k: 0.0)
+    monkeypatch.setattr(trials, "_variance_rate", lambda *a, **k: 0.0)  # no dice
     assert trials.expected_credit_points(party, "Foraging", r) == pytest.approx(
         r.credit_points, abs=1e-9
     )
@@ -1265,6 +1273,63 @@ def test_cumulative_tier_times_race_past_the_buzzer():
     # A party that cannot move has no curve at all.
     blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
     assert trials._cumulative_tier_times([blank], "Foraging", 5) == []
+
+
+def _two_pass_reference(party, skill, sigma_tier, max_tier):
+    """The pre-2026-10 clear_sigma and _cumulative_tier_times, verbatim in their
+    arithmetic: two separate passes, each re-preparing the party. The one-pass
+    _clearing_curve must reproduce both BIT FOR BIT (one ULP re-seats parties)."""
+    prepared = [p for p in (trials._prepare_member(
+        m, skill, trials.guild_building_skill_levels(skill),
+        None if config.ROSTER_USE_SHRINES else trials.guild_shrine_bonuses(),
+    ) for m in party) if p is not None]
+    if not prepared:
+        return [], None
+    n = len(party)
+    sigma, cumulative, variance = None, 0.0, 0.0
+    for t in range(1, sigma_tier + 1):
+        rate = sum(trials.success(lv, t, sb, b) * d * wp / a
+                   for lv, sb, b, d, wp, a in prepared)
+        if rate <= 0:
+            break
+        target = trials.effective_target(t, n, config.TARGET_SCALE)
+        cumulative += target / rate
+        variance += target * trials._variance_rate(prepared, t) / rate ** 3
+    else:
+        sigma = math.sqrt(variance) / cumulative if sigma_tier >= 1 else None
+    taus, cumulative = [], 0.0
+    for t in range(1, max(1, max_tier) + 1):
+        rate = sum(trials.success(lv, t, sb, b) * d * wp / a
+                   for lv, sb, b, d, wp, a in prepared)
+        if rate <= 0:
+            break
+        cumulative += trials.effective_target(t, n, config.TARGET_SCALE) / rate
+        taus.append(cumulative)
+    return taus, sigma
+
+
+@pytest.mark.parametrize("skill", ["Foraging", "Milking", "Cooking", "Enhancing"])
+def test_one_pass_pricing_is_bit_identical_to_the_two_pass_original(skill):
+    from tests.golden_fixture import golden_members
+
+    members = golden_members()
+    blank = MemberRow(name="B", main_classes="", flex="", flex_levels=[], skills={})
+    parties = [members[:5], members[5:20], members[::3], [blank] + members[20:24]]
+    for party in parties:
+        race = trials.simulate_race(party, skill)
+        lookahead = race.tier_reached + config.RISK_LOOKAHEAD_TIERS
+        for sigma_tier in (1, max(1, race.tier_reached), race.tier_reached + 2):
+            taus, sigma = _two_pass_reference(party, skill, sigma_tier, lookahead)
+            assert trials.clear_sigma(party, skill, sigma_tier) == sigma
+            assert trials._cumulative_tier_times(party, skill, lookahead) == taus
+        # Handing the race's preparation in changes nothing, to the bit.
+        prepared = trials._prepare_party(party, skill)
+        shared = trials.simulate_race(party, skill, prepared=prepared)
+        assert shared.to_dict() == race.to_dict()
+        assert trials.expected_credit_points(
+            party, skill, race, prepared=prepared
+        ) == trials.expected_credit_points(party, skill, race)
+    assert trials.expected_credit_points([blank], skill, race) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1508,7 +1573,7 @@ def test_trials_page_places_the_guild_spend_table_above_the_upgrades():
 
     base, _ = _two_regime_weeks()
     site = build.GUILD_SITES[0]
-    assert "guild-spend-section" not in build._render_trials_html(base, site)
+    assert "guild-spend-section" not in _trials_html(base, site)
     base["building_upgrades"] = [
         {"skill": "Foraging", "building": "Guild Garden", "from_level": 0,
          "to_level": 1, "levels": 1, "skill_levels_now": 0, "skill_levels_after": 2,
@@ -1521,7 +1586,7 @@ def test_trials_page_places_the_guild_spend_table_above_the_upgrades():
                        "gain_gp_per_week": 5.0, "payback_weeks": 100.0,
                        "confidence": "modelled", "recommendation": None, "rank": 1}],
            "gp_basis": "base", "notes": [], "combat": {"available": True}}
-    page = build._render_trials_html(base, site, guild_spend=doc)
+    page = _trials_html(base, site, guild_spend=doc)
     assert 'id="upgrades-section"' in page
     assert page.index('id="guild-spend-section"') < page.index('id="upgrades-section"')
     # The spend row is one level, L -> L+1, at that level's real gain.
@@ -1536,12 +1601,12 @@ def test_trials_page_switch_cross_links_and_marks_the_active_level():
 
     base, maxed = _two_regime_weeks()
     site = build.GUILD_SITES[0]
-    default_page = build._render_trials_html(
+    default_page = _trials_html(
         base, site, "",
         counterpart={"href": build.TRIALS_MAXBUFF_PAGE, "level": 20,
                      "total": maxed["total_credit_points"]},
     )
-    maxbuff_page = build._render_trials_html(
+    maxbuff_page = _trials_html(
         maxed, site, "",
         counterpart={"href": build.TRIALS_PAGE, "level": 1,
                      "total": base["total_credit_points"]},
@@ -1586,7 +1651,7 @@ def _ladder_page():
     )
     week = published.to_dict()
     ladder = {str(k): v.to_dict() for k, v in rungs.items()}
-    page = build._render_trials_html(week, build.GUILD_SITES[0], "", ladder=ladder)
+    page = _trials_html(week, build.GUILD_SITES[0], "", ladder=ladder)
     return build, week, ladder, page
 
 
@@ -1677,7 +1742,7 @@ def test_no_ladder_renders_the_page_exactly_as_before():
     """The rollback. TRIALS_BUFF_LEVEL_SLIDER = False passes ladder=None, and no
     control, no ladder and no island reach the page."""
     build, week, _, _ = _ladder_page()
-    bare = build._render_trials_html(week, build.GUILD_SITES[0], "", ladder=None)
+    bare = _trials_html(week, build.GUILD_SITES[0], "", ladder=None)
     body = bare.split("<body>")[1].split('<script id="assign-data"')[0]
     assert 'id="buff-range"' not in body
     assert 'class="bl-note"' not in body
@@ -1696,8 +1761,8 @@ def test_trials_page_footnote_states_the_level_it_was_built_at():
 
     base, maxed = _two_regime_weeks()
     site = build.GUILD_SITES[0]
-    assert "level 1</strong>" in build._render_trials_html(base, site)
-    assert "level 20</strong>" in build._render_trials_html(maxed, site)
+    assert "level 1</strong>" in _trials_html(base, site)
+    assert "level 20</strong>" in _trials_html(maxed, site)
 
 
 def test_trials_page_renders_without_a_counterpart():
@@ -1706,7 +1771,7 @@ def test_trials_page_renders_without_a_counterpart():
     from src import build
 
     base, _ = _two_regime_weeks()
-    body = build._render_trials_html(base, build.GUILD_SITES[0]).split("</style>", 1)[1]
+    body = _trials_html(base, build.GUILD_SITES[0]).split("</style>", 1)[1]
     assert "bufftoggle" not in body
     assert "bt-seg" not in body
 
@@ -1718,7 +1783,7 @@ def test_trials_page_switch_survives_a_pre_buff_trials_json():
 
     base, _ = _two_regime_weeks()
     del base["community_buff_level"]
-    page = build._render_trials_html(
+    page = _trials_html(
         base, build.GUILD_SITES[0], "",
         counterpart={"href": build.TRIALS_MAXBUFF_PAGE, "level": 20, "total": 1.0},
     )
@@ -1756,7 +1821,7 @@ def test_pin_key_is_namespaced_per_guild():
 
     base, _ = _two_regime_weeks()
     keys = {
-        site.key: build._render_trials_html(base, site)
+        site.key: _trials_html(base, site)
         .split('data-pin-key="', 1)[1]
         .split('"', 1)[0]
         for site in build.GUILD_SITES
@@ -1774,7 +1839,7 @@ def test_roster_rows_sort_on_the_bare_name_not_the_star():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     names = [e["n"] for e in _pin_index(page) if e["t"] != "Bench"]
     assert names
     for name in names:
@@ -1791,7 +1856,7 @@ def test_pinned_panel_ships_hidden_and_empty():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert '<section class="card pinned" id="pinned-section" hidden>' in page
     assert '<div id="pinned-list" class="pin-list"></div>' in page
     assert 'aria-pressed="true"' not in page
@@ -1805,7 +1870,7 @@ def test_assign_index_carries_the_pinned_panel_summary_as_plain_text():
     from src import build
 
     base, _ = _two_regime_weeks()
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     assert entries
     for e in entries:
         assert set(e) == {"n", "t", "r", "l", "d", "m", "b"}
@@ -1821,7 +1886,7 @@ def test_pinned_summary_bands_agree_with_the_trial_card():
     from src import build
 
     base, _ = _two_regime_weeks()
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     by_trial = {e["t"]: e for e in entries if e["t"] != "Bench"}
     for trial in base["trials"]:
         e = by_trial.get(trial["skill"])
@@ -1840,7 +1905,7 @@ def test_benched_members_can_be_pinned_too():
 
     base, _ = _two_regime_weeks()
     base["bench"] = ["Benched McBenchface"]
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'data-fav="Benched McBenchface"' in page
     entry = next(e for e in _pin_index(page) if e["n"] == "Benched McBenchface")
     assert entry["t"] == "Bench"
@@ -1855,7 +1920,7 @@ def test_pin_controls_reach_every_page_the_reader_can_land_on():
     from src import build
 
     base, maxed = _two_regime_weeks()
-    page = build._render_trials_html(
+    page = _trials_html(
         maxed, build.GUILD_SITES[0], "",
         counterpart={"href": build.TRIALS_PAGE, "level": 1,
                      "total": base["total_credit_points"]},
@@ -2523,7 +2588,7 @@ def test_a_combat_seat_reaches_the_search_index_under_terse_keys():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entry = next(e for e in _pin_index(build._render_trials_html(
+    entry = next(e for e in _pin_index(_trials_html(
         base, build.GUILD_SITES[0])) if e["n"] == who)
 
     # Prettified from the hrid, not carried as one: a member reads "Hedgehog".
@@ -2550,7 +2615,7 @@ def test_a_member_with_no_combat_seat_carries_NO_combat_key_at_all():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     others = [e for e in entries if e["n"] != who]
     assert others, "the fixture must have somebody without a seat"
     for e in others:
@@ -2571,7 +2636,7 @@ def test_a_nine_wide_seat_omits_the_label_independently():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", None),
     ])
-    entry = next(e for e in _pin_index(build._render_trials_html(
+    entry = next(e for e in _pin_index(_trials_html(
         base, build.GUILD_SITES[0])) if e["n"] == who)
     assert entry["cb"] == "Hedgehog" and entry["cs"] == "cursed 1"
     assert "cl" not in entry
@@ -2587,7 +2652,7 @@ def test_a_benched_member_keeps_their_combat_seat():
     base["combat"] = _combat_week(seats=[
         ("Benchy", "/guild_combat/swarm", "SC Team 2", "tank 1", "Tank"),
     ])
-    entry = next(e for e in _pin_index(build._render_trials_html(
+    entry = next(e for e in _pin_index(_trials_html(
         base, build.GUILD_SITES[0])) if e["n"] == "Benchy")
     assert entry["t"] == "Bench" and entry["r"] == "bench-section"
     assert entry["cb"] == "Swarm" and entry["cl"] == "Tank"
@@ -2606,7 +2671,7 @@ def test_a_combat_only_member_is_appended_with_an_empty_row_id():
     base["combat"] = _combat_week(seats=[
         ("Stranger", "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     entry = next(e for e in entries if e["n"] == "Stranger")
     assert entry["t"] == "Combat only"
     assert entry["r"] == ""
@@ -2625,7 +2690,7 @@ def test_a_seated_member_is_not_duplicated_as_combat_only():
     base["combat"] = _combat_week(seats=[
         (who, "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    entries = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    entries = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     assert len([e for e in entries if e["n"] == who]) == 1
     assert not any(e["t"] == "Combat only" for e in entries)
 
@@ -2640,7 +2705,7 @@ def test_available_false_is_said_with_its_reason_and_not_swallowed():
         available=False,
         unavailable="the 'SC Combat Teams' tab could not be read: HTTP 403",
     )
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'data-combat-unavailable="the &#x27;SC Combat Teams&#x27; tab could not ' \
            'be read: HTTP 403"' in page
     # An unavailable block contributes no index keys either.
@@ -2654,7 +2719,7 @@ def test_an_available_block_leaves_the_attribute_empty():
     base["combat"] = _combat_week(seats=[
         (_seated(base), "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'data-combat-unavailable=""' in page
 
 
@@ -2667,13 +2732,13 @@ def test_a_week_with_no_combat_key_renders_exactly_todays_page():
 
     base, _ = _two_regime_weeks()
     assert "combat" not in base
-    before = build._render_trials_html(base, build.GUILD_SITES[0])
+    before = _trials_html(base, build.GUILD_SITES[0])
 
     base_with = dict(base)
     base_with["combat"] = _combat_week(seats=[
         (_seated(base), "/guild_combat/hedgehog", "SC Team 1", "cursed 1", "Cursed"),
     ])
-    after = build._render_trials_html(base_with, build.GUILD_SITES[0])
+    after = _trials_html(base_with, build.GUILD_SITES[0])
     assert before != after, "the fixture must actually change something"
 
     # And the empty-attribute page is the same as the no-key page but for that one
@@ -2699,7 +2764,7 @@ def test_a_combat_name_containing_a_left_angle_bracket_cannot_become_markup():
         ("Stranger", "/guild_combat/hedgehog", "SC Team 1", "cursed 1",
          "</script><img src=x onerror=alert(1)>"),
     ])
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     blob = page.split('id="assign-data"', 1)[1].split(">", 1)[1].split("</script>", 1)[0]
     assert "<" not in blob, "a raw < reached the script element"
     assert "\\u003c/script" in blob
@@ -2764,7 +2829,7 @@ def test_index_entries_carry_the_character_id_when_known():
     benched = "Benched McBenchface"
     base["bench"] = [benched]
     base["bench_character_ids"] = {benched: 7}
-    index = _pin_index(build._render_trials_html(base, build.GUILD_SITES[0]))
+    index = _pin_index(_trials_html(base, build.GUILD_SITES[0]))
     by_name = {e["n"]: e for e in index}
     assert by_name[first["name"]]["i"] == 102437
     assert by_name[benched]["i"] == 7
@@ -2776,7 +2841,7 @@ def test_pins_record_ids_and_migrate_on_load():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
     assert 'PIN_KEY + ".ids"' in page
     assert "function migratePins" in page
     assert "migratePins();\n  renderPins();" in page
@@ -2812,7 +2877,7 @@ def test_migrate_pins_resolves_by_recorded_id_before_name():
     from src import build
 
     base, _ = _two_regime_weeks()
-    page = build._render_trials_html(base, build.GUILD_SITES[0])
+    page = _trials_html(base, build.GUILD_SITES[0])
 
     # An alt took a pinned member's old name: the pin follows the id, not the name.
     data = [{"n": "Bob", "i": 9}, {"n": "Carol", "i": 2}]
@@ -2828,3 +2893,54 @@ def test_migrate_pins_resolves_by_recorded_id_before_name():
     data = [{"n": "Dan", "i": 4}]
     got = _run_migrate_pins(page, data, ["Dan", "Gone"], {"Gone": 8})
     assert got == {"pins": ["Dan", "Gone"], "ids": {"Gone": 8, "Dan": 4}}
+
+
+def test_shrine_probes_start_from_the_level_members_already_hold():
+    """config's caps are a dated FLOOR. Members holding force 5 against a configured
+    cap of 4 prove the cap is at least 5: the next purchase is 5 -> 6, priced as such,
+    and nobody is 'below' a cap of 4 they have already passed."""
+    parties = _probe_party({"force": 5, "tempo": 4})
+    u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert u.from_level == 5
+    assert u.next_level_cost == trials.guild_shrine_upgrade_cost(6)
+    assert u.members_at_cap == 4
+    a = trials.probe_shrine_adoption(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert a.cap == 5 and a.members_below_cap == 0
+
+
+def test_shrine_probe_observed_cap_is_clamped_to_the_game_maximum():
+    parties = _probe_party({"force": config.GUILD_SHRINE_MAX_LEVEL})
+    u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert u.from_level == config.GUILD_SHRINE_MAX_LEVEL and u.at_cap
+    over = {**_CAPS, "force": config.GUILD_SHRINE_MAX_LEVEL + 5}   # a typo'd config
+    a = trials.probe_shrine_adoption(_probe_party({}), _PROBE_SKILLS, "force", caps=over)
+    assert a.cap == config.GUILD_SHRINE_MAX_LEVEL
+
+
+def test_random_strategy_benches_members_below_the_min_level():
+    """Finding 10: the min-level filter must bench, not drop. 12 Foraging members at
+    levels 80..135 against a 110 minimum: 6 race, 6 sit on the bench, none vanish."""
+    members = [_member(f"f{i}", {"Foraging": 80 + 5 * i}) for i in range(12)]
+    a = trials.choose_assignment(
+        members, ["Foraging"], seed=1, cap=20, strategy="random",
+        min_levels={"Foraging": 110},
+    )
+    seated = a.parties["Foraging"]
+    assert len(seated) == 6 and len(a.bench) == 6
+    assert all(m.skills["Foraging"].level >= 110 for m in seated)
+    assert sorted(m.name for m in seated + a.bench) == sorted(m.name for m in members)
+
+
+def test_combat_index_drops_a_folded_key_held_by_two_distinct_names():
+    """Finding 11: "FeaI" and "Feai" fold to one key. Last-wins handed one of them the
+    other's seat; _attach_week's rule says such a key matches nobody."""
+    from src import build
+
+    week = {"combat": _combat_week(seats=[
+        ("FeaI", "/guild_combat/hedgehog", "SC Team 1", "tank 1", "Tank"),
+        ("Feai", "/guild_combat/swarm", "SC Team 2", "cursed 1", "Cursed"),
+        ("Yedic", "/guild_combat/swarm", "SC Team 2", "tank 1", "Tank"),
+    ])}
+    index = build._combat_index(week)
+    assert "feai" not in index
+    assert index["yedic"]["cb"] == "Swarm"
