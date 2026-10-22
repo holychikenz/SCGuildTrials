@@ -151,6 +151,15 @@ def test_stops_at_blank_member_cell():
     assert [m.name for m in members] == ["Alpha"]
 
 
+def test_gviz_rows_named_below_the_blank_stop_are_warned_about(capsys):
+    r1 = _data_cells("Alpha", "A", "", ["", "", "", "", ""], _ten_skills())
+    blank = [""] * _N_COLS
+    r2 = _data_cells("Beta", "B", "", ["", "", "", "", ""], _ten_skills())
+    assert [m.name for m in parse_gviz(_csv(r1, blank, r2))] == ["Alpha"]
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "IGNORED: Beta" in err
+
+
 def test_wrong_tab_guard_rejects_trial_assignments_shape():
     # gviz silently serves "Trial Assignments" for unknown names; its header
     # begins "    ","ALL TRIALS ARE FREE ASSIGNED...","Cut-Off(30)",...

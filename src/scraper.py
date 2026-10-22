@@ -38,6 +38,7 @@ from .reader import (
     _to_int,
     fetch_text,
     member_to_dict,
+    warn_rows_after_blank,
 )
 
 
@@ -126,11 +127,12 @@ def parse_gviz(csv_text: str) -> list[MemberRow]:
     _validate_gviz_header(rows[0])
 
     members: list[MemberRow] = []
-    for raw in rows[1:]:
+    for i, raw in enumerate(rows[1:], start=1):
         row = raw[: config.GVIZ_LAST_COL + 1]  # drop trailing summary columns
         name = _cell(row, config.COL_NAME)
         if name == "":
             # First blank Member cell marks the end of the member list.
+            warn_rows_after_blank(rows[i + 1 :], "the gviz member tab")
             break
 
         flex_levels = [_to_int(_cell(row, c)) for c in config.FLEX_LEVEL_COLS]

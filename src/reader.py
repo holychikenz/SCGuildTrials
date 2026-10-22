@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
@@ -265,6 +266,19 @@ def _validate_header(rows: list[list[str]]) -> None:
         )
 
 
+def warn_rows_after_blank(rest: list[list[str]], where: str) -> None:
+    """The member list ends at the first blank Member cell, BY DESIGN — but a member
+    typed below a stray blank row would vanish silently, so name any that did."""
+    later = [n for r in rest if (n := _cell(r, config.COL_NAME))]
+    if later:
+        print(
+            f"WARNING: {where}: the member list stops at the first blank Member "
+            f"cell, so {len(later)} named row(s) below it are IGNORED: "
+            f"{', '.join(later)}",
+            file=sys.stderr,
+        )
+
+
 def parse(csv_text: str) -> list[MemberRow]:
     """Parse the CSV text into a list of ``MemberRow``.
 
@@ -275,10 +289,12 @@ def parse(csv_text: str) -> list[MemberRow]:
     _validate_header(rows)
 
     members: list[MemberRow] = []
-    for row in rows[config.FIRST_DATA_ROW_INDEX :]:
+    data = rows[config.FIRST_DATA_ROW_INDEX :]
+    for i, row in enumerate(data):
         name = _cell(row, config.COL_NAME)
         if name == "":
             # First blank Member cell marks the end of the member list.
+            warn_rows_after_blank(data[i + 1 :], "the register CSV")
             break
 
         flex_levels = [_to_int(_cell(row, c)) for c in config.FLEX_LEVEL_COLS]
