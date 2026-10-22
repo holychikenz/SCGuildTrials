@@ -2855,6 +2855,9 @@ def test_shrine_probe_observed_cap_is_clamped_to_the_game_maximum():
     parties = _probe_party({"force": config.GUILD_SHRINE_MAX_LEVEL})
     u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
     assert u.from_level == config.GUILD_SHRINE_MAX_LEVEL and u.at_cap
+    over = {**_CAPS, "force": config.GUILD_SHRINE_MAX_LEVEL + 5}   # a typo'd config
+    a = trials.probe_shrine_adoption(_probe_party({}), _PROBE_SKILLS, "force", caps=over)
+    assert a.cap == config.GUILD_SHRINE_MAX_LEVEL
 
 
 def test_random_strategy_benches_members_below_the_min_level():

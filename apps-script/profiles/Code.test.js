@@ -1058,6 +1058,11 @@ test("an older capture is detected against a stored cell Sheets parsed into a Da
     const ctx = load({ [TAB]: sh });
     post(ctx, { secret: SECRET, tab: TAB, header: h, rows: [capRow("Yedic", 1, T_OLD, "", { total: 2000 })] });
     assert.strictEqual(cellOf(sh, 1, "totalLevel"), 2100);
+    // and a NEWER capture still replaces a Date-parsed older one
+    const sh2 = makeSheet([h, capRow("Yedic", 1, new Date(T_OLD), "", { total: 2000 })]);
+    const ctx2 = load({ [TAB]: sh2 });
+    post(ctx2, { secret: SECRET, tab: TAB, header: h, rows: [capRow("Yedic", 1, T_NEW, "", { total: 2100 })] });
+    assert.strictEqual(cellOf(sh2, 1, "totalLevel"), 2100);
 });
 
 test("a NEWER capture replaces the stored row", (t) => {
