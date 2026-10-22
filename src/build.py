@@ -4077,19 +4077,6 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     cards_html = "".join(cards)
 
     # --- Swaps to reach optimal --------------------------------------------
-    def _swap_detail(s: dict) -> str:
-        """Detail cell: the note, plus the component moves for a reshuffle."""
-        detail = html.escape(s["note"])
-        if s.get("moves"):
-            items = "".join(
-                f'<li>in <strong>{html.escape(m["in"])}</strong>, '
-                f'out {html.escape(m["out"])} '
-                f'<span class="meta">(from {html.escape(m["from_skill"])})</span></li>'
-                for m in s["moves"]
-            )
-            detail += f'<ul class="swap-moves">{items}</ul>'
-        return detail
-
     # A points-equal plan is NOT necessarily a safe one, and the swap list only
     # knows about points. Where the thinnest trial is below the comfortable band,
     # say so here too — otherwise "already matches the optimal ceiling. Nothing to
@@ -4117,7 +4104,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
         swap_rows = "".join(
             f'<tr><td><span class="chip {html.escape(s["action"])}">'
             f'{html.escape(s["action"])}</span></td>'
-            f'<td>{_swap_detail(s)}</td>'
+            f'<td>{html.escape(s["note"])}</td>'
             f'<td class=num>+{_cp(s["gain"])}</td></tr>'
             for s in p["swaps"]
         )
@@ -4132,8 +4119,7 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
                 f"These {len(p['swaps'])} move(s) raise the likely "
                 f"{_cp(p['enforced_total'])} to {_cp(p['reachable_total'])} points "
                 "&mdash; the optimal ceiling. Each is purely advisory and "
-                "overrides a sign-up; a &ldquo;reshuffle&rdquo; is a small group "
-                "of swaps that together lift one trial a tier."
+                "overrides a sign-up."
             )
         else:
             swap_lead = (
@@ -4364,8 +4350,6 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
   .chip.cost {{ background: rgba(224,179,65,.20); color: var(--warn);
                border: 1px solid rgba(224,179,65,.45); }}
   .chip.swap {{ background: rgba(224,179,65,.20); color: var(--warn);
-               text-transform: capitalize; }}
-  .chip.reshuffle {{ background: rgba(110,168,254,.20); color: var(--accent);
                text-transform: capitalize; }}
   .chip.missing {{ background: rgba(245,100,90,.18); color: var(--danger);
                border: 1px solid rgba(245,100,90,.55); }}

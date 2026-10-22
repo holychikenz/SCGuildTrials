@@ -1392,8 +1392,7 @@ ACTION_SECONDS_DEFAULT = 10    # baseActionSeconds for every other skill
 # justification for optimizer._fill_bench ("no harm done") and for the
 # points-preserving safety passes, which relied on exact integer ties existing at
 # all. Partial credit makes the objective a RAMP of height 50 followed by a STEP of
-# 50 at each tier boundary: the old 100-point cliff is HALVED, not removed (which is
-# why signup._compound_reshuffle_into still has work to do), and every seat now
+# 50 at each tier boundary: the old 100-point cliff is HALVED, not removed, and every seat now
 # moves the score in one direction or the other. Measured on a live-shaped party,
 # the sign changes between a member contributing 1.1% and 1.0% of party throughput
 # — see research/partial-tier-credit.md for that table and the derivation.
