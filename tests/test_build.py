@@ -497,3 +497,20 @@ def test_fetch_guild_with_an_invalid_level_cell_falls_back(monkeypatch, capsys):
     assert inputs.party_cap.source.startswith("FALLBACK constant")
     assert "invalid" in inputs.party_cap.source
     assert "invalid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("module, name", [
+    ("config", "FLEX_THRESHOLDS"),
+    ("trials", "guild_shrine_upgrade_total_cost"),
+    ("build", "_provenance_placeholder"),
+    ("processor", "_serialize_member"),
+])
+def test_dead_code_stays_deleted(module, name):
+    """Finding 18: unreferenced code removed; nothing in this tree or the sibling
+    repos read it. Re-adding one is a decision, not a drift."""
+    import importlib
+
+    assert not hasattr(importlib.import_module(f"src.{module}"), name)
+    from src import scraper
+
+    assert not hasattr(scraper.GuildData, "to_dict")

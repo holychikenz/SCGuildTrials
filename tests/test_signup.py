@@ -1081,3 +1081,15 @@ def test_filter_departed_flag_off_ignores_ids(monkeypatch):
     kept, departed, _ = signup.filter_departed(
         members, ["NewName", "Other", "Third"], {"NewName": 102437, "Other": 9, "Third": 3})
     assert departed == ["OldName"]
+
+
+def test_swap_json_shape_after_the_reshuffle_phase_was_removed():
+    """Finding 16: signup.json swaps carry exactly these keys — no 'moves' group, and
+    the compound reshuffle (which never fired under the continuous objective) is gone."""
+    import dataclasses
+
+    assert [f.name for f in dataclasses.fields(signup.Swap)] == [
+        "member", "action", "from_skill", "to_skill", "note", "partner", "gain",
+    ]
+    assert not hasattr(signup, "_compound_reshuffle_into")
+    assert "lifts_tier" not in {f.name for f in dataclasses.fields(signup.SignupRosterEntry)}
