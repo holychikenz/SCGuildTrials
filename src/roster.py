@@ -345,9 +345,10 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
 
     member_norm = [norm_name(m.name) for m in members]
     roster_norm = [norm_name(r.name) for r in rows]
-    ambiguous_keys = {
-        k for k, c in Counter(member_norm).items() if c > 1
-    } | {k for k, c in Counter(roster_norm).items() if c > 1}
+    member_dup = {k for k, c in Counter(member_norm).items() if c > 1}
+    ambiguous_keys = member_dup | {
+        k for k, c in Counter(roster_norm).items() if c > 1
+    }
 
     roster_by_exact: dict[str, int] = {}
     for i, row in enumerate(rows):
@@ -382,9 +383,12 @@ def join(members: list[MemberRow], rows: list[RosterRow]) -> JoinReport:
     for idx, member in enumerate(members):
         if idx in report.matched:
             continue
-        j = roster_by_exact.get(member.name)
+        key = member_norm[idx]
+        # A name the MEMBER tab holds twice is ambiguous even on an exact hit:
+        # otherwise the first copy takes the roster row and the second runs as a
+        # 'manual' twin, and one person can be seated twice.
+        j = None if key in member_dup else roster_by_exact.get(member.name)
         if j is None:
-            key = member_norm[idx]
             if key in ambiguous_keys:
                 report.ambiguous.append(member.name)
                 report.unmatched_members.append(member.name)

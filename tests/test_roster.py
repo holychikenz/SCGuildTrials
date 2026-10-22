@@ -1119,3 +1119,14 @@ def test_an_id_conflict_is_quarantined_not_admitted(monkeypatch):
     merged, prov = roster.merge(members, report, "sc")
     assert [m.name for m in merged] == ["Bob"]
     assert prov.admitted == 0
+
+
+def test_a_name_the_member_tab_holds_twice_joins_to_nobody():
+    # Exact hit or not: two "Bob" member rows must not become one roster Bob plus
+    # one 'manual' Bob (the optimiser could seat the person twice).
+    members = [_member("Bob"), _member("Bob")]
+    rows = roster.parse(_roster_csv([{"name": "Bob"}]))
+    report = roster.join(members, rows)
+    assert report.matched == {}
+    assert report.ambiguous == ["Bob", "Bob"]
+    assert report.unmatched_roster == ["Bob"]

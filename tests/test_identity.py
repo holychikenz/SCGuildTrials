@@ -233,3 +233,13 @@ def test_resolver_history_two_ids_carried_bob_latest_wins():
     r = Resolver(history=[HistoryRow(1, "Bob", last_seen="2026-01-01"),
                           HistoryRow(2, "Bob", last_seen="2026-05-01")])
     assert r.id_for("bob") == 2
+
+
+def test_canonicalise_drops_a_second_row_resolving_to_the_same_id():
+    # "Bob" typed twice on the member tab: both resolve to the roll's id 7.
+    members = [_m("Bob"), _m("Bob")]
+    out, renames, notes = canonicalise(members, Resolver(roll=[("Bob", 7)]))
+    assert [(m.name, m.character_id) for m in out] == [("Bob", "7")]
+    assert renames == {}
+    assert notes == ["Bob (id 7) is a second member-tab row for an id already modelled, "
+                     "so it is not modelled"]
