@@ -2861,3 +2861,18 @@ def test_random_strategy_benches_members_below_the_min_level():
     assert len(seated) == 6 and len(a.bench) == 6
     assert all(m.skills["Foraging"].level >= 110 for m in seated)
     assert sorted(m.name for m in seated + a.bench) == sorted(m.name for m in members)
+
+
+def test_combat_index_drops_a_folded_key_held_by_two_distinct_names():
+    """Finding 11: "FeaI" and "Feai" fold to one key. Last-wins handed one of them the
+    other's seat; _attach_week's rule says such a key matches nobody."""
+    from src import build
+
+    week = {"combat": _combat_week(seats=[
+        ("FeaI", "/guild_combat/hedgehog", "SC Team 1", "tank 1", "Tank"),
+        ("Feai", "/guild_combat/swarm", "SC Team 2", "cursed 1", "Cursed"),
+        ("Yedic", "/guild_combat/swarm", "SC Team 2", "tank 1", "Tank"),
+    ])}
+    index = build._combat_index(week)
+    assert "feai" not in index
+    assert index["yedic"]["cb"] == "Swarm"

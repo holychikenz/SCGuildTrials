@@ -2863,6 +2863,7 @@ def _combat_index(week: dict) -> dict[str, dict]:
     if not block or not block.get("available"):
         return {}
     out: dict[str, dict] = {}
+    names: set[str] = set()
     for trial in block.get("trials") or []:
         boss = _pretty_boss(trial.get("hrid") or "")
         team = trial.get("team") or ""
@@ -2880,6 +2881,12 @@ def _combat_index(week: dict) -> dict[str, dict]:
             if label:
                 entry["cl"] = label
             out[norm_name(name)] = entry
+            names.add(name)
+    # _attach_week's rule: a folded key held by two DISTINCT names ("FeaI"/"Feai")
+    # matches nobody, rather than last-wins handing one member the other's seat.
+    for key, count in Counter(norm_name(n) for n in names).items():
+        if count > 1:
+            del out[key]
     return out
 
 
