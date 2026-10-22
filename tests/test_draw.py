@@ -281,3 +281,16 @@ def test_the_skilling_block_geometry_matches_the_signup_parser():
 
     assert draw.SKILLING_COL_START == signup.SKILLING_COL_START
     assert draw.EXPECTED_TRIALS == signup.SKILLING_COL_COUNT
+
+
+def test_cheese_smithing_with_a_space_reads_in_the_draw_as_in_the_signup():
+    """Finding 13: ONE header rule. "Cheese Smithing" parsed as a sign-up column but
+    made the draw raise, falling back to a stale draw."""
+    from src import signup
+
+    header = ("User", "Cheese Smithing", "Milking", "Cooking", "Alchemy")
+    text = _header(*header)
+    assert draw.trial_columns(text) == ["C.Smithing", "Milking", "Cooking", "Alchemy"]
+    assert set(signup.parse_signup(text + "Bob,TRUE,FALSE,FALSE,FALSE\n")["Bob"]) == {
+        "C.Smithing"
+    }
