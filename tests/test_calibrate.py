@@ -329,3 +329,16 @@ def test_canonical_members_renames_from_the_shipped_plan(tmp_path):
     row = roster.RosterRow(name="OldName", character_id="102437", captured_at="", revision="")
     out = calibrate.canonical_members([_plain("OldName")], path, [row], "sc")
     assert out[0].name == "NewName" and out[0].character_id == "102437"
+
+
+def test_calibrate_uses_the_shipped_variance_and_cdf_not_copies():
+    """Finding 15: one definition each, in trials. A copy here could drift."""
+    import math
+
+    from src import calibrate, trials
+
+    assert not hasattr(calibrate, "variance_rate") and not hasattr(calibrate, "phi")
+    m, sigma = 0.05, 0.02
+    assert calibrate.p_from_margin(m, sigma) == trials._normal_cdf(
+        -math.log(1.0 - m) / sigma
+    )
