@@ -2224,6 +2224,13 @@ def _seated(parties: dict[str, list[MemberRow]], skills: list[str]):
         yield from parties[skill]
 
 
+def _observed_cap(caps: dict[str, int], shrine: str, seats) -> int:
+    """``shrine``'s cap: the configured one, or the highest level a seated member
+    already holds if that is higher, clamped to ``GUILD_SHRINE_MAX_LEVEL``."""
+    held = [member_shrine_level(m, shrine) for m in seats]
+    return max(0, min(config.GUILD_SHRINE_MAX_LEVEL, max([caps.get(shrine) or 0, *held])))
+
+
 def probe_shrine_upgrade(
     parties: dict[str, list[MemberRow]],
     skills: list[str],
@@ -2256,7 +2263,11 @@ def probe_shrine_upgrade(
     buff, per_level, channel = config.GUILD_SHRINE_SKILLING_BUFFS.get(
         shrine, ("unknown", 0.0, None)
     )
-    from_level = max(0, min(config.GUILD_SHRINE_MAX_LEVEL, caps.get(shrine) or 0))
+    seats = list(_seated(parties, skills))
+    # The configured cap is a dated FLOOR: a seated member already holding more
+    # proves the cap is at least that, and pricing from the floor would sell an
+    # owned level as the next purchase.
+    from_level = _observed_cap(caps, shrine, seats)
     at_cap = from_level >= config.GUILD_SHRINE_MAX_LEVEL
     speed_now, efficiency_now = (
         (per_level * from_level, 0.0) if channel == "speed"
@@ -2264,7 +2275,6 @@ def probe_shrine_upgrade(
         else (0.0, 0.0)
     )
 
-    seats = list(_seated(parties, skills))
     at_the_cap = [m for m in seats if member_shrine_level(m, shrine) >= from_level]
 
     def raise_those_at_the_cap(member: MemberRow) -> MemberRow:
@@ -2333,9 +2343,8 @@ def probe_shrine_adoption(
     buff, _per_level, channel = config.GUILD_SHRINE_SKILLING_BUFFS.get(
         shrine, ("unknown", 0.0, None)
     )
-    cap = max(0, min(config.GUILD_SHRINE_MAX_LEVEL, caps.get(shrine) or 0))
-
     seats = list(_seated(parties, skills))
+    cap = _observed_cap(caps, shrine, seats)
     levels = [member_shrine_level(m, shrine) for m in seats]
     below = [lv for lv in levels if lv < cap]
 

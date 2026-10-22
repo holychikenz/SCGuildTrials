@@ -2828,3 +2828,22 @@ def test_migrate_pins_resolves_by_recorded_id_before_name():
     data = [{"n": "Dan", "i": 4}]
     got = _run_migrate_pins(page, data, ["Dan", "Gone"], {"Gone": 8})
     assert got == {"pins": ["Dan", "Gone"], "ids": {"Gone": 8, "Dan": 4}}
+
+
+def test_shrine_probes_start_from_the_level_members_already_hold():
+    """config's caps are a dated FLOOR. Members holding force 5 against a configured
+    cap of 4 prove the cap is at least 5: the next purchase is 5 -> 6, priced as such,
+    and nobody is 'below' a cap of 4 they have already passed."""
+    parties = _probe_party({"force": 5, "tempo": 4})
+    u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert u.from_level == 5
+    assert u.next_level_cost == trials.guild_shrine_upgrade_cost(6)
+    assert u.members_at_cap == 4
+    a = trials.probe_shrine_adoption(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert a.cap == 5 and a.members_below_cap == 0
+
+
+def test_shrine_probe_observed_cap_is_clamped_to_the_game_maximum():
+    parties = _probe_party({"force": config.GUILD_SHRINE_MAX_LEVEL})
+    u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    assert u.from_level == config.GUILD_SHRINE_MAX_LEVEL and u.at_cap
