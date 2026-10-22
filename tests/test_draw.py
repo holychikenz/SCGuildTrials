@@ -26,7 +26,7 @@ import io
 
 import pytest
 
-from src import config, draw
+from src import config, draw, reader
 from src.reader import SheetStructureError
 
 
@@ -261,7 +261,7 @@ def test_fetch_does_not_disable_gviz_header_collapsing(monkeypatch):
         seen["url"] = url
         return _Resp()
 
-    monkeypatch.setattr(draw.requests, "get", fake_get)
+    monkeypatch.setattr(reader.requests, "get", fake_get)
     draw.fetch_draw_csv()
     assert config.GVIZ_NO_HEADER_COLLAPSE not in seen["url"]
     assert "SC%20Trial%20Signup" in seen["url"]

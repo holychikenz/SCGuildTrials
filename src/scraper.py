@@ -28,8 +28,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-import requests
-
 from . import config
 from .reader import (
     MemberRow,
@@ -38,6 +36,7 @@ from .reader import (
     _cell,
     _to_bool,
     _to_int,
+    fetch_text,
     member_to_dict,
 )
 
@@ -70,30 +69,19 @@ class GuildData:
         }
 
 
-def fetch_tab_csv(tab_name: str) -> str:
+def fetch_tab_csv(tab_name: str, suffix: str = "") -> str:
     """Fetch a tab's gviz CSV export as text, addressed by tab name.
+
+    ``suffix`` is appended to the URL (Name History's ``&headers=1``).
 
     Raises:
         RuntimeError: on 401/403 (sheet sharing likely revoked) or other
-            HTTP/network errors, with a message pointing at the likely cause.
+            HTTP/network errors after one retry (see :func:`reader.fetch_text`).
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name))
-    try:
-        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(
-            f"Failed to reach Google Sheets gviz endpoint: {exc}"
-        ) from exc
-
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Google Sheets returned {resp.status_code} for the gviz export of "
-            f"tab {tab_name!r}. The sheet's 'anyone with the link' sharing may "
-            f"have been revoked. URL: {url}"
-        )
-
-    resp.raise_for_status()
-    return resp.text
+    return fetch_text(
+        config.GVIZ_URL.format(sheet=quote(tab_name)) + suffix,
+        f"the gviz export of tab {tab_name!r}",
+    )
 
 
 def _validate_gviz_header(header: list[str]) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src import config, identity
+from src import config, identity, reader
 from src.identity import HistoryRow, Resolver, canonicalise, find_member, parse_id
 from src.reader import MemberRow
 
@@ -224,7 +224,7 @@ def test_fetch_name_history_url_forces_one_header_row(monkeypatch):
         seen["url"] = url
         return R()
     monkeypatch.undo()   # drop the conftest stub for this test
-    monkeypatch.setattr(identity.requests, "get", get)
+    monkeypatch.setattr(reader.requests, "get", get)
     assert identity.fetch_name_history_csv("SC Name History") == _H
     assert seen["url"].endswith("&headers=1") and "SC%20Name%20History" in seen["url"]
 

@@ -50,12 +50,10 @@ import csv
 import io
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import quote
-
-import requests
 
 from . import config
 from .reader import SheetStructureError, _cell, _to_int
+from .scraper import fetch_tab_csv
 
 # Column indices, matching config.BUILDINGS_SENTINEL_HEADERS (which is the guard for
 # exactly these positions, so the two are read together or not at all).
@@ -144,23 +142,7 @@ def fetch_buildings_csv(tab_name: str) -> str:
         RuntimeError: on 401/403 (sheet sharing likely revoked) or other
             HTTP/network errors, with a message pointing at the likely cause.
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name))
-    try:
-        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(
-            f"Failed to reach Google Sheets gviz endpoint: {exc}"
-        ) from exc
-
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Google Sheets returned {resp.status_code} for the gviz export of "
-            f"tab {tab_name!r}. The sheet's 'anyone with the link' sharing may "
-            f"have been revoked. URL: {url}"
-        )
-
-    resp.raise_for_status()
-    return resp.text
+    return fetch_tab_csv(tab_name)
 
 
 def _validate_buildings_header(header: list[str], tab: str) -> None:

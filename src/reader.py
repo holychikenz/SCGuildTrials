@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
@@ -145,28 +146,38 @@ def member_to_dict(member: MemberRow) -> dict:
     return d
 
 
-def fetch_csv() -> str:
-    """Fetch the published CSV export as text.
+def fetch_text(url: str, what: str) -> str:
+    """GET ``url`` as text: the ONE network path every sheet fetcher goes through.
+
+    A 401/403 fails at once (sharing revoked; retrying cannot help). Any other
+    failure — network error, 5xx, 429 — is retried once after a short backoff, then
+    raised as ``RuntimeError`` so build.main's skip-an-optional-guild rule sees it
+    (a bare ``requests.HTTPError`` used to escape that rule and kill every guild).
 
     Raises:
-        RuntimeError: on 401/403 (sheet sharing likely revoked) or other
-            HTTP errors, with a message pointing at the likely cause.
+        RuntimeError: on 401/403, or on any other failure after the retry.
     """
-    try:
-        resp = requests.get(config.CSV_URL, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(f"Failed to reach Google Sheets export: {exc}") from exc
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    f"Google Sheets returned {resp.status_code} for {what}. The "
+                    f"sheet's 'anyone with the link' sharing may have been revoked. "
+                    f"URL: {url}"
+                )
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException as exc:
+            if attempt:
+                raise RuntimeError(f"Failed to fetch {what}: {exc}") from exc
+            time.sleep(2)
+    raise AssertionError("unreachable")
 
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            "Google Sheets returned "
-            f"{resp.status_code} for the CSV export. The sheet's "
-            "'anyone with the link' sharing may have been revoked. "
-            f"URL: {config.CSV_URL}"
-        )
 
-    resp.raise_for_status()
-    return resp.text
+def fetch_csv() -> str:
+    """Fetch the published CSV export as text (see :func:`fetch_text`)."""
+    return fetch_text(config.CSV_URL, "the CSV export")
 
 
 def _cell(row: list[str], idx: int) -> str:

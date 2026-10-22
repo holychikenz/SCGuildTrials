@@ -74,14 +74,12 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
-from urllib.parse import quote
 
 from typing import Optional
 
-import requests
-
 from . import config
 from .reader import SheetStructureError, _cell
+from .scraper import fetch_tab_csv
 
 
 # ---------------------------------------------------------------------------
@@ -188,23 +186,7 @@ def fetch_draw_csv(tab_name: str = DRAW_TAB) -> str:
     Raises:
         RuntimeError: on 401/403 (sharing revoked) or other HTTP/network errors.
     """
-    url = config.GVIZ_URL.format(sheet=quote(tab_name))
-    try:
-        resp = requests.get(url, timeout=config.FETCH_TIMEOUT)
-    except requests.RequestException as exc:  # network-level failure
-        raise RuntimeError(
-            f"Failed to reach Google Sheets gviz endpoint: {exc}"
-        ) from exc
-
-    if resp.status_code in (401, 403):
-        raise RuntimeError(
-            f"Google Sheets returned {resp.status_code} for the gviz export of "
-            f"tab {tab_name!r}. The sheet's 'anyone with the link' sharing may "
-            f"have been revoked. URL: {url}"
-        )
-
-    resp.raise_for_status()
-    return resp.text
+    return fetch_tab_csv(tab_name)
 
 
 def trial_columns(csv_text: str, tab_label: str = DRAW_TAB) -> list[str]:

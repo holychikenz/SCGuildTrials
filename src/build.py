@@ -6233,16 +6233,25 @@ def _run_units(jobs: list[dict]) -> list[dict]:
     each, synchronising on a per-guild barrier would idle a core waiting for that
     guild's slower half. The pool is sized to the smaller of the units and the
     machine, so a 2-vCPU runner degrades to two-at-a-time rather than thrashing.
+
+    A unit that raises yields its exception IN PLACE of a result, so main() can skip
+    an optional guild without losing the others; a required guild's re-raises there.
     """
     if not config.BUILD_PARALLEL or len(jobs) == 1:
-        return [_compute_unit(job) for job in jobs]
+        out: list = []
+        for job in jobs:
+            try:
+                out.append(_compute_unit(job))
+            except Exception as exc:  # noqa: BLE001 — main() decides per guild
+                out.append(exc)
+        return out
 
     workers = min(len(jobs), config.BUILD_MAX_WORKERS or (os.cpu_count() or 1))
     with futures.ProcessPoolExecutor(max_workers=workers) as pool:
         # Submitted in order and read back in order: map() would do, but submit()
         # lets an exception surface against the job that caused it.
         pending = [pool.submit(_compute_unit, job) for job in jobs]
-        return [f.result() for f in pending]
+        return [f.exception() or f.result() for f in pending]
 
 
 def main() -> int:
@@ -6296,16 +6305,28 @@ def main() -> int:
     # --- Phase 3: render (parent — both regimes must be in hand) ------------
     notes: list[str] = []
     for site, inputs, start, end in spans:
-        span = results[start:end]
-        week = span[0]["week"]
-        inputs.plan_dict = span[0].get("plan")
-        week_maxbuff = span[1]["week"] if len(span) > 1 else None
-        notes.append(
-            _write_guild(
-                site, inputs, week, week_maxbuff, week_draw, draw_warning,
-                ladder=span[0].get("ladder") or None,
+        try:
+            span = results[start:end]
+            for result in span:
+                if isinstance(result, BaseException):
+                    raise result
+            week = span[0]["week"]
+            inputs.plan_dict = span[0].get("plan")
+            week_maxbuff = span[1]["week"] if len(span) > 1 else None
+            notes.append(
+                _write_guild(
+                    site, inputs, week, week_maxbuff, week_draw, draw_warning,
+                    ladder=span[0].get("ladder") or None,
+                )
             )
-        )
+        except Exception as exc:  # noqa: BLE001 — phases 2/3, optional guild only
+            if site.required:
+                raise
+            print(
+                f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
+                f"other guilds continue.",
+                file=sys.stderr,
+            )
 
     print("Built _site/:")
     for note in notes:
