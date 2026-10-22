@@ -47,6 +47,7 @@ it in place. A bare refiner (no constructor token) defaults to a
 
 from __future__ import annotations
 
+import contextlib
 import math
 import random
 from typing import Callable, Optional
@@ -909,6 +910,34 @@ def _run_pipeline(
     return parties
 
 
+# Restarts already run elsewhere, one per process (build._run_units); see
+# ensemble_restarts. None means "run them here", the only state outside a build unit.
+_RESTARTS: Optional[list[Parties]] = None
+
+
+@contextlib.contextmanager
+def ensemble_restarts(restarts: Optional[list[Parties]]):
+    """Have :func:`_run_ensemble` take its restarts' parties from ``restarts``.
+
+    ``restarts[i]`` must be :func:`run_restart` ``(…, i, seed)`` on the same inputs;
+    None is a no-op. Same contract as ``trials.community_buff_level``: one unit per
+    process, restored on the way out.
+    """
+    global _RESTARTS
+    saved, _RESTARTS = _RESTARTS, restarts
+    try:
+        yield
+    finally:
+        _RESTARTS = saved
+
+
+def run_restart(scorer: AssignmentScorer, i: int, seed: int) -> Parties:
+    """Restart ``i`` of the ensemble: its pipeline under its own derived seed."""
+    return _run_pipeline(
+        scorer, config.OPT_ENSEMBLE_PIPELINES[i], random.Random(seed + 1 + i)
+    )
+
+
 def _run_ensemble(scorer: AssignmentScorer, seed: int) -> Parties:
     """Run every pipeline in ``config.OPT_ENSEMBLE_PIPELINES``; return the best.
 
@@ -922,8 +951,10 @@ def _run_ensemble(scorer: AssignmentScorer, seed: int) -> Parties:
     """
     best_parties: Optional[Parties] = None
     best = -math.inf
-    for i, pipe in enumerate(config.OPT_ENSEMBLE_PIPELINES):
-        parties = _run_pipeline(scorer, pipe, random.Random(seed + 1 + i))
+    for i in range(len(config.OPT_ENSEMBLE_PIPELINES)):
+        parties = (
+            run_restart(scorer, i, seed) if _RESTARTS is None else _RESTARTS[i]
+        )
         pts = scorer.total_points(parties)
         # Float-safe since the objective became continuous: "strictly better" needs the
         # epsilon, and "tied" is a band rather than an equality. Two restarts that land

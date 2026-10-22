@@ -514,3 +514,57 @@ def test_dead_code_stays_deleted(module, name):
     from src import scraper
 
     assert not hasattr(scraper.GuildData, "to_dict")
+
+
+def _restart_job(levels, level):
+    """20 golden members, the golden draw, cap 8: small enough to be quick, tight
+    enough that restarts land on DIFFERENT parties (restart 0 scores below the rest),
+    so a restart run with the wrong seed or scope cannot pass by coincidence."""
+    from tests.golden_fixture import GOLDEN_DRAW, golden_members
+
+    return {**_job(levels, cap=8), "members": golden_members()[:20],
+            "skills": list(GOLDEN_DRAW), "level": level}
+
+
+def test_each_restart_job_reproduces_that_restart_of_the_units_ensemble(monkeypatch):
+    """_compute_restart(i) must be EXACTLY restart i of the unit's own serial ensemble:
+    same scorer inputs, same seed, same building and buff scopes."""
+    from src import optimizer
+
+    monkeypatch.setattr(config, "TRIALS_BUFF_LEVEL_SLIDER", False)
+    for job in (_restart_job({"Milking": 3}, 5), _restart_job({}, None)):
+        seen = []
+        real = optimizer.run_restart
+
+        def spy(scorer, i, seed):
+            parties = real(scorer, i, seed)
+            seen.append([set(p) for p in parties])  # later passes mutate in place
+            return parties
+
+        monkeypatch.setattr(optimizer, "run_restart", spy)
+        build._compute_unit(job)
+        monkeypatch.setattr(optimizer, "run_restart", real)
+        assert len(seen) == len(config.OPT_ENSEMBLE_PIPELINES)
+        assert len({str(p) for p in seen}) > 1, "restarts must differ to test anything"
+        for i, parties in enumerate(seen):
+            assert build._compute_restart({**job, "restart": i}) == parties
+
+
+def test_restarts_split_across_processes_match_the_serial_ensemble(monkeypatch):
+    """One pool job per (unit, restart) ships the SAME weeks as each unit running its
+    own ensemble serially: same parties, same tie rule, same order."""
+    jobs = [_restart_job({"Milking": 3}, 5), _restart_job({}, None)]
+    monkeypatch.setattr(config, "BUILD_PARALLEL", False)
+    serial = build._run_units(jobs)
+    monkeypatch.setattr(config, "BUILD_PARALLEL", True)
+    monkeypatch.setattr(config, "BUILD_MAX_WORKERS", 4)
+    split = build._run_units(jobs)
+
+    def plan(results):  # the clock is not the plan
+        for r in results:
+            for week in (r["week"], *r["ladder"].values()):
+                week.pop("generated_at")
+                week.pop("week_date")
+        return results
+
+    assert plan(split) == plan(serial)

@@ -7,6 +7,7 @@ Exits non-zero on any fetch/parse/structure error so CI fails loudly.
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import os
@@ -25,6 +26,7 @@ from . import config
 from . import draw as draw_model
 from . import gear as gear_model
 from . import identity
+from . import optimizer as optimizer_model
 from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
@@ -5508,7 +5510,11 @@ def _compute_unit(job: dict) -> dict:
     # config fallback. A missing `cap` must raise, because a default there would
     # silently mis-plan a page — which is what that test guards. The link that could
     # actually break here is _unit_jobs dropping the key, and that has its own test.
-    with trials_model.guild_building_levels_scope(job.get("building_levels")):
+    # ``job["restarts"]``, when present, is this unit's ensemble already run one
+    # restart per process (see _run_units); None runs the ensemble here as before.
+    with trials_model.guild_building_levels_scope(
+        job.get("building_levels")
+    ), optimizer_model.ensemble_restarts(job.get("restarts")):
         if level is None:
             # The published unit also rates its own plan at every rung of the buff
             # ladder, for the page's level selector. It is the SAME search — one
@@ -6195,6 +6201,28 @@ def _unit_jobs(site: "GuildSite", inputs: _GuildInputs, week_draw) -> list[dict]
     return jobs
 
 
+def _compute_restart(job: dict) -> list:
+    """ONE ensemble restart (``job["restart"]``) of a unit. A child-process entry point.
+
+    Same scopes as :func:`_compute_unit`, and the scorer built exactly as
+    ``optimizer.optimize`` builds it for that unit's ``trials.choose_assignment``
+    (default target scale, ``TRIAL_OPTIMIZER_SEED``), so the parties are the ones the
+    unit's own ensemble would have produced — pinned by tests/test_build.py.
+    """
+    level = job["level"]
+    with trials_model.guild_building_levels_scope(job.get("building_levels")), (
+        contextlib.nullcontext() if level is None
+        else trials_model.community_buff_level(level)
+    ):
+        scorer = optimizer_model.AssignmentScorer(
+            job["members"], job["skills"], config.TARGET_SCALE, job["cap"],
+            job["min_levels"],
+        )
+        return optimizer_model.run_restart(
+            scorer, job["restart"], config.TRIAL_OPTIMIZER_SEED
+        )
+
+
 def _run_units(jobs: list[dict]) -> list[dict]:
     """Run every unit and return the results in the order the jobs were given.
 
@@ -6215,12 +6243,42 @@ def _run_units(jobs: list[dict]) -> list[dict]:
                 out.append(exc)
         return out
 
-    workers = min(len(jobs), config.BUILD_MAX_WORKERS or (os.cpu_count() or 1))
+    # Each (unit, ensemble restart) is a pool job of its own: the restarts are ~98% of
+    # a unit and independent, so one-unit-per-guild left half a 4-core runner idle.
+    # The unit then picks the best restart in the original order with the original
+    # tie rule (optimizer._run_ensemble), so the output is byte-identical.
+    restarts = (
+        len(config.OPT_ENSEMBLE_PIPELINES)
+        if config.TRIAL_OPTIMIZER_STRATEGY in optimizer_model._ENSEMBLE_ALIASES
+        else 0
+    )
+    workers = min(
+        len(jobs) * max(1, restarts),
+        config.BUILD_MAX_WORKERS or (os.cpu_count() or 1),
+    )
     with futures.ProcessPoolExecutor(max_workers=workers) as pool:
+        # Every restart is queued before any unit, so a unit's tail (the bench fill,
+        # the safety pass, the ladder, the sign-up plan) overlaps other restarts.
+        runs = [
+            [pool.submit(_compute_restart, {**job, "restart": i})
+             for i in range(restarts)]
+            for job in jobs
+        ]
         # Submitted in order and read back in order: map() would do, but submit()
         # lets an exception surface against the job that caused it.
-        pending = [pool.submit(_compute_unit, job) for job in jobs]
-        return [f.exception() or f.result() for f in pending]
+        # A failed restart becomes that unit's result (an exception), never a raise.
+        pending: list = []
+        for job, fs in zip(jobs, runs):
+            failed = next((f.exception() for f in fs if f.exception()), None)
+            if failed is not None:
+                pending.append(failed)
+                continue
+            unit = {**job, "restarts": [f.result() for f in fs]} if fs else job
+            pending.append(pool.submit(_compute_unit, unit))
+        return [
+            p if isinstance(p, BaseException) else (p.exception() or p.result())
+            for p in pending
+        ]
 
 
 def main() -> int:
