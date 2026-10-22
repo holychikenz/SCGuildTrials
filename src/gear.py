@@ -749,7 +749,18 @@ def resolve(
                     _bump(audit, "observed_by_slot", slot)
                     continue
                 hrid = _best_in_slot(observed, skill, cell)
-                level = hook.level(cell[hrid], observed=True)
+                raw = cell[hrid]
+                if raw is None and policy in ("impute-item", "manual-tick"):
+                    # Owned, level unknown: the level a hidden member is imputed for
+                    # this slot, not +0 (below what hiding the item would earn).
+                    # shortcut: the cape's imputation is a speed, not a level, so an
+                    # unknown-level cape stays at +0; extend if capes show up so.
+                    mean = (stats.family_level.get(hrid) if policy == "impute-item"
+                            else stats.garment_level)
+                    raw = _round_level(
+                        config.ENHANCEMENT_ASSUMED_LEVEL if mean is None else mean
+                    )
+                level = hook.level(raw, observed=True)
                 _add(terms, item_terms(hrid, skill, level))
                 _bump(audit, "observed_by_slot", slot)
                 continue

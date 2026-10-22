@@ -795,3 +795,22 @@ def test_ignore_provenance_sets_the_control_flag():
         calibrate.Sources(respect_provenance=False), random.Random(0), _STATS)
     assert respectful.prices_observed_accessories is False
     assert control.prices_observed_accessories is True
+
+
+def test_an_owned_item_of_unknown_level_prices_at_the_imputed_level_not_plus_0():
+    """Finding 19: a level-less observation used to price at +0, BELOW the guild-mean
+    imputation a member hiding the same item gets."""
+    cell = gear.parse_gear_cell('{"items":[{"hrid":"/items/collectors_boots"}]}')
+    assert cell == {"/items/collectors_boots": None}
+    seen = gear.resolve(_member(cell), _STATS)
+    hidden = gear.resolve(_member(), _STATS)
+    imputed = gear.item_terms("/items/collectors_boots", "Milking", 6)["efficiency"]
+    assert seen["Milking"][1] == pytest.approx(imputed)
+    assert seen["Milking"] == hidden["Milking"]
+
+
+def test_an_owned_garment_of_unknown_level_prices_at_the_garment_mean():
+    body = next(h for h in gear.ITEMS_IN_SLOT_FOR_SKILL[("body", "Milking")])
+    seen = gear.resolve(_member({body: None}), _STATS)
+    ticked = gear.resolve(_member(top=True), _STATS)   # garment imputed at the mean
+    assert seen["Milking"] == ticked["Milking"] != gear.resolve(_member(), _STATS)["Milking"]
