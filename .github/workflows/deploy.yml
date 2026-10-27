@@ -88,6 +88,12 @@ jobs:
         # build path: the shipped optimizer is pure-Python. uv creates the env
         # and installs the project from pyproject automatically before running.
         run: uv run --no-dev python -m src.build
+        # Uploaded profiles (src/profiles.py), read through SCLIRoster's read
+        # endpoint. Unset secrets leave the build exactly as before (roster, then
+        # the manual tab). Only derived planner fields reach _site/.
+        env:
+          PROFILES_URL: ${{ secrets.PROFILES_URL }}
+          PROFILES_READ_TOKEN: ${{ secrets.PROFILES_READ_TOKEN }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5

@@ -18,7 +18,7 @@ There is deliberately **no layout fallback** now: the chain of fallbacks across
 hand-made shapes is what let a stale draw ship quietly. See the `src/draw.py`
 docstring for the full account.
 
-The pipeline is one-directional and credential-free:
+The pipeline is one-directional and, with one exception, credential-free:
 
 ```
 public Google Sheet  ──(anonymous CSV export)──▶  Python  ──▶  _site/  ──▶  GitHub Pages
@@ -27,6 +27,13 @@ public Google Sheet  ──(anonymous CSV export)──▶  Python  ──▶  _
 No Google Sheets writes, no API keys, no service accounts. It only reads the
 sheet's published CSV export (`?format=csv`), which works because the sheet is
 shared as "anyone with the link".
+
+The exception is the members' **uploaded profiles** (`src/profiles.py`), read from
+the private `SC Profiles` / `LI Profiles` tabs through SCLIRoster's read endpoint
+with the `PROFILES_URL` and `PROFILES_READ_TOKEN` repo secrets (locally, else
+`~/.config/scliroster/credentials.json`). Without them, or when the read fails,
+the build runs exactly as before and says so in `provenance.profiles`. Only
+derived planner fields reach `_site/`; raw profile data and the token never do.
 
 ## What it does
 
@@ -85,6 +92,9 @@ joins) and `config.NAME_HISTORY_SOURCE_ENABLED = False` (no history fetch).
 ### The precedence is per FIELD, not per member
 
 ```
+profiles     ->  joined on characterId: level, house room, best OWNED tool +
+                 enhancement, owned Top/Bottom and gear. Never lowers what the
+                 roster saw (levels/houses take the max; the better tool wins)
 roster tab   ->  the member's actual level, house room, tool item + its
                  enhancement level, and their five purchased shrine levels
 manual tab   ->  whatever the roster did not report: the Tool checkbox, and

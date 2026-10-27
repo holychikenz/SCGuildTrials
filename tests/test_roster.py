@@ -938,7 +938,7 @@ def test_source_mark_is_filled_for_roster_and_hollow_for_manual():
     assert "src on" in build_model._source_mark("roster")
     assert "src off" in build_model._source_mark("manual")
     assert "src only" in build_model._source_mark("roster-only")
-    assert "no Top/Bot recorded" in build_model._source_mark("roster-only")
+    assert "Top/Bot only where an uploaded" in build_model._source_mark("roster-only")
 
 
 def test_tool_badge_shows_the_tier_and_enhancement():

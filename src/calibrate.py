@@ -97,6 +97,7 @@ from typing import Callable, Iterable, Optional
 
 from . import config, gear as gear_model, identity, roster as roster_model, trials
 from .reader import MemberRow
+from .roster import PROFILES as _PROFILES
 from .roster import ROSTER as _ROSTER
 
 # ---------------------------------------------------------------------------
@@ -579,7 +580,7 @@ def _house_is_observed(member: MemberRow, skill: str) -> bool:
         return False
     return member.provenance.get(
         f"{trials._sheet_column(skill)}.house"
-    ) == _ROSTER
+    ) in (_ROSTER, _PROFILES)
 
 
 def _tool_is_observed(member: MemberRow, skill: str) -> bool:

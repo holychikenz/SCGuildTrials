@@ -27,6 +27,7 @@ from . import draw as draw_model
 from . import gear as gear_model
 from . import identity
 from . import optimizer as optimizer_model
+from . import profiles as profiles_model
 from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
@@ -336,6 +337,8 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
             "normalized_matches": list(prov.normalized_matches),
             "ambiguous": list(prov.ambiguous),
             "refused": prov.refused,
+            "profiles": prov.profiles,
+            "profile_backed": prov.profile_backed,
         }
     )
     if prov.tools is not None:
@@ -601,7 +604,8 @@ def _source_mark(source: str) -> str:
                 'scripted roster tab">&#9679;</span>')
     if source == "roster-only":
         return ('<span class="src only" title="This member exists ONLY on the '
-                'roster tab; seated from it, with no Top/Bot recorded">'
+                'roster tab; seated from it, with Top/Bot only where an uploaded '
+                'profile owns them">'
                 '&#9673;</span>')
     return ('<span class="src off" title="From the officers\' hand-maintained '
             'member tab">&#9675;</span>')
@@ -627,6 +631,10 @@ def _tool_badge(entry: dict) -> str:
             f'which the model does not carry; priced from the manual checkbox">'
             f'?</span>'
         )
+    if source == "profiles":
+        # The name stays private (only the encrypted SCLIRoster page shows it).
+        return ('<span class="badge tool on" title="Tool from their uploaded '
+                'profile">&#9733;</span>')
     if item:
         tier = _TOOL_TIER_ABBREV.get(item.split(" ", 1)[0], item.split(" ", 1)[0])
         enh = entry.get("tool_enhance")
@@ -5291,7 +5299,8 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             # still propagates and fails the build, exactly as elsewhere.
             roster_unavailable = (
                 f"The {site.roster_tab!r} tab could not be read, so every member's "
-                f"data comes from the '{site.member_tab}' tab instead. Reason: {exc}"
+                f"data comes from the '{site.member_tab}' tab instead, and uploaded "
+                f"profiles are not applied either. Reason: {exc}"
             )
             print(
                 f"WARNING ({site.key}): roster unavailable, falling back to the "
@@ -5324,8 +5333,18 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
                 f"{'; '.join(report.id_conflicts)}",
                 file=sys.stderr,
             )
+        # Uploaded profiles (src/profiles.py), the highest-ranked source. Never
+        # stops the deploy: no credentials or a failed read return None and the
+        # merge runs exactly as before, which the note records in provenance.
+        profiles, profiles_note = profiles_model.load(config.PROFILES_TABS[site.key])
+        print(
+            f"{'NOTE' if profiles is not None else 'WARNING'} ({site.key}): "
+            f"uploaded profiles {'used' if profiles is not None else 'not used'}"
+            f" — {profiles_note}",
+            file=sys.stderr,
+        )
         members, roster_provenance = roster_model.merge(
-            members, report, site.key
+            members, report, site.key, profiles, profiles_note
         )
         # The tool audit runs ONCE per guild, here in the parent, on the
         # merged list. It strips items config.TOOL_STATS does not model (so
