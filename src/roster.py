@@ -591,7 +591,7 @@ def _merged_entry(
         # Profiles outrank both, except that an older profile never LOWERS what
         # the roster or the officers recorded: levels and houses only rise, so
         # take the max against either, and keep the better tool by modelled
-        # value. Ties go to the profile, the higher rank.
+        # value. Level/house ties go to the profile; a tool tie stays roster.
         # The ROSTER_USE_* switches gate this source too, so a slice rollback
         # still restores the manual value.
         lv = prof.levels.get(skill) if config.ROSTER_USE_LEVELS else None
@@ -604,7 +604,8 @@ def _merged_entry(
         if owned is not None:
             seen = (profiles_model.tool_value(tool_item, tool_enhance)
                     if tags["tool"] == ROSTER else None)
-            if seen is None or profiles_model.tool_value(*owned) >= seen:
+            # Strictly better only: on a tie the roster's (public) name stays published.
+            if seen is None or profiles_model.tool_value(*owned) > seen:
                 (tool_item, tool_enhance), tags["tool"] = owned, PROFILES
         if prof.gear:
             top = top or any(

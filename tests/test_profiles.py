@@ -187,6 +187,12 @@ def test_better_owned_tool_wins_and_is_tagged_profiles():
     assert out.top is True and out.bot is False
 
 
+def test_tool_tie_stays_roster_so_its_name_stays_public():
+    row = _rrow(tool="Holy Brush", enh=5)
+    out, tags = _merge(MANUAL, row, _prof(tools={"Milking": ("Holy Brush", 5)}))
+    assert (out.tool_item, tags["Milking.tool"]) == ("Holy Brush", "roster")
+
+
 def test_merge_joins_profiles_by_character_id_only(monkeypatch):
     monkeypatch.setattr(config, "ROSTER_MIN_JOIN_RATE", 0.0)
     member = MemberRow(
