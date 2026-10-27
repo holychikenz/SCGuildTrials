@@ -561,9 +561,9 @@ def _merged_entry(
     # conservative reading and it is only ever consulted when the roster ALSO
     # named no tool — from R3 the roster's item is what prices the tool.
     tool_check = entry.tool if entry else False
-    # NECESSARILY False for an admitted member: there is no manual row carrying
-    # the skilling top/bottom checkboxes and the roster does not carry those
-    # slots. This UNDERSTATES an admitted member by up to two
+    # False for an admitted member unless their uploaded profile owns the
+    # garment (below): there is no manual row carrying the skilling top/bottom
+    # checkboxes and the roster does not carry those slots. This UNDERSTATES an admitted member by up to two
     # ARMOUR_EFFICIENCY_PLUS7 terms. That is the right direction — a newcomer is
     # seated on the evidence we have, not on the evidence we wish we had — but it
     # is a real pessimism and it is counted in provenance rather than inferred.
@@ -592,13 +592,15 @@ def _merged_entry(
         # the roster saw: levels and houses only rise, so take the max against a
         # roster value, and keep the better tool by modelled value. Ties go to
         # the profile, the higher rank.
-        lv = prof.levels.get(skill)
+        # The ROSTER_USE_* switches gate this source too, so a slice rollback
+        # still restores the manual value.
+        lv = prof.levels.get(skill) if config.ROSTER_USE_LEVELS else None
         if lv is not None and (tags["level"] != ROSTER or level is None or lv >= level):
             level, tags["level"] = lv, PROFILES
-        hv = prof.houses.get(skill)
+        hv = prof.houses.get(skill) if config.ROSTER_USE_HOUSES else None
         if hv is not None and (tags["house"] != ROSTER or house is None or hv >= house):
             house, tags["house"] = hv, PROFILES
-        owned = prof.tools.get(skill)
+        owned = prof.tools.get(skill) if config.ROSTER_USE_TOOLS else None
         if owned is not None:
             seen = (profiles_model.tool_value(tool_item, tool_enhance)
                     if tags["tool"] == ROSTER else None)
@@ -636,8 +638,8 @@ def _admitted_member(
 
     ``main_classes`` / ``flex`` / ``flex_levels`` are left empty: the model never
     reads them (no reference in trials.py or optimizer.py — they are register
-    decoration). ``top`` and ``bot`` are False for every skill, necessarily; see
-    :func:`_merged_entry`.
+    decoration). ``top`` and ``bot`` are False unless an uploaded profile owns
+    the garment; see :func:`_merged_entry`.
     """
     member_provenance: dict[str, str] = {"member": ROSTER_ONLY}
     skills = {
@@ -762,12 +764,20 @@ def merge(
             f"usually means gviz served a different tab, or the roster tab was "
             f"rebuilt for a different guild."
         )
-        prov.member_count = len(members) - len(report.duplicates)
-        prov.manual_backed = prov.member_count
-        prov.reported_not_seated = list(report.unmatched_roster)
-        return [
-            copy.deepcopy(m) for i, m in enumerate(members) if i not in report.duplicates
-        ], prov
+        if not profiles:
+            prov.member_count = len(members) - len(report.duplicates)
+            prov.manual_backed = prov.member_count
+            prov.reported_not_seated = list(report.unmatched_roster)
+            return [
+                copy.deepcopy(m)
+                for i, m in enumerate(members) if i not in report.duplicates
+            ], prov
+        # Profiles join on characterId, not through the refused join, so they
+        # still apply: the roster's rows are dropped and nothing is admitted.
+        report = JoinReport(
+            unmatched_roster=list(report.unmatched_roster),
+            duplicates=set(report.duplicates),
+        )
 
     merged: list[MemberRow] = []
     captures: list[str] = []
@@ -814,7 +824,7 @@ def merge(
             )
         )
 
-    if config.ROSTER_ADMITS_NEW_MEMBERS:
+    if config.ROSTER_ADMITS_NEW_MEMBERS and not prov.refused:
         for row in report.roster_only:
             prof = _profile_for(profiles, row.character_id, prov)
             merged.append(_admitted_member(row, prov, prof))

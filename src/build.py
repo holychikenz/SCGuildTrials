@@ -599,15 +599,13 @@ def _gear_sentence(prov: dict) -> str:
 
 def _source_mark(source: str) -> str:
     """A filled mark for a roster-backed member, hollow for a manual one."""
-    if source == "profiles":
-        return ('<span class="src on" title="From their uploaded profile">'
-                '&#9679;</span>')
     if source == "roster":
         return ('<span class="src on" title="Levels, houses and tools from the '
                 'scripted roster tab">&#9679;</span>')
     if source == "roster-only":
         return ('<span class="src only" title="This member exists ONLY on the '
-                'roster tab; seated from it, with no Top/Bot recorded">'
+                'roster tab; seated from it, with Top/Bot only where an uploaded '
+                'profile owns them">'
                 '&#9673;</span>')
     return ('<span class="src off" title="From the officers\' hand-maintained '
             'member tab">&#9675;</span>')
@@ -5299,7 +5297,8 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
             # still propagates and fails the build, exactly as elsewhere.
             roster_unavailable = (
                 f"The {site.roster_tab!r} tab could not be read, so every member's "
-                f"data comes from the '{site.member_tab}' tab instead. Reason: {exc}"
+                f"data comes from the '{site.member_tab}' tab instead, and uploaded "
+                f"profiles are not applied either. Reason: {exc}"
             )
             print(
                 f"WARNING ({site.key}): roster unavailable, falling back to the "

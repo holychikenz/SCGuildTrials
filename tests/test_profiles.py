@@ -195,3 +195,45 @@ def test_merge_joins_profiles_by_character_id_only(monkeypatch):
     assert prov.profile_backed == 1 and prov.to_dict()["profiles"] == "1 profiles read"
     if config.GEAR_SOURCE_ENABLED:
         assert merged[0].gear == {"/items/dairyhands_top": 4}
+
+
+def test_switch_off_restores_the_manual_value(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_USE_TOOLS", False)
+    out, tags = _merge(MANUAL, None, _prof(tools={"Milking": ("Holy Brush", 5)}))
+    assert out.tool_item is None and tags["Milking.tool"] == "manual"
+
+
+def test_refused_roster_still_applies_profiles(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_MIN_JOIN_RATE", 1.0)
+    member = MemberRow(
+        name="Synthetic", main_classes="", flex="", flex_levels=[],
+        skills={s: SkillEntry(level=90, tool=False, top=False, bot=False, house=2)
+                for s in config.SKILLS},
+        character_id="42",
+    )
+    report = roster.JoinReport(unmatched_roster=["Stranger"],
+                               roster_only=[_rrow(level=200)])
+    merged, prov = roster.merge(
+        [member], report, "sc", {42: _prof(levels={"Milking": 150})}, "")
+    assert prov.refused and prov.admitted == 0 and len(merged) == 1
+    assert merged[0].skills["Milking"].level == 150
+    assert prov.reported_not_seated == ["Stranger"]
+
+
+def test_overflowing_pair_is_skipped_not_fatal():
+    assert profiles.parse_pairs("milking:1e400;foraging:inf;woodcutting:7") == {
+        "woodcutting": 7}
+
+
+def test_permanent_http_refusal_is_not_retried(monkeypatch):
+    calls = []
+
+    def forbidden(req, timeout):
+        calls.append(1)
+        raise profiles.urllib.error.HTTPError(req.full_url, 403, "no", {}, None)
+
+    monkeypatch.setattr(profiles.time, "sleep", lambda s: None)
+    monkeypatch.setattr(profiles.urllib.request, "urlopen", forbidden)
+    with pytest.raises(profiles.ProfileError, match="HTTP 403") as err:
+        profiles.fetch("SC Profiles", URL, TOKEN)
+    assert len(calls) == 1 and "AKfycb" not in str(err.value)

@@ -83,18 +83,14 @@ class ProfileRow:
 
 
 def tool_value(item: Optional[str], enhance: Optional[int]) -> Optional[float]:
-    """The modelled bonus of a named tool, ``trials.tool_bonus``'s arithmetic.
-
-    None for an item ``config.TOOL_STATS`` does not model. Kept here rather than
-    imported from trials so roster.py need not import the race.
-    """
+    """The modelled bonus of a named tool, ``trials.tool_bonus``'s arithmetic
+    through the shared ``gear.effective_stat``. None for an unmodelled item."""
     stats = config.TOOL_STATS.get(item) if item else None
     if stats is None:
         return None
     _skill, _channel, base, per = stats
     level = config.TOOL_ENHANCE_WHEN_UNKNOWN if enhance is None else enhance
-    level = max(0, min(len(config.ENHANCEMENT_MULT_TABLE) - 1, level))
-    return base + config.ENHANCEMENT_MULT_TABLE[level] * per
+    return gear_model.effective_stat(base, per, level)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +164,8 @@ def fetch(tab: str, url: str, token: str, attempts: int = 3) -> dict:
                 break  # the endpoint's own deliberate answer; asking again is moot
         except urllib.error.HTTPError as exc:
             last = f"{where} answered HTTP {exc.code}"
+            if exc.code != 429 and exc.code < 500:
+                break  # 401/403/404 answer the same every time
         except Exception as exc:  # noqa: BLE001 - urllib raises a zoo
             # The type only: a transport message can quote the (redirect) URL.
             last = f"{where} could not be read ({type(exc).__name__})"
@@ -204,7 +202,7 @@ def parse_pairs(cell) -> Optional[dict[str, int]]:
             continue
         try:
             value = int(float(raw))
-        except ValueError:
+        except (ValueError, OverflowError):
             continue
         out[slug.rsplit("/", 1)[-1]] = value
     return out
