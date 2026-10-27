@@ -27,6 +27,7 @@ from . import draw as draw_model
 from . import gear as gear_model
 from . import identity
 from . import optimizer as optimizer_model
+from . import profiles as profiles_model
 from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
@@ -336,6 +337,8 @@ def _provenance_block(inputs: "_GuildInputs") -> dict:
             "normalized_matches": list(prov.normalized_matches),
             "ambiguous": list(prov.ambiguous),
             "refused": prov.refused,
+            "profiles": prov.profiles,
+            "profile_backed": prov.profile_backed,
         }
     )
     if prov.tools is not None:
@@ -596,6 +599,9 @@ def _gear_sentence(prov: dict) -> str:
 
 def _source_mark(source: str) -> str:
     """A filled mark for a roster-backed member, hollow for a manual one."""
+    if source == "profiles":
+        return ('<span class="src on" title="From their uploaded profile">'
+                '&#9679;</span>')
     if source == "roster":
         return ('<span class="src on" title="Levels, houses and tools from the '
                 'scripted roster tab">&#9679;</span>')
@@ -633,7 +639,9 @@ def _tool_badge(entry: dict) -> str:
         label = tier if enh is None else f"{tier}&nbsp;+{enh}"
         return (
             f'<span class="badge tool on" title="{html.escape(item)}'
-            f'{"" if enh is None else f" +{enh}"} (roster)">{label}</span>'
+            f'{"" if enh is None else f" +{enh}"} '
+            f'({"uploaded profile" if source == "profiles" else "roster"})">'
+            f'{label}</span>'
         )
     return _badge(entry.get("tool", False), "Tool")
 
@@ -5324,8 +5332,18 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
                 f"{'; '.join(report.id_conflicts)}",
                 file=sys.stderr,
             )
+        # Uploaded profiles (src/profiles.py), the highest-ranked source. Never
+        # stops the deploy: no credentials or a failed read return None and the
+        # merge runs exactly as before, which the note records in provenance.
+        profiles, profiles_note = profiles_model.load(config.PROFILES_TABS[site.key])
+        print(
+            f"{'NOTE' if profiles is not None else 'WARNING'} ({site.key}): "
+            f"uploaded profiles {'used' if profiles is not None else 'not used'}"
+            f" — {profiles_note}",
+            file=sys.stderr,
+        )
         members, roster_provenance = roster_model.merge(
-            members, report, site.key
+            members, report, site.key, profiles, profiles_note
         )
         # The tool audit runs ONCE per guild, here in the parent, on the
         # merged list. It strips items config.TOOL_STATS does not model (so

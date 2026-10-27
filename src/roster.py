@@ -36,6 +36,7 @@ from typing import Optional
 
 from . import config, identity
 from . import gear as gear_model
+from . import profiles as profiles_model
 from .reader import MemberRow, SheetStructureError, SkillEntry, norm_name
 from .scraper import fetch_tab_csv
 
@@ -280,6 +281,8 @@ def scrape_roster_tab(tab_name: str) -> list[RosterRow]:
 # rest. Nine SC and seven LI members are exactly that case.
 ROSTER = "roster"
 MANUAL = "manual"
+# From the member's uploaded profile (src/profiles.py): the highest rank.
+PROFILES = "profiles"
 # A member who exists only on the roster and was seated from it alone.
 ROSTER_ONLY = "roster-only"
 
@@ -496,6 +499,10 @@ class Provenance:
     # imported here for its parser, but the AUDIT is assembled by the caller that
     # also runs the resolver, so that both happen exactly once per guild.)
     gear: object = None
+    # Uploaded profiles: why they were or were not used, and how many members
+    # joined one by characterId.
+    profiles: str = ""
+    profile_backed: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -517,6 +524,8 @@ class Provenance:
             "refused": self.refused,
             "tools": self.tools.to_dict() if self.tools is not None else None,
             "gear": self.gear.to_dict() if self.gear is not None else None,
+            "profiles": self.profiles,
+            "profile_backed": self.profile_backed,
         }
 
 
@@ -531,6 +540,7 @@ def _merged_entry(
     skill: str,
     member_provenance: dict[str, str],
     prov: Provenance,
+    prof: Optional["profiles_model.ProfileRow"] = None,
 ) -> SkillEntry:
     """Resolve one member's one skill, FIELD BY FIELD.
 
@@ -538,9 +548,12 @@ def _merged_entry(
     manual row at all); ``row`` is the joined roster row (None for a member the
     roster has never seen). Each field independently takes the roster's value
     when the roster HAS one and its switch is on, and the manual value otherwise.
-    ``top`` and ``bot`` are always the manual tab's: the roster does not carry
-    body or legs, because the upstream module excludes them as rotating combat
-    slots, and it never will.
+    ``top`` and ``bot`` are the manual tab's, OR'd with a garment the uploaded
+    profile owns: the roster does not carry body or legs, because the upstream
+    module excludes them as rotating combat slots, and it never will.
+
+    ``prof`` (the member's uploaded profile, joined on characterId) outranks
+    both, field by field, but never lowers a value the roster has seen.
     """
     manual_level = entry.level if entry else None
     manual_house = entry.house if entry else None
@@ -574,6 +587,31 @@ def _merged_entry(
             tool_enhance = row.tool_enh.get(skill)
             tags["tool"] = ROSTER
 
+    if prof is not None:
+        # Profiles outrank both, except that an older profile never LOWERS what
+        # the roster saw: levels and houses only rise, so take the max against a
+        # roster value, and keep the better tool by modelled value. Ties go to
+        # the profile, the higher rank.
+        lv = prof.levels.get(skill)
+        if lv is not None and (tags["level"] != ROSTER or level is None or lv >= level):
+            level, tags["level"] = lv, PROFILES
+        hv = prof.houses.get(skill)
+        if hv is not None and (tags["house"] != ROSTER or house is None or hv >= house):
+            house, tags["house"] = hv, PROFILES
+        owned = prof.tools.get(skill)
+        if owned is not None:
+            seen = (profiles_model.tool_value(tool_item, tool_enhance)
+                    if tags["tool"] == ROSTER else None)
+            if seen is None or profiles_model.tool_value(*owned) >= seen:
+                (tool_item, tool_enhance), tags["tool"] = owned, PROFILES
+        if prof.gear:
+            top = top or any(
+                h in prof.gear
+                for h in gear_model.ITEMS_IN_SLOT_FOR_SKILL.get(("body", skill), []))
+            bot = bot or any(
+                h in prof.gear
+                for h in gear_model.ITEMS_IN_SLOT_FOR_SKILL.get(("legs", skill), []))
+
     for name in _FIELDS:
         member_provenance[f"{skill}.{name}"] = tags[name]
         _tag(prov, name, tags[name])
@@ -589,7 +627,11 @@ def _merged_entry(
     )
 
 
-def _admitted_member(row: RosterRow, prov: Provenance) -> MemberRow:
+def _admitted_member(
+    row: RosterRow,
+    prov: Provenance,
+    prof: Optional["profiles_model.ProfileRow"] = None,
+) -> MemberRow:
     """Build a MemberRow for a character who exists only on the roster (§5.6).
 
     ``main_classes`` / ``flex`` / ``flex_levels`` are left empty: the model never
@@ -599,7 +641,7 @@ def _admitted_member(row: RosterRow, prov: Provenance) -> MemberRow:
     """
     member_provenance: dict[str, str] = {"member": ROSTER_ONLY}
     skills = {
-        skill: _merged_entry(None, row, skill, member_provenance, prov)
+        skill: _merged_entry(None, row, skill, member_provenance, prov, prof)
         for skill in config.SKILLS
     }
     return MemberRow(
@@ -612,11 +654,14 @@ def _admitted_member(row: RosterRow, prov: Provenance) -> MemberRow:
         captured_at=row.captured_at or None,
         shrine_levels=_shrine_levels(row),
         provenance=member_provenance,
-        gear=_gear_cell(row),
+        gear=_gear_cell(row, prof),
     )
 
 
-def _gear_cell(row: Optional[RosterRow]) -> "gear_model.GearCell":
+def _gear_cell(
+    row: Optional[RosterRow],
+    prof: Optional["profiles_model.ProfileRow"] = None,
+) -> "gear_model.GearCell":
     """The member's parsed ``gearSeen`` union, or None where there is none.
 
     None for a member the roster never saw, for a guild whose tab carries no gear
@@ -631,9 +676,17 @@ def _gear_cell(row: Optional[RosterRow]) -> "gear_model.GearCell":
     is the pre-gear behaviour for four of the five terms and silence for the
     fifth.
     """
-    if row is None or not config.GEAR_SOURCE_ENABLED:
+    if not config.GEAR_SOURCE_ENABLED:
         return None
-    return row.gear
+    cell = row.gear if row is not None else None
+    if prof is None or prof.gear is None:
+        return cell
+    # The uploaded profile's OWNED items join the union, keeping the higher level.
+    out = dict(cell or {})
+    for hrid, level in prof.gear.items():
+        old = out.get(hrid)
+        out[hrid] = level if old is None else max(old, level)
+    return out
 
 
 def _shrine_levels(row: RosterRow) -> dict[str, int]:
@@ -649,10 +702,21 @@ def _shrine_levels(row: RosterRow) -> dict[str, int]:
     return {k: v for k, v in row.shrines.items() if v is not None}
 
 
+def _profile_for(profiles, character_id, prov: Provenance):
+    """The member's uploaded profile, joined on characterId only — never name."""
+    cid = identity.parse_id(character_id)
+    prof = profiles.get(cid) if profiles and cid is not None else None
+    if prof is not None:
+        prov.profile_backed += 1
+    return prof
+
+
 def merge(
     members: list[MemberRow],
     report: JoinReport,
     guild_key: str = "",
+    profiles: Optional[dict[int, "profiles_model.ProfileRow"]] = None,
+    profiles_note: str = "",
 ) -> tuple[list[MemberRow], Provenance]:
     """Return a NEW member list carrying the roster's facts, plus provenance.
 
@@ -680,6 +744,7 @@ def merge(
     """
     prov = Provenance(
         guild_key=guild_key,
+        profiles=profiles_note,
         normalized_matches=list(report.normalized_matches),
         unmatched_members=list(report.unmatched_members),
         unmatched_roster=list(report.unmatched_roster),
@@ -710,10 +775,11 @@ def merge(
         if idx in report.duplicates:
             continue
         row = report.matched.get(idx)
+        prof = _profile_for(profiles, _merged_id(member, row), prov)
         member_provenance: dict[str, str] = {"member": ROSTER if row else MANUAL}
         skills = {
             skill: _merged_entry(
-                member.skills.get(skill), row, skill, member_provenance, prov
+                member.skills.get(skill), row, skill, member_provenance, prov, prof
             )
             for skill in config.SKILLS
         }
@@ -744,13 +810,14 @@ def merge(
                 captured_at=(row.captured_at or None) if row else None,
                 shrine_levels=_shrine_levels(row) if row else {},
                 provenance=member_provenance,
-                gear=_gear_cell(row),
+                gear=_gear_cell(row, prof),
             )
         )
 
     if config.ROSTER_ADMITS_NEW_MEMBERS:
         for row in report.roster_only:
-            merged.append(_admitted_member(row, prov))
+            prof = _profile_for(profiles, row.character_id, prov)
+            merged.append(_admitted_member(row, prov, prof))
             prov.admitted += 1
             prov.admitted_names.append(row.name)
             if row.captured_at:

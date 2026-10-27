@@ -263,6 +263,16 @@ ROSTER_SHRINE_COLUMNS = {
 # four slices against an independently measured band before it does.
 ROSTER_SOURCE_ENABLED = True
 
+# --- Uploaded profiles: the highest-ranked per-field source (src/profiles.py) -
+# Read through SCLIRoster's owner-only read endpoint with the PROFILES_URL /
+# PROFILES_READ_TOKEN credentials (repo secrets in CI). Absent credentials or a
+# failed read leave the build exactly as without it. False skips the read.
+PROFILES_SOURCE_ENABLED = True
+PROFILES_TABS = {
+    "sc": "SC Profiles",
+    "li": "LI Profiles",
+}
+
 ROSTER_USE_LEVELS = True             # roster skill levels over the manual tab's
 ROSTER_USE_HOUSES = True             # roster house levels over the "H" column /
                                      # DEFAULT_HOUSE_LEVEL
