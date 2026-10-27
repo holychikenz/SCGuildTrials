@@ -146,10 +146,24 @@ def _merge(entry, row, prof):
 MANUAL = SkillEntry(level=90, tool=True, top=False, bot=False, house=2)
 
 
-def test_profile_beats_manual_even_when_lower():
-    out, tags = _merge(MANUAL, None, _prof(levels={"Milking": 80}, houses={"Milking": 1}))
-    assert (out.level, out.house) == (80, 1)
-    assert tags["Milking.level"] == tags["Milking.house"] == "profiles"
+def test_higher_of_profile_and_manual_wins():
+    out, tags = _merge(MANUAL, None, _prof(levels={"Milking": 80}, houses={"Milking": 3}))
+    assert (out.level, tags["Milking.level"]) == (90, "manual")
+    assert (out.house, tags["Milking.house"]) == (3, "profiles")
+
+
+def test_profile_without_modelled_gear_leaves_the_roster_cell(monkeypatch):
+    monkeypatch.setattr(config, "GEAR_SOURCE_ENABLED", True)
+    assert roster._gear_cell(None, _prof(gear={})) is None
+    row = _rrow()
+    row.gear = {"/items/dairyhands_top": 1}
+    assert roster._gear_cell(row, _prof(gear={})) is row.gear
+
+
+def test_profile_tool_badge_names_nothing():
+    from src import build
+    badge = build._tool_badge({"tool_source": "profiles", "tool_item": None})
+    assert "uploaded profile" in badge and "Brush" not in badge
 
 
 def test_older_profile_never_lowers_the_roster():

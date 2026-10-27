@@ -184,3 +184,37 @@ def test_li_unit_jobs_error_still_ships_sc(site_env, monkeypatch, capsys):
     assert build.main() == 0
     assert (out / "index.html").exists()
     assert "li skipped (KeyError" in capsys.readouterr().err
+
+
+def test_profile_tool_name_never_reaches_the_site(site_env, monkeypatch):
+    """A tool from an uploaded profile prices the race but is never published."""
+    from dataclasses import replace
+
+    from src import profiles, roster
+
+    out, _ = site_env
+    members = [replace(m, character_id=str(9000 + i))
+               for i, m in enumerate(golden_members()[:10])]
+    monkeypatch.setattr(build, "parse", lambda text: list(members))
+    monkeypatch.setattr(build, "scrape_member_tab", lambda tab: scraper.GuildData(
+        tab=tab, fetched_at="t", member_count=len(members), members=list(members)))
+    monkeypatch.setattr(config, "ROSTER_SOURCE_ENABLED", True)
+    monkeypatch.setattr(config, "ROSTER_MIN_JOIN_RATE", 0.0)
+    monkeypatch.setattr(roster, "scrape_roster_tab", lambda tab: [])
+    items = ";".join(f"{h.rsplit('/', 1)[-1]}:17" for h, name in
+                     profiles.TOOL_BY_HRID.items() if name.startswith("Celestial"))
+    row = [None] * profiles.REQUIRED_COLUMNS
+    row[profiles._COL["items"]] = items
+    profs = {}
+    for m in members:
+        row[profiles._COL["characterId"]] = m.character_id
+        profs[int(m.character_id)] = profiles.parse_row(row)
+    monkeypatch.setattr(build.profiles_model, "load", lambda tab: (profs, "synthetic"))
+
+    assert build.main() == 0
+    trials = (out / "trials.json").read_text()
+    assert '"tool_source":"profiles"' in trials
+    for f in out.rglob("*"):
+        if f.is_file() and f.suffix in {".json", ".html", ".js"}:
+            text = f.read_text(errors="replace")
+            assert "Celestial" not in text and "celestial_" not in text, f

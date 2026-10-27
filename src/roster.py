@@ -589,16 +589,16 @@ def _merged_entry(
 
     if prof is not None:
         # Profiles outrank both, except that an older profile never LOWERS what
-        # the roster saw: levels and houses only rise, so take the max against a
-        # roster value, and keep the better tool by modelled value. Ties go to
-        # the profile, the higher rank.
+        # the roster or the officers recorded: levels and houses only rise, so
+        # take the max against either, and keep the better tool by modelled
+        # value. Ties go to the profile, the higher rank.
         # The ROSTER_USE_* switches gate this source too, so a slice rollback
         # still restores the manual value.
         lv = prof.levels.get(skill) if config.ROSTER_USE_LEVELS else None
-        if lv is not None and (tags["level"] != ROSTER or level is None or lv >= level):
+        if lv is not None and (level is None or lv >= level):
             level, tags["level"] = lv, PROFILES
         hv = prof.houses.get(skill) if config.ROSTER_USE_HOUSES else None
-        if hv is not None and (tags["house"] != ROSTER or house is None or hv >= house):
+        if hv is not None and (house is None or hv >= house):
             house, tags["house"] = hv, PROFILES
         owned = prof.tools.get(skill) if config.ROSTER_USE_TOOLS else None
         if owned is not None:
@@ -681,7 +681,7 @@ def _gear_cell(
     if not config.GEAR_SOURCE_ENABLED:
         return None
     cell = row.gear if row is not None else None
-    if prof is None or prof.gear is None:
+    if not (prof and prof.gear):  # nothing the model knows: blank stays blank
         return cell
     # The uploaded profile's OWNED items join the union, keeping the higher level.
     out = dict(cell or {})

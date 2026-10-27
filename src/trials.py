@@ -1754,6 +1754,10 @@ def simulate_race(
                 / asec
             )
         entry = m.skills.get(sheet_col)
+        tool_source = m.provenance.get(f"{sheet_col}.tool", "manual")
+        # A tool from an uploaded profile prices the rate but is never published:
+        # its name and enhancement stay off every public artefact.
+        named = entry is not None and tool_source != "profiles"
         roster.append(
             RosterEntry(
                 name=m.name,
@@ -1763,10 +1767,10 @@ def simulate_race(
                 bot=b.bot,
                 rate_tier1=rate_tier1,
                 rate_final=rate_final,
-                tool_item=entry.tool_item if entry else None,
-                tool_enhance=entry.tool_enhance if entry else None,
+                tool_item=entry.tool_item if named else None,
+                tool_enhance=entry.tool_enhance if named else None,
                 source=m.provenance.get("member", "manual"),
-                tool_source=m.provenance.get(f"{sheet_col}.tool", "manual"),
+                tool_source=tool_source,
                 character_id=identity.parse_id(m.character_id),
             )
         )
