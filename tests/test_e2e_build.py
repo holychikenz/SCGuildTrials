@@ -203,6 +203,7 @@ def test_profile_tool_name_never_reaches_the_site(site_env, monkeypatch):
     monkeypatch.setattr(roster, "scrape_roster_tab", lambda tab: [])
     items = ";".join(f"{h.rsplit('/', 1)[-1]}:17" for h, name in
                      profiles.TOOL_BY_HRID.items() if name.startswith("Celestial"))
+    items += ";dairyhands_top:17;dairyhands_bottoms:17"  # owned garments: priced, never published
     row = [None] * profiles.REQUIRED_COLUMNS
     row[profiles._COL["items"]] = items
     profs = {}
@@ -214,6 +215,7 @@ def test_profile_tool_name_never_reaches_the_site(site_env, monkeypatch):
     assert build.main() == 0
     trials = (out / "trials.json").read_text()
     assert '"tool_source":"profiles"' in trials
+    assert '"top_level"' not in trials and '"bot_level"' not in trials
     for f in out.rglob("*"):
         if f.is_file() and f.suffix in {".json", ".html", ".js"}:
             text = f.read_text(errors="replace")

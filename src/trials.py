@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from . import config, identity
+from . import gear as gear_model
 from .reader import MemberRow, SheetStructureError
 
 
@@ -1566,6 +1567,19 @@ class RosterEntry:
     # The game's numeric characterId (rename safety, 2026-10). Emitted in
     # trials.json as "characterId" when known and OMITTED otherwise.
     character_id: Optional[int] = None
+    # The skill's top/bottom enhancement as the ROSTER's own gearSeen shows it
+    # (never the uploaded profile); None unless top/bot is true and seen there.
+    # Omitted from trials.json while None (TrialResult.to_dict).
+    top_level: Optional[int] = None
+    bot_level: Optional[int] = None
+
+
+def _garment_level(gear, slot: str, sheet_col: str, worn: bool) -> Optional[int]:
+    """Highest seen enhancement of ``sheet_col``'s garment in ``slot``, or None."""
+    if not (worn and gear):
+        return None
+    return max((gear[h] for h in gear_model.ITEMS_IN_SLOT_FOR_SKILL.get((slot, sheet_col), [])
+                if gear.get(h) is not None), default=None)
 
 
 @dataclass
@@ -1604,6 +1618,10 @@ class TrialResult:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["roster"] = [identity.with_character_id(r) for r in d["roster"]]
+        for r in d["roster"]:  # unset garment levels are omitted, like characterId
+            for k in ("top_level", "bot_level"):
+                if r[k] is None:
+                    del r[k]
         return d
 
 
@@ -1775,6 +1793,8 @@ def simulate_race(
                 source=m.provenance.get("member", "manual"),
                 tool_source=tool_source,
                 character_id=identity.parse_id(m.character_id),
+                top_level=_garment_level(m.roster_gear, "body", sheet_col, b.top),
+                bot_level=_garment_level(m.roster_gear, "legs", sheet_col, b.bot),
             )
         )
 
