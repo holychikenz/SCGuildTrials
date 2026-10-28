@@ -79,6 +79,10 @@ class MemberRow:
     # two differently, by decision, but gear.GearAudit counts them apart, which is
     # how an upstream breakage in the writer would be noticed at all.
     gear: Optional[dict[str, Optional[int]]] = None
+    # The roster's OWN gearSeen cell, before the uploaded profile is merged into
+    # ``gear``: the only gear evidence that may be published (trials.json's
+    # top_level/bot_level). Same None/{} states as ``gear``.
+    roster_gear: Optional[dict[str, Optional[int]]] = None
     # The RESOLVED terms, {skill: (speed, efficiency, success, gathering)},
     # computed ONCE per member in the parent by gear.resolve. trials.member_bonuses
     # reads this dict instead of walking the item table -- see src/gear.py's header
@@ -114,7 +118,7 @@ _UNSET_SKILL_KEYS = {"tool_item": None, "tool_enhance": None}
 # waits for the per-member gear badge that will use it, at which point deleting
 # its line here is the whole change. Shipping 57 KB now against a follow-up that
 # might want it is not a trade this file makes.
-_NEVER_SERIALISED = ("gear", "gear_bonuses")
+_NEVER_SERIALISED = ("gear", "roster_gear", "gear_bonuses")
 
 
 def member_to_dict(member: MemberRow) -> dict:

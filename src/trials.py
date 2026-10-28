@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from . import config, identity
+from . import gear as gear_model
 from .reader import MemberRow, SheetStructureError
 
 
@@ -1566,6 +1567,21 @@ class RosterEntry:
     # The game's numeric characterId (rename safety, 2026-10). Emitted in
     # trials.json as "characterId" when known and OMITTED otherwise.
     character_id: Optional[int] = None
+    # The skill's top/bottom enhancement as the ROSTER's own gearSeen shows it
+    # (never the uploaded profile); None unless the rate priced that garment
+    # (top/bot ticked, or the per-item model read it off the union) and the
+    # roster saw it. The rate may use a higher profile level: this is a floor.
+    # Omitted from trials.json while None (TrialResult.to_dict).
+    top_level: Optional[int] = None
+    bot_level: Optional[int] = None
+
+
+def _garment_level(gear, slot: str, sheet_col: str, priced: bool) -> Optional[int]:
+    """Highest seen enhancement of ``sheet_col``'s garment in ``slot``, or None."""
+    if not (priced and gear):
+        return None
+    return max((gear[h] for h in gear_model.ITEMS_IN_SLOT_FOR_SKILL.get((slot, sheet_col), [])
+                if gear.get(h) is not None), default=None)
 
 
 @dataclass
@@ -1604,6 +1620,10 @@ class TrialResult:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["roster"] = [identity.with_character_id(r) for r in d["roster"]]
+        for r in d["roster"]:  # unset garment levels are omitted, like characterId
+            for k in ("top_level", "bot_level"):
+                if r[k] is None:
+                    del r[k]
         return d
 
 
@@ -1754,6 +1774,8 @@ def simulate_race(
                 / asec
             )
         entry = m.skills.get(sheet_col)
+        # The per-item model prices an OBSERVED garment whether or not it is ticked.
+        seen_priced = config.GEAR_USE_GARMENTS and _resolve_gear(m, skill) is not None
         tool_source = m.provenance.get(f"{sheet_col}.tool", "manual")
         # A tool from an uploaded profile prices the rate but is never published:
         # its name and enhancement stay off every public artefact, unless the
@@ -1775,6 +1797,8 @@ def simulate_race(
                 source=m.provenance.get("member", "manual"),
                 tool_source=tool_source,
                 character_id=identity.parse_id(m.character_id),
+                top_level=_garment_level(m.roster_gear, "body", sheet_col, b.top or seen_priced),
+                bot_level=_garment_level(m.roster_gear, "legs", sheet_col, b.bot or seen_priced),
             )
         )
 

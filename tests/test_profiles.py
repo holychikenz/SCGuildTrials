@@ -270,3 +270,39 @@ def test_permanent_http_refusal_is_not_retried(monkeypatch):
     with pytest.raises(profiles.ProfileError, match="HTTP 403") as err:
         profiles.fetch("SC Profiles", URL, TOKEN)
     assert len(calls) == 1 and "AKfycb" not in str(err.value)
+
+
+# --- published garment levels (trials.json top_level / bot_level) -----------
+def _published(monkeypatch, row_gear, prof, resolve=False):
+    from src import gear, trials
+    monkeypatch.setattr(config, "GEAR_SOURCE_ENABLED", True)
+    row = _rrow(level=120)
+    row.gear = row_gear
+    member = roster._admitted_member(row, roster.Provenance(), prof)
+    if resolve:  # as build does: the per-item model prices what the union saw
+        member.gear_bonuses = gear.resolve(member, gear.measure([row_gear], "sc"))
+    return trials.simulate_race([member], "Milking").to_dict()["roster"][0]
+
+
+def test_roster_seen_garment_level_is_published_not_the_profiles(monkeypatch):
+    # The profile owns the top at +9 (it switches `top` on) but the roster saw +5.
+    got = _published(monkeypatch, {"/items/dairyhands_top": 5},
+                     _prof(gear={"/items/dairyhands_top": 9}))
+    assert (got["top"], got["top_level"]) == (True, 5)
+
+
+def test_profile_only_garment_publishes_no_level(monkeypatch):
+    got = _published(monkeypatch, {}, _prof(gear={"/items/dairyhands_bottoms": 9}))
+    assert (got["bot"], got.get("bot_level")) == (True, None)
+
+
+def test_garment_not_priced_publishes_no_level(monkeypatch):
+    # Seen on the roster, but unticked and no per-item model ran: the flat rate
+    # did not price it, so no level.
+    got = _published(monkeypatch, {"/items/dairyhands_bottoms": 3}, None)
+    assert (got["bot"], got.get("bot_level")) == (False, None)
+
+
+def test_unticked_garment_the_per_item_model_priced_is_published(monkeypatch):
+    got = _published(monkeypatch, {"/items/dairyhands_bottoms": 3}, None, resolve=True)
+    assert (got["bot"], got["bot_level"], got.get("top_level")) == (False, 3, None)

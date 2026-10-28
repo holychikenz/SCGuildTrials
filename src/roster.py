@@ -663,6 +663,7 @@ def _admitted_member(
         shrine_levels=_shrine_levels(row),
         provenance=member_provenance,
         gear=_gear_cell(row, prof),
+        roster_gear=_gear_cell(row),
     )
 
 
@@ -827,6 +828,7 @@ def merge(
                 shrine_levels=_shrine_levels(row) if row else {},
                 provenance=member_provenance,
                 gear=_gear_cell(row, prof),
+                roster_gear=_gear_cell(row),
             )
         )
 
