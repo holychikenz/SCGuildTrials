@@ -1756,8 +1756,11 @@ def simulate_race(
         entry = m.skills.get(sheet_col)
         tool_source = m.provenance.get(f"{sheet_col}.tool", "manual")
         # A tool from an uploaded profile prices the rate but is never published:
-        # its name and enhancement stay off every public artefact.
-        named = entry is not None and tool_source != "profiles"
+        # its name and enhancement stay off every public artefact, unless the
+        # roster had already published the same tool (a profile-confirmed tie).
+        named = entry is not None and (
+            tool_source != "profiles"
+            or m.provenance.get(f"{sheet_col}.tool_public") == "roster")
         roster.append(
             RosterEntry(
                 name=m.name,

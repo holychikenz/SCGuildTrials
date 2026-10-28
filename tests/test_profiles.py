@@ -166,6 +166,12 @@ def test_profile_tool_badge_names_nothing():
     assert "uploaded profile" in badge and "Brush" not in badge
 
 
+def test_confirmed_tie_badge_keeps_the_public_name():
+    from src import build
+    badge = build._tool_badge({"tool_source": "profiles", "tool_item": "Holy Brush", "tool_enhance": 5})
+    assert "Holy Brush +5" in badge and "confirmed by their profile" in badge
+
+
 def test_older_profile_never_lowers_the_roster():
     row = _rrow(level=130, house=6, tool="Holy Brush", enh=8)
     prof = _prof(levels={"Milking": 120}, houses={"Milking": 7},
@@ -187,10 +193,17 @@ def test_better_owned_tool_wins_and_is_tagged_profiles():
     assert out.top is True and out.bot is False
 
 
-def test_tool_tie_stays_roster_so_its_name_stays_public():
+def test_tool_tie_is_profile_confirmed_and_its_name_stays_public():
     row = _rrow(tool="Holy Brush", enh=5)
     out, tags = _merge(MANUAL, row, _prof(tools={"Milking": ("Holy Brush", 5)}))
-    assert (out.tool_item, tags["Milking.tool"]) == ("Holy Brush", "roster")
+    assert (out.tool_item, tags["Milking.tool"]) == ("Holy Brush", "profiles")
+    assert tags["Milking.tool_public"] == "roster"
+
+
+def test_better_profile_tool_is_not_marked_public():
+    row = _rrow(tool="Holy Brush", enh=1)
+    out, tags = _merge(MANUAL, row, _prof(tools={"Milking": ("Holy Brush", 5)}))
+    assert tags["Milking.tool"] == "profiles" and "Milking.tool_public" not in tags
 
 
 def test_merge_joins_profiles_by_character_id_only(monkeypatch):

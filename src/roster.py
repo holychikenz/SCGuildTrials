@@ -591,7 +591,7 @@ def _merged_entry(
         # Profiles outrank both, except that an older profile never LOWERS what
         # the roster or the officers recorded: levels and houses only rise, so
         # take the max against either, and keep the better tool by modelled
-        # value. Level/house ties go to the profile; a tool tie stays roster.
+        # value. Ties go to the profile; a tool tie keeps the roster's public name.
         # The ROSTER_USE_* switches gate this source too, so a slice rollback
         # still restores the manual value.
         lv = prof.levels.get(skill) if config.ROSTER_USE_LEVELS else None
@@ -604,9 +604,14 @@ def _merged_entry(
         if owned is not None:
             seen = (profiles_model.tool_value(tool_item, tool_enhance)
                     if tags["tool"] == ROSTER else None)
-            # Strictly better only: on a tie the roster's (public) name stays published.
-            if seen is None or profiles_model.tool_value(*owned) > seen:
+            mine = profiles_model.tool_value(*owned)
+            if seen is None or mine > seen:
                 (tool_item, tool_enhance), tags["tool"] = owned, PROFILES
+            elif mine == seen:
+                # A tie is CONFIRMED by the profile (tagged profiles), but the roster
+                # already made the name public, so trials.py keeps publishing it.
+                tags["tool"] = PROFILES
+                member_provenance[f"{skill}.tool_public"] = ROSTER
         if prof.gear:
             top = top or any(
                 h in prof.gear
