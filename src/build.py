@@ -631,7 +631,7 @@ def _tool_badge(entry: dict) -> str:
             f'which the model does not carry; priced from the manual checkbox">'
             f'?</span>'
         )
-    if source == "profiles":
+    if source == "profiles" and not item:
         # The name stays private (only the encrypted SCLIRoster page shows it).
         return ('<span class="badge tool on" title="Tool from their uploaded '
                 'profile">&#9733;</span>')
@@ -641,7 +641,9 @@ def _tool_badge(entry: dict) -> str:
         label = tier if enh is None else f"{tier}&nbsp;+{enh}"
         return (
             f'<span class="badge tool on" title="{html.escape(item)}'
-            f'{"" if enh is None else f" +{enh}"} (roster)">{label}</span>'
+            f'{"" if enh is None else f" +{enh}"} '
+            f'({"roster, confirmed by their profile" if source == "profiles" else "roster"})">'
+            f'{label}</span>'
         )
     return _badge(entry.get("tool", False), "Tool")
 
