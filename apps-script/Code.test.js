@@ -60,6 +60,7 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
         getMaxRows: () => maxRows,
         insertRowsAfter: (_after, n) => { maxRows += n; },
         getMaxColumns: () => maxCols,
+        insertColumnsAfter: (_after, n) => { maxCols += n; },
         getLastRow: () => {
             let last = 0;
             g.forEach((row, i) => { if (row.some(c => String(c ?? "") !== "")) last = i + 1; });
@@ -725,4 +726,34 @@ test("a rewrite that throws mid-write still releases the lock", (t) => {
     const res = post(ctx, { secret: SECRET, tab: "SC Buildings", header: B_HEADER, rows: buildingsRows(4) });
     assert.strictEqual(res.ok, false);
     assert.strictEqual(ctx._lockCalls.released, 1);
+});
+
+test("a sign-up block wider and taller than the sheet grows it before the clear, so the write cannot throw", (t) => {
+    const header = ["User", ...Array.from({ length: 29 }, (_, i) => `Trial ${i}`)];
+    const rows = Array.from({ length: 12 }, (_, i) => [`m${i}`, ...new Array(29).fill("TRUE")]);
+    const sh = makeSheet([["User", "Milking"], ["old", "TRUE"]], { maxRows: 5, maxCols: 26 });
+    const ctx = load({ "SC Trial Signup": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Trial Signup", header, rows });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh._grid[12][0], "m11");
+    assert.strictEqual(sh._grid[1][29], true);
+});
+
+test("an empty sign-up roster is refused and the tab is untouched", (t) => {
+    const before = [S_HEADER.slice(), S_ROWS[0].slice()];
+    const sh = makeSheet(before);
+    const ctx = load({ "SC Trial Signup": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Trial Signup", header: S_HEADER, rows: [] });
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /empty sign-up/);
+    assert.deepStrictEqual(sh._grid[1].slice(0, 7), S_ROWS[0]);
+});
+
+test("formula-looking strings are defused; numbers and numeric strings are not", (t) => {
+    const sh = makeSheet([], { maxCols: 26 });
+    const ctx = load({ "SC Combat Teams": sh });
+    const rows = [["=HYPERLINK(\"x\")", "@evil", "+1+1", "-3", "-2.5", -7, "ok"]];
+    const res = post(ctx, { secret: SECRET, tab: "SC Combat Teams", header: C_HEADER, rows });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.deepStrictEqual(sh._grid[1].slice(0, 7), ["'=HYPERLINK(\"x\")", "'@evil", "'+1+1", "-3", "-2.5", -7, "ok"]);
 });

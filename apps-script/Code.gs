@@ -181,6 +181,11 @@ function doPost(e) {
     if (!Array.isArray(rows)) {
       return json_({ ok: false, error: 'rows must be an array' });
     }
+    // A sign-up post carries the WHOLE roster, so zero rows would rewrite the tab
+    // down to its header. No real roster is empty; refuse rather than wipe.
+    if (format === 'signup' && rows.length === 0) {
+      return json_({ ok: false, error: 'refusing an empty sign-up roster: rows is []' });
+    }
     for (var i = 0; i < rows.length; i++) {
       if (!Array.isArray(rows[i]) || rows[i].length !== nCols) {
         return json_({ ok: false, error: 'row ' + i + ' width ' + (rows[i] || []).length + ' != header ' + nCols });
@@ -210,7 +215,7 @@ function doPost(e) {
     }
     for (var r = 0; r < rows.length; r++) {
       var src = rows[r];
-      var line = [String(src[0])];               // User / Building / Member name (text)
+      var line = [cell_(String(src[0]))];       // User / Building / Member name (text)
       for (var c = 1; c < nCols; c++) {
         line.push(format === 'signup' && c !== idCol ? truthy_(src[c]) : cell_(src[c]));
       }
@@ -225,6 +230,10 @@ function doPost(e) {
     }
     try {
       var newRows = out.length;                      // header + members
+      // Grow BEFORE the clear: a setValues beyond the sheet throws, and a throw
+      // after clearContent() would leave the tab wiped.
+      if (sh.getMaxColumns() < nCols) sh.insertColumnsAfter(sh.getMaxColumns(), nCols - sh.getMaxColumns());
+      if (sh.getMaxRows() < newRows) sh.insertRowsAfter(sh.getMaxRows(), newRows - sh.getMaxRows());
       var maxRows = sh.getMaxRows();
       var clearRows = Math.min(Math.max(sh.getLastRow(), newRows, 1), maxRows);
 
@@ -287,11 +296,18 @@ function formatOf_(header) {
 
 // Non-sign-up block cells (levels, combat teams): numbers stay numbers, so
 // Level and Guild Id are real numeric cells; null/undefined become blank, and
-// everything else is written as text.
+// everything else is written as text, defused by noFormula_.
 function cell_(v) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'number') return v;
-  return String(v);
+  return noFormula_(String(v));
+}
+
+// A string Sheets would run as a formula (= + - @ first) gets a leading
+// apostrophe, which Sheets stores as "show as text" and never exports. A
+// numeric string such as "-3" is left alone so it still lands as a number.
+function noFormula_(s) {
+  return /^[=+\-@]/.test(s) && !/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(s) ? "'" + s : s;
 }
 
 // UPSERT on (Character Id, Name) — NEVER a whole-tab rewrite. For an existing key,
