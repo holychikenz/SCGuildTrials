@@ -100,7 +100,8 @@ def test_parse_signup_alchemy_is_bell_farming_column():
     assert picks["Al"] == {"Bell Farming"}
     # And the planner maps the Alchemy trial onto that column.
     assert signup._sheet_column_for("Alchemy") == "Bell Farming"
-    assert signup._locked_skill_of({"Bell Farming"}, ["Alchemy"]) == "Alchemy"
+    p = signup.plan([_member("Al")], picks, 0, [], draw=["Alchemy"], cap=3)
+    assert [(r.name, r.status) for r in p.trials[0].roster] == [("Al", "assigned")]
 
 
 def test_parse_signup_cheesesmithing_alias():
@@ -892,6 +893,26 @@ def test_signup_conflict_is_recorded_and_resolved_to_first_choice():
     # Locked into the first drawn choice (Foraging).
     forg = next(t for t in p.trials if t.skill == "Foraging")
     assert any(r.name == "Dupe" and r.status == "assigned" for r in forg.roster)
+
+
+def test_swap_advice_can_trade_a_full_party_seat_with_the_bench():
+    weak = [_member(f"w{i}", {"Foraging": 60}) for i in range(3)]
+    strong = [_member(f"s{i}", {"Foraging": 140}) for i in range(3)]
+    picks = {m.name: {"Foraging"} for m in weak}
+    p = signup.plan(weak + strong, picks, optimal_total=0, optimal_summary=[],
+                    draw=["Foraging"], cap=3)
+    assert len(p.swaps) == 3
+    assert all("currently benched" in s.note and s.partner.startswith("s")
+               for s in p.swaps)
+
+
+def test_more_volunteers_than_the_cap_is_a_loud_conflict():
+    members = [_member(f"v{i:02d}") for i in range(25)]
+    picks = {m.name: {"Foraging"} for m in members}
+    p = signup.plan(
+        members, picks, optimal_total=0, optimal_summary=[], draw=["Foraging"], cap=20
+    )
+    assert any("25 volunteers" in c and "cap is 20" in c for c in p.conflicts)
 
 
 # ---------------------------------------------------------------------------

@@ -2402,6 +2402,8 @@ def _render_shrines_section(week: dict) -> str:
             note = _LOOT_OR_XP_BUFFS.get(u.get("buff"), "nobody is at the cap")
             if u.get("at_cap"):
                 note = "at the level cap"
+            if not u.get("modelled", True):
+                note = "not modelled (ROSTER_USE_SHRINES is off)"
             rows.append(
                 "<tr class=dim>"
                 f"<th>{html.escape(u.get('name') or u.get('shrine') or '?')}</th>"
@@ -2452,6 +2454,8 @@ def _render_shrines_section(week: dict) -> str:
         cls = "" if gain > 0 else " class=dim"
         if gain > 0:
             worth = f"+{_cp(gain)}"
+        elif not a.get("modelled", True):
+            worth = "not modelled (ROSTER_USE_SHRINES is off)"
         elif a.get("buff") in _LOOT_OR_XP_BUFFS:
             # The currency check comes FIRST. Rarity's cap is 0 on both guilds, so
             # "nobody is below it" is true and would otherwise be printed instead of
@@ -4197,8 +4201,9 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     if p["conflicts"]:
         items = "".join(f"<li>{html.escape(c)}</li>" for c in p["conflicts"])
         conflicts_html = (
-            f'<p class="meta warn-text">Sign-up conflicts (multiple ticks): '
-            f'resolved to the first drawn choice.</p><ul>{items}</ul>'
+            f'<p class="meta warn-text">Sign-up conflicts (multiple ticks resolve '
+            f'to the first drawn choice; an over-cap party must shed volunteers):'
+            f'</p><ul>{items}</ul>'
         )
 
     bench_html = (
@@ -6144,6 +6149,9 @@ def _write_guild(
                 + "; ".join(plan["normalized_matches"]),
                 file=sys.stderr,
             )
+        for c in plan["conflicts"]:
+            if "party cap" in c:
+                print(f"WARNING ({site.key}): {c}", file=sys.stderr)
         if plan["unmatched_signups"]:
             print(
                 f"WARNING ({site.key}): {len(plan['unmatched_signups'])} sign-up "

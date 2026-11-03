@@ -50,7 +50,7 @@ from __future__ import annotations
 import contextlib
 import math
 import random
-from typing import Callable, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 from . import config
 from .reader import MemberRow
@@ -246,7 +246,9 @@ class AssignmentScorer:
         self.sim_calls += 1
         # One preparation shared by the race and its pricing (see _prepare_party).
         prepared = _prepare_party(party, skill)
-        result = simulate_race(party, skill, self.target_scale, prepared=prepared)
+        result = simulate_race(
+            party, skill, self.target_scale, prepared=prepared, roster=False
+        )
         value = (
             _objective_value(party, skill, result, prepared),
             time_slack_fraction(result),
@@ -328,7 +330,7 @@ class AssignmentScorer:
         if cached is not _MISSING:
             return cached
         party = [self.members[i] for i in key[1]]
-        result = simulate_race(party, skill, self.target_scale)
+        result = simulate_race(party, skill, self.target_scale, roster=False)
         value = clear_probability(party, skill, result)
         self._prob_cache[key] = value
         return value
@@ -632,41 +634,120 @@ def _refine_genetic(
 
 
 # ---------------------------------------------------------------------------
-# Incremental move deltas (shared by refiners)
+# The local-search neighbourhood (shared by every refiner and the sign-up passes)
 # ---------------------------------------------------------------------------
-def _relocate_delta(
-    scorer: AssignmentScorer, parties: Parties, m: int, a: int, b: int
-) -> float:
-    """Δcredit-points of moving member ``m`` from slot ``a`` to slot ``b``.
-
-    ``a`` or ``b`` may be ``-1`` (the bench), which scores 0. Only the two
-    touched parties are (re)scored — both via the cache.
-    """
-    before = (scorer.party_points(a, parties[a]) if a >= 0 else 0) + (
-        scorer.party_points(b, parties[b]) if b >= 0 else 0
-    )
-    after = (
-        scorer.party_points(a, parties[a] - {m}) if a >= 0 else 0
-    ) + (scorer.party_points(b, parties[b] | {m}) if b >= 0 else 0)
-    return after - before
+Move = tuple  # ("R", m, a, b) | ("S", m1, a, m2, b); slot -1 is the bench
 
 
-def _swap_delta(
-    scorer: AssignmentScorer,
+def _moves(
     parties: Parties,
-    m1: int,
-    a: int,
-    m2: int,
-    b: int,
+    scorer: AssignmentScorer,
+    movable: Optional[Iterable[int]] = None,
+) -> Iterator[tuple[Move, list[tuple[int, set[int]]]]]:
+    """Every relocate and swap move from ``parties``, in a fixed scan order.
+
+    Yields ``(move, changed)``, where ``changed`` lists the ``(slot, new_ids)`` the
+    move would produce (the bench is never scored, so it is never listed). Only
+    ``movable`` members (default: all) are moved. Three families, in this order:
+
+    * relocate one member, including to and from the bench, into a non-full party;
+    * swap two seated members of different parties;
+    * swap a seated member for a BENCHED one — the only single move that can bring a
+      better member into a FULL party (relocating them in is blocked by the cap).
+    """
+    S = len(scorer.skills)
+    cap = scorer.cap
+    if movable is None:
+        movable = range(len(scorer.members))
+    movable = list(movable)
+    assigned = {m: s for s in range(S) for m in parties[s]}
+
+    for m in movable:
+        a = assigned.get(m, -1)
+        for b in range(-1, S):
+            if b == a:
+                continue
+            if b >= 0 and (len(parties[b]) >= cap or not scorer.can_place(b, m)):
+                continue
+            changed = []
+            if a >= 0:
+                changed.append((a, parties[a] - {m}))
+            if b >= 0:
+                changed.append((b, parties[b] | {m}))
+            yield ("R", m, a, b), changed
+
+    seated = sorted((m, assigned[m]) for m in movable if m in assigned)
+    for i, (m1, a) in enumerate(seated):
+        for m2, b in seated[i + 1 :]:
+            if a == b or not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
+                continue
+            yield ("S", m1, a, m2, b), [
+                (a, (parties[a] - {m1}) | {m2}),
+                (b, (parties[b] - {m2}) | {m1}),
+            ]
+
+    benched = sorted(m for m in movable if m not in assigned)
+    for m1, a in seated:
+        for m2 in benched:
+            if scorer.can_place(a, m2):
+                yield ("S", m1, a, m2, -1), [(a, (parties[a] - {m1}) | {m2})]
+
+
+def _apply_move(parties: Parties, move: Move) -> None:
+    """Apply a :func:`_moves` move to ``parties`` in place."""
+    if move[0] == "R":
+        _, m, a, b = move
+        if a >= 0:
+            parties[a].discard(m)
+        if b >= 0:
+            parties[b].add(m)
+    else:
+        _, m1, a, m2, b = move
+        parties[a].discard(m1)
+        parties[a].add(m2)
+        if b >= 0:
+            parties[b].discard(m2)
+            parties[b].add(m1)
+
+
+def _points_delta(
+    scorer: AssignmentScorer, parties: Parties, changed: list[tuple[int, set[int]]]
 ) -> float:
-    """Δcredit-points of swapping ``m1`` (in slot ``a``) with ``m2`` (in slot ``b``)."""
-    before = scorer.party_points(a, parties[a]) + scorer.party_points(
-        b, parties[b]
-    )
-    new_a = (parties[a] - {m1}) | {m2}
-    new_b = (parties[b] - {m2}) | {m1}
-    after = scorer.party_points(a, new_a) + scorer.party_points(b, new_b)
+    """Δpoints of replacing the ``changed`` slots. Only those parties are (re)scored,
+    both via the cache; the bench scores 0."""
+    before = sum(scorer.party_points(s, parties[s]) for s, _ in changed)
+    after = sum(scorer.party_points(s, ids) for s, ids in changed)
     return after - before
+
+
+def _hill_climb(
+    parties: Parties,
+    scorer: AssignmentScorer,
+    on_move: Optional[Callable[[Move, float], None]] = None,
+) -> Parties:
+    """Best-improvement local search over :func:`_moves`, IN PLACE.
+
+    Deterministic: candidate moves are scanned in a fixed order and the first
+    strictly-best improving move is applied (``on_move(move, delta)`` is told of
+    each); iterates until no move helps or the iteration cap is hit.
+    """
+    for _ in range(config.OPT_HILLCLIMB_MAX_ITERS):
+        # Was 0: with an integer objective "strictly improving" was exact. The
+        # objective is continuous now, so a move must beat the incumbent by more than
+        # float noise (see config.OPT_POINTS_EPS and trials._prepare_member on why an
+        # ULP is not academic here).
+        best_delta = config.OPT_POINTS_EPS
+        best_move: Optional[Move] = None
+        for move, changed in _moves(parties, scorer):
+            delta = _points_delta(scorer, parties, changed)
+            if delta > best_delta:
+                best_delta, best_move = delta, move
+        if best_move is None:
+            break
+        _apply_move(parties, best_move)
+        if on_move is not None:
+            on_move(best_move, best_delta)
+    return parties
 
 
 # ---------------------------------------------------------------------------
@@ -675,72 +756,24 @@ def _swap_delta(
 def _refine_hill_climb(
     parties: Parties, scorer: AssignmentScorer, rng: random.Random
 ) -> Parties:
-    """Best-improvement local search over relocate + swap moves.
+    """:func:`_hill_climb` on a copy. No randomness (the ``rng`` is accepted only
+    for a uniform strategy signature)."""
+    return _hill_climb([set(p) for p in parties], scorer)
 
-    Deterministic: candidate moves are scanned in a fixed order and the first
-    strictly-best improving move is applied; iterates until no move helps or the
-    iteration cap is hit. No randomness (the ``rng`` is accepted only for a
-    uniform strategy signature).
-    """
-    S = len(scorer.skills)
-    cap = scorer.cap
-    n = len(scorer.members)
-    parties = [set(p) for p in parties]
 
-    for _ in range(config.OPT_HILLCLIMB_MAX_ITERS):
-        assigned = {m: s for s in range(S) for m in parties[s]}
-        # Was 0: with an integer objective "strictly improving" was exact. The
-        # objective is continuous now, so a move must beat the incumbent by more than
-        # float noise (see config.OPT_POINTS_EPS and trials._prepare_member on why an
-        # ULP is not academic here).
-        best_delta = config.OPT_POINTS_EPS
-        best_move: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
+def _relocate_delta(
+    scorer: AssignmentScorer, parties: Parties, m: int, a: int, b: int
+) -> float:
+    """Δpoints of moving ``m`` from slot ``a`` to ``b`` (-1 = bench). SA only."""
+    changed = ([(a, parties[a] - {m})] if a >= 0 else []) + (
+        [(b, parties[b] | {m})] if b >= 0 else [])
+    return _points_delta(scorer, parties, changed)
 
-        # Relocations (including to/from the bench).
-        for m in range(n):
-            a = assigned.get(m, -1)
-            for b in range(-1, S):
-                if b == a:
-                    continue
-                if b >= 0 and (
-                    len(parties[b]) >= cap or not scorer.can_place(b, m)
-                ):
-                    continue
-                delta = _relocate_delta(scorer, parties, m, a, b)
-                if delta > best_delta:
-                    best_delta = delta
-                    best_move = ("R", m, a, b)
 
-        # Swaps between members of two different slots.
-        assigned_items = sorted(assigned.items())
-        for i in range(len(assigned_items)):
-            m1, a = assigned_items[i]
-            for j in range(i + 1, len(assigned_items)):
-                m2, b = assigned_items[j]
-                if a == b:
-                    continue
-                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
-                    continue
-                delta = _swap_delta(scorer, parties, m1, a, m2, b)
-                if delta > best_delta:
-                    best_delta = delta
-                    best_move = ("S", m1, a, m2, b)
-
-        if best_move is None:
-            break
-        if best_move[0] == "R":
-            _, m, a, b = best_move
-            if a >= 0:
-                parties[a].discard(m)
-            if b >= 0:
-                parties[b].add(m)
-        else:
-            _, m1, a, m2, b = best_move
-            parties[a].discard(m1)
-            parties[a].add(m2)
-            parties[b].discard(m2)
-            parties[b].add(m1)
-    return parties
+def _swap_delta(scorer, parties, m1, a, m2, b) -> float:
+    """Δpoints of swapping ``m1`` (slot ``a``) with ``m2`` (slot ``b``). SA only."""
+    return _points_delta(scorer, parties, [
+        (a, (parties[a] - {m1}) | {m2}), (b, (parties[b] - {m2}) | {m1})])
 
 
 def _anneal_once(
@@ -1026,23 +1059,41 @@ def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
     :func:`_construct_marginal_greedy`), until every remaining benched member would
     cost more than the subsidy allows. Cache-backed, so it stays cheap.
     """
-    parties = [set(p) for p in parties]
-    S = len(scorer.skills)
-    cap = scorer.cap
     assigned: set[int] = set()
     for p in parties:
         assigned |= p
     benched = set(range(len(scorer.members))) - assigned
+    return _fill_open_seats(parties, scorer, benched)[0]
 
-    while benched:
+
+def _fill_open_seats(
+    parties: Parties, scorer: AssignmentScorer, free_pool: set[int]
+) -> tuple[Parties, dict[int, tuple[int, float]]]:
+    """Seat ``free_pool`` members into non-full parties, for at most a stated cost.
+
+    Repeatedly seats the (member, slot) with the greatest true Δpoints, lowest
+    member then lowest slot breaking ties, until every remaining member would cost
+    more than ``config.TRIAL_FILL_MAX_POINT_COST``. Shared by :func:`_fill_bench`
+    (the free pool is the bench) and ``signup.plan`` (the uncommitted members).
+
+    Returns ``(parties, placed)``: a copy, and ``member_idx -> (slot_idx, gain)`` for
+    each seat filled. ``gain`` may be negative, up to the subsidy.
+    """
+    parties = [set(p) for p in parties]
+    remaining = set(free_pool)
+    placed: dict[int, tuple[int, float]] = {}
+    S = len(scorer.skills)
+    cap = scorer.cap
+
+    while remaining:
         best: Optional[tuple[float, int, int]] = None  # (gain, member, slot)
         for s in range(S):
             if len(parties[s]) >= cap:
                 continue
             base = scorer.party_points(s, parties[s])
-            for m in sorted(benched):
+            for m in sorted(remaining):
                 if not scorer.can_place(s, m):
-                    continue
+                    continue  # below this trial's minimum sign-up level
                 gain = scorer.party_points(s, parties[s] | {m}) - base
                 if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
                     best = (gain, m, s)
@@ -1052,10 +1103,11 @@ def _fill_bench(parties: Parties, scorer: AssignmentScorer) -> Parties:
         floor = -config.TRIAL_FILL_MAX_POINT_COST - config.OPT_POINTS_EPS
         if best is None or best[0] < floor:
             break
-        _, m, s = best
+        gain, m, s = best
         parties[s].add(m)
-        benched.discard(m)
-    return parties
+        remaining.discard(m)
+        placed[m] = (s, gain)
+    return parties, placed
 
 
 # ---------------------------------------------------------------------------
@@ -1124,7 +1176,7 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
       would quietly degenerate into a duplicate of the hill-climb.
 
     THE PASS, RE-FOUNDED. Best-improvement local search over the SAME neighbourhood as
-    :func:`_refine_hill_climb` (relocate, including to/from the bench, plus swap). A
+    :func:`_refine_hill_climb` (:func:`_moves`: relocate, swap, bench swap). A
     move is ADMISSIBLE iff both hold:
 
     * the total falls by at most ``config.OPT_SLACK_POINTS_TOLERANCE`` (0.0 by default,
@@ -1157,8 +1209,6 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
     moves are scanned in a fixed order and ties fall to the lowest indices.
     """
     S = len(scorer.skills)
-    cap = scorer.cap
-    n = len(scorer.members)
     parties = [set(p) for p in parties]
 
     for _ in range(config.OPT_SLACK_MAX_ITERS):
@@ -1174,7 +1224,6 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
             - config.OPT_SLACK_POINTS_TOLERANCE
             - config.OPT_POINTS_EPS
         )
-        assigned = {m: s for s in range(S) for m in parties[s]}
 
         def state_with(*changed: tuple[int, set]) -> tuple[float, float, float]:
             """``(total, min_banking_slack, sum_slack)`` after replacing those slots."""
@@ -1199,62 +1248,14 @@ def _refine_slack(parties: Parties, scorer: AssignmentScorer) -> Parties:
             return (min_slack, sum_slack, total)
 
         best_key: Optional[tuple] = None
-        best_move: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
-
-        # Relocations (including to and from the bench).
-        for m in range(n):
-            a = assigned.get(m, -1)
-            for b in range(-1, S):
-                if b == a:
-                    continue
-                if b >= 0 and (
-                    len(parties[b]) >= cap or not scorer.can_place(b, m)
-                ):
-                    continue
-                changed = []
-                if a >= 0:
-                    changed.append((a, parties[a] - {m}))
-                if b >= 0:
-                    changed.append((b, parties[b] | {m}))
-                key = rank(state_with(*changed))
-                if key is not None and (best_key is None or key > best_key):
-                    best_key = key
-                    best_move = ("R", m, a, b)
-
-        # Swaps between members of two different slots.
-        assigned_items = sorted(assigned.items())
-        for i in range(len(assigned_items)):
-            m1, a = assigned_items[i]
-            for j in range(i + 1, len(assigned_items)):
-                m2, b = assigned_items[j]
-                if a == b:
-                    continue
-                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
-                    continue
-                key = rank(
-                    state_with(
-                        (a, (parties[a] - {m1}) | {m2}),
-                        (b, (parties[b] - {m2}) | {m1}),
-                    )
-                )
-                if key is not None and (best_key is None or key > best_key):
-                    best_key = key
-                    best_move = ("S", m1, a, m2, b)
-
+        best_move: Optional[Move] = None
+        for move, changed in _moves(parties, scorer):
+            key = rank(state_with(*changed))
+            if key is not None and (best_key is None or key > best_key):
+                best_key, best_move = key, move
         if best_move is None:
             break
-        if best_move[0] == "R":
-            _, m, a, b = best_move
-            if a >= 0:
-                parties[a].discard(m)
-            if b >= 0:
-                parties[b].add(m)
-        else:
-            _, m1, a, m2, b = best_move
-            parties[a].discard(m1)
-            parties[a].add(m2)
-            parties[b].discard(m2)
-            parties[b].add(m1)
+        _apply_move(parties, best_move)
     return parties
 
 

@@ -341,6 +341,18 @@ def test_no_free_rider_left_behind(strategy):
             )
 
 
+def test_hill_climb_swaps_a_benched_member_into_a_full_party():
+    """A full party can only improve by trading a seat with the bench."""
+    from tests.golden_fixture import golden_members
+
+    ms = golden_members()
+    lv = lambda i: ms[i].skills["Milking"].level  # noqa: E731
+    order = sorted(range(len(ms)), key=lv)
+    scorer = optimizer.AssignmentScorer(ms, ["Milking"], 1.0, 3)
+    out = optimizer._refine_hill_climb([set(order[:3])], scorer, None)
+    assert out == [set(order[-3:])]
+
+
 def test_fill_bench_never_lowers_total_and_only_adds():
     # Start from a deliberately under-filled assignment (everyone benched) and
     # let the courtesy pass seat people. It must never lower the total and must

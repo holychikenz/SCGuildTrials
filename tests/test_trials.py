@@ -1105,9 +1105,6 @@ def test_credit_points_reduce_to_the_step_function_when_the_rate_is_zero(monkeyp
     for n in range(1, 21):
         r = trials.simulate_race(_ramp_party(n=n), "Foraging")
         assert r.credit_points == float(r.points)
-        assert trials.points_for_result(r) == float(
-            trials.points_for_tier(r.tier_reached)
-        )
 
 
 def test_credit_points_are_monotone_in_party_throughput():
@@ -2421,6 +2418,28 @@ def test_probe_shrine_adoption_counts_members_below_the_cap():
     assert full.levels_unbought == 0
     assert full.points_gained == 0.0
     assert full.credit_points_at_cap is None
+
+
+def test_shrine_probes_price_on_the_same_measure_as_the_building_probe(monkeypatch):
+    """The building probe prices on E[points]; the shrine probes must too, or the
+    upgrade table ranks two currencies against each other."""
+    parties = _probe_party({"force": 4, "tempo": 4})
+    u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    want = 0.0
+    for sk in _PROBE_SKILLS:
+        r = trials.simulate_race(parties[sk], sk, config.TARGET_SCALE)
+        want += trials.expected_credit_points(parties[sk], sk, r)
+    assert u.credit_points_now == want
+
+
+def test_shrine_probes_say_not_modelled_when_member_shrines_are_off(monkeypatch):
+    monkeypatch.setattr(config, "ROSTER_USE_SHRINES", False)
+    parties = _probe_party({"force": 4, "tempo": 4})
+    u = trials.probe_shrine_upgrade(parties, _PROBE_SKILLS, "force", caps=_CAPS)
+    a = trials.probe_shrine_adoption(
+        _probe_party({"force": 1}), _PROBE_SKILLS, "force", caps=_CAPS)
+    assert u.modelled is False and u.credit_points_after is None
+    assert a.modelled is False and a.credit_points_at_cap is None
 
 
 def test_adoption_beats_the_cap_raise_on_a_party_below_the_cap():

@@ -1641,8 +1641,12 @@ def simulate_race(
     target_scale: Optional[float] = None,
     building_levels: Optional[int] = None,
     prepared: Optional[list] = None,
+    roster: bool = True,
 ) -> TrialResult:
     """Simulate the 1-hour cumulative tier race for ``party`` in ``skill``.
+
+    ``roster=False`` skips building the published per-member roster (left empty):
+    the optimiser's oracle reads only the score, slack and tier.
 
     The party races upward from tier 1, spending the shared
     ``TRIAL_TIME_BUDGET_SECONDS`` budget; the recorded outcome is the highest
@@ -1756,9 +1760,9 @@ def simulate_race(
     final_tier = tier_reached if tier_reached >= 1 else 1
     # One member_bonuses per member (it used to be called four times each), and
     # the two reported rates reuse the prepared factors.
-    roster = []
+    entries = []
     sheet_col = _sheet_column(skill)
-    for m, p in zip(party, each):
+    for m, p in zip(party, each) if roster else ():
         b = member_bonuses(m, skill, building_levels, shrine)
         if p is None:
             rate_tier1 = rate_final = 0.0
@@ -1783,7 +1787,7 @@ def simulate_race(
         named = entry is not None and (
             tool_source != "profiles"
             or m.provenance.get(f"{sheet_col}.tool_public") == "roster")
-        roster.append(
+        entries.append(
             RosterEntry(
                 name=m.name,
                 level=b.level,
@@ -1807,7 +1811,7 @@ def simulate_race(
         party_size=n,
         tier_reached=tier_reached,
         points=points_for_tier(tier_reached),
-        roster=roster,
+        roster=entries,
         timeline=timeline,
         partial_fraction=partial_fraction,
         credit_points=points_for_credit(
@@ -2152,6 +2156,9 @@ class ShrineUpgrade:
     points_gained_immediate: float     # 0.0. Always. By construction.
     points_gained_at_full_adoption: float   # summed across the week's drawn trials
     weeks_to_return: Optional[float]   # cost / gain — every week, not every 2.5
+    # False when config.ROSTER_USE_SHRINES is off: the race then reads the guild-wide
+    # levels, not the per-member ones this probe raises, so it cannot price anything.
+    modelled: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -2193,6 +2200,7 @@ class ShrineAdoption:
     credit_points_at_cap: Optional[float]   # every member moved UP TO the cap
     points_gained: float
     cost_to_guild: int = 0   # zero, and the reason this probe leads the section
+    modelled: bool = True    # as ShrineUpgrade.modelled
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -2204,7 +2212,8 @@ def _week_credit(
     target_scale: float,
     remap: Optional[Callable[[MemberRow], MemberRow]] = None,
 ) -> float:
-    """The week's summed credit points, optionally over rewritten members.
+    """The week's summed objective (expected points, else credit points), optionally
+    over rewritten members.
 
     ``remap`` returns a REPLACEMENT MemberRow per member, which is how both shrine
     probes price a hypothetical: they hand ``simulate_race`` members whose
@@ -2221,14 +2230,16 @@ def _week_credit(
     levels, houses, checkboxes and roster tools every other term reads are the SAME
     objects and the arithmetic is bit-identical outside the shrine channel.
     """
-    if remap is None:
-        return sum(
-            simulate_race(parties[s], s, target_scale).credit_points for s in skills
-        )
-    return sum(
-        simulate_race([remap(m) for m in parties[s]], s, target_scale).credit_points
-        for s in skills
-    )
+    # The optimiser's own currency (E[points] where the risk model is on), so these
+    # gains compare with probe_building_upgrade's, which prices on the expectation.
+    from .optimizer import objective_of  # optimizer imports this module
+
+    total = 0.0
+    for s in skills:
+        party = parties[s] if remap is None else [remap(m) for m in parties[s]]
+        r = simulate_race(party, s, target_scale)
+        total += objective_of(r.credit_points, expected_credit_points(party, s, r))
+    return total
 
 
 def _seated(parties: dict[str, list[MemberRow]], skills: list[str]):
@@ -2310,7 +2321,8 @@ def probe_shrine_upgrade(
     after: Optional[float] = None
     gained = 0.0
     cost = None if at_cap else guild_shrine_upgrade_cost(from_level + 1)
-    if channel is not None and not at_cap:
+    modelled = config.ROSTER_USE_SHRINES
+    if channel is not None and not at_cap and modelled:
         after = _week_credit(parties, skills, target_scale, raise_those_at_the_cap)
         gained = after - now
 
@@ -2334,6 +2346,7 @@ def probe_shrine_upgrade(
         points_gained_at_full_adoption=gained,
         # weeks_between_draws=1.0: a shrine pays every week, in every trial.
         weeks_to_return=upgrade_payback_weeks(cost, gained, 1.0),
+        modelled=modelled,
     )
 
 
@@ -2378,7 +2391,8 @@ def probe_shrine_adoption(
     now = _week_credit(parties, skills, target_scale)
     at_cap: Optional[float] = None
     gained = 0.0
-    if channel is not None and below:
+    modelled = config.ROSTER_USE_SHRINES
+    if channel is not None and below and modelled:
         at_cap = _week_credit(parties, skills, target_scale, take_it_to_the_cap)
         gained = at_cap - now
 
@@ -2394,6 +2408,7 @@ def probe_shrine_adoption(
         credit_points_now=now,
         credit_points_at_cap=at_cap,
         points_gained=gained,
+        modelled=modelled,
     )
 
 

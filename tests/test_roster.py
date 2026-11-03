@@ -437,20 +437,22 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
         assert adopt["levels_unbought"] == 0
         assert adopt["points_gained"] == 0.0
         assert adopt["credit_points_at_cap"] is None
+    # AUDIT 13 MOVED THE SHRINE PROBE'S CURRENCY from credit points to the objective
+    # (E[points]), so the building and shrine rows rank on one measure; the golden
+    # predates that. Like the building probe above, it is a probe of the race, not the
+    # race: assert it read the same race and found a gain where the golden did, then
+    # strip it.
     for got_u, exp_u in zip(
-        got["shrine_upgrades"], expected["shrine_upgrades"], strict=True
+        got.pop("shrine_upgrades"), expected.pop("shrine_upgrades"), strict=True
     ):
         assert got_u["shrine"] == exp_u["shrine"]
-        assert got_u.pop("points_gained_immediate") == 0.0
-        assert got_u.pop("members_at_cap") == seats
-        assert got_u.pop("members_seated") == seats
-        # THE LOAD-BEARING EQUALITY: the re-specified full-adoption gain reproduces
-        # the old points_gained EXACTLY, not approximately. It is computed a
-        # different way — per-member replacement rows rather than a temporary
-        # rebinding of config.GUILD_SHRINE_LEVELS — so this is what proves the new
-        # arithmetic did not re-associate anything.
-        assert got_u.pop("points_gained_at_full_adoption") == \
-            exp_u.pop("points_gained"), got_u["shrine"]
+        for key in ("from_level", "at_cap", "next_level_cost"):
+            assert got_u[key] == exp_u[key], (got_u["shrine"], key)
+        assert got_u["points_gained_immediate"] == 0.0
+        assert got_u["members_at_cap"] == got_u["members_seated"] == seats
+        assert got_u["modelled"] is True
+        assert (got_u["points_gained_at_full_adoption"] > 0) == \
+            (exp_u["points_gained"] > 0), got_u["shrine"]
 
     # LIBM IS NOT BIT-PORTABLE, AND ONE FIELD IS BUILT FROM IT.
     # Everything this golden exists to pin -- the parties the search chose, every
