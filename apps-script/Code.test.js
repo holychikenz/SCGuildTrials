@@ -265,9 +265,9 @@ test("a header naming neither format is refused before any tab is opened", (t) =
 
 test("REGRESSION — a sign-up block still writes, ticks coerced to native booleans", (t) => {
     const sh = makeSheet([], { maxCols: 26 });
-    const ctx = load({ "chikenz-test": sh });
+    const ctx = load({ "SC Trial Signup": sh });
 
-    const res = post(ctx, { secret: SECRET, tab: "chikenz-test", header: S_HEADER, rows: S_ROWS });
+    const res = post(ctx, { secret: SECRET, tab: "SC Trial Signup", header: S_HEADER, rows: S_ROWS });
 
     assert.strictEqual(res.ok, true, res.error);
     assert.strictEqual(res.format, "signup");
@@ -294,14 +294,14 @@ test("REGRESSION — each guild's real sign-up tab still writes", (t) => {
 });
 
 test("REGRESSION — a truncated header and a bad row width are still refused", (t) => {
-    const ctx = load({ "chikenz-test": makeSheet() });
+    const ctx = load({ "SC Trial Signup": makeSheet() });
 
-    const short = post(ctx, { secret: SECRET, tab: "chikenz-test", header: ["User", "Milking"], rows: [] });
+    const short = post(ctx, { secret: SECRET, tab: "SC Trial Signup", header: ["User", "Milking"], rows: [] });
     assert.strictEqual(short.ok, false);
     assert.match(short.error, /bad header: need at least 3 columns/);
 
     const narrow = post(ctx, {
-        secret: SECRET, tab: "chikenz-test", header: S_HEADER, rows: [["Patbowl", "TRUE"]],
+        secret: SECRET, tab: "SC Trial Signup", header: S_HEADER, rows: [["Patbowl", "TRUE"]],
     });
     assert.strictEqual(narrow.ok, false);
     assert.match(narrow.error, /width 2 != header 7/);
@@ -316,25 +316,24 @@ test("an unknown tab is refused before the format is even considered", (t) => {
     assert.match(res.error, /tab not allowed: Nope/);
 });
 
-test("doGet lists exactly the eleven real tabs, with their formats", (t) => {
+test("doGet lists exactly the ten real tabs, with their formats", (t) => {
     const ctx = load({});
     const res = JSON.parse(ctx.doGet()._text);
 
     assert.strictEqual(res.ok, true);
     assert.strictEqual(res.service, "guild-signup-sync");
-    assert.strictEqual(res.allowedTabs.length, 11,
-        "eleven tabs: three sign-up, two buildings, two combat, two building value, " +
+    assert.strictEqual(res.allowedTabs.length, 10,
+        "ten tabs: two sign-up, two buildings, two combat, two building value, " +
         "two name history — there is NO buildings or combat test tab");
     assert.deepStrictEqual(res.allowedTabs.slice().sort(), [
         "LI Building Value", "LI Buildings", "LI Combat Teams", "LI Name History",
         "LI Trial Signup", "SC Building Value", "SC Buildings", "SC Combat Teams",
-        "SC Name History", "SC Trial Signup", "chikenz-test",
+        "SC Name History", "SC Trial Signup",
     ]);
     // doGet is the deployment's own health check: opening the /exec URL in a
     // browser is how the operator confirms a re-deploy actually took, so this
     // map is a shipped contract, not an internal detail.
     assert.deepStrictEqual(res.tabFormats, {
-        "chikenz-test": "signup",
         "SC Trial Signup": "signup",
         "LI Trial Signup": "signup",
         "SC Buildings": "buildings",

@@ -60,7 +60,6 @@
  *      "Apps Script /exec URL" setting.
  *   5. Create the tabs BY HAND. doPost never CREATES a tab — it only writes an
  *      existing one, and only one named in TAB_FORMAT. You need:
- *         "chikenz-test"     the sign-up test tab (a duplicate of a sign-up tab)
  *         "SC Trial Signup"  \ each guild's real sign-up tab
  *         "LI Trial Signup"  /
  *         "SC Buildings"     \ each guild's building/shrine levels — empty is
@@ -104,7 +103,6 @@ var SHARED_SECRET = 'PASTE_A_LONG_RANDOM_SECRET_HERE';
 //   'name_history' header[0] = "Character Id"  (id, name) pairs ever seen (upsert)
 //   "SC …" — Survey Corps (guild id 4);  "LI …" — Lactose lntolerance (guild id 240)
 var TAB_FORMAT = {
-  'chikenz-test':    'signup',
   'SC Trial Signup': 'signup',
   'LI Trial Signup': 'signup',
   'SC Buildings':    'buildings',

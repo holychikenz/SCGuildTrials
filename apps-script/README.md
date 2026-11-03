@@ -13,8 +13,8 @@ Game tab (Tampermonkey: guild-signup-sync)
    ▼  POST (GM_xmlhttpRequest, shared-secret auth)
 script.google.com/macros/s/<id>/exec   ← Code.gs, runs as the sheet OWNER
    ▼  writes (only tabs named in TAB_FORMAT, and only in that tab's format)
-"chikenz-test" (safety default)  →  per-guild tab by id:
-      Survey Corps        → "SC Trial Signup"
+per-guild tab, chosen by the roster's own guild id:
+      Survey Corps        → "SC Trial Signup"   (guild id 4)
       Lactose lntolerance → "LI Trial Signup"   (guild id 240)
 ```
 
@@ -99,7 +99,6 @@ The module lives in the sibling repo:
 1. **Create the tabs by hand.** The script refuses any tab not named in
    `TAB_FORMAT`, and **never creates one**. In the guild spreadsheet you need:
    - **`SC Trial Signup`**, **`LI Trial Signup`** — each guild's real sign-up tab
-   - **`chikenz-test`** — a duplicate of one of them, the sign-up test tab
    - **`SC Buildings`**, **`LI Buildings`** — each guild's building/shrine levels.
      Add these two as **empty** tabs; the first write fills them.
    - **`SC Combat Teams`**, **`LI Combat Teams`** — each guild's combat teams as
@@ -119,8 +118,8 @@ The module lives in the sibling repo:
 
    There is deliberately **no buildings or combat test tab**. Neither block can
    reach a sign-up tab (format mismatch), so neither has anything to clobber —
-   once **Also sync building/shrine levels** is on and **Force Buildings tab
-   (testing)** is left empty, writes go straight to the per-guild tab.
+   once **Sync building/shrine levels** is on, writes go straight to the
+   per-guild tab.
 2. **Add the script.** Spreadsheet → **Extensions → Apps Script**. Paste
    `Code.gs` in, replacing the default file.
 3. **Set the secret.** Change `SHARED_SECRET` to a long random string. Until you
@@ -130,20 +129,17 @@ The module lives in the sibling repo:
    - **Who has access:** *Anyone*
 
    Authorise when prompted, then copy the **deployment URL** (ends in `/exec`).
-5. **Configure the module** (in-game, MWIX command palette → *Guild sign-up
-   sync* → settings):
-   - **Apps Script /exec URL** → the URL from step 4
-   - **Shared secret** → the exact string from step 3
-   - **Force tab (testing)** → leave as `chikenz-test` for now
-   - **Guild id → tab map** → leave the default (`4 = SC Trial Signup`,
-     `240 = LI Trial Signup`). The tab is chosen from the roster's own guild id
-     (logged on every sync); add a line for any further guild.
-   - **Also sync building/shrine levels** → off for now; turn it on once the
-     two Buildings tabs exist. **Guild id → Buildings tab map** defaults to
-     `4 = SC Buildings`, `240 = LI Buildings`, and **Force Buildings tab
-     (testing)** is empty by default, so levels route by guild immediately.
+5. **Configure the userscript.** The URL and secret are hard-coded, not
+   settings: paste the URL from step 4 and the secret from step 3 into
+   `SIGNUP_SHEET_EXEC_URL` / `SIGNUP_SHEET_SECRET` in the `MWIX.sheets` block of
+   `cowstuff/tampermonkey/src/kernel/00-bootstrap.js`, then rebuild
+   (`uv run build.py` in `cowstuff/tampermonkey/`). Tabs are fixed by the
+   roster's own guild id (`4 → SC …`, `240 → LI …`); any other guild is refused,
+   so one guild can never overwrite another's tab. In game, enable *Guild sign-up
+   sync*, and turn on **Sync building/shrine levels** once the two Buildings tabs
+   exist.
 
-## Verify (before touching the real tab)
+## Verify
 
 - **Run the tests** (no dependencies; stubs `SpreadsheetApp`, so nothing touches
   the live sheet):
@@ -152,28 +148,17 @@ The module lives in the sibling repo:
   ```
 - **Health check:** open the `/exec` URL in a browser. You should see
   `{"ok":true,"service":"guild-signup-sync","allowedTabs":[…],"tabFormats":{…}}`.
-- **Dry run:** enable the module, turn on **Dry run** in settings, open
-  Guild ▸ Members, then click the module's **panel** button in the palette. It
-  logs the rows it *would* write to the console — no write happens.
-- **Real test write:** turn Dry run off, click the panel button. Watch the toast
-  (`✓ Wrote N members to 'chikenz-test'`), then eyeball the tab.
+- **First write:** open Guild ▸ Members, then click the module's **panel** button
+  (*Sync now*) in the palette. This writes the real tab — watch the toast, then
+  eyeball the tab.
 - **Round-trip through the reader** (proves the guild pipeline can parse what we
   wrote):
   ```bash
   cd ~/pie/farm/guild
   uv run python -c "from src.signup import fetch_signup_csv, parse_signup; \
-    print(parse_signup(fetch_signup_csv('chikenz-test')))"
+    print(parse_signup(fetch_signup_csv('SC Trial Signup')))"
   ```
   This should print `{member_name: {ticked skills}}` matching the game.
-
-## Going live
-
-Only after the round-trip looks right: **clear** the module's **Force tab
-(testing)** setting. Writes then route by the **roster's own guild id** via the
-**Guild id → tab map** (default `4 → SC Trial Signup`, `240 → LI Trial Signup`).
-Both real tabs are already in `TAB_FORMAT`, so there is no code change and no
-re-deploy. A roster from an **unmapped** guild is refused — so one guild can
-never overwrite another's tab.
 
 ## Re-deploying after an edit
 

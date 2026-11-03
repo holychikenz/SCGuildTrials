@@ -382,7 +382,7 @@ test("doGet identifies this endpoint distinctly from the sign-up one", (t) => {
     assert.ok(res.allowedTabs.includes("SC Roster"), "Survey Corps (id 4)");
     assert.ok(res.allowedTabs.includes("LI Roster"), "Lactose lntolerance (id 240)");
     // No sign-up tab may ever appear here.
-    for (const t2 of ["SC Trial Signup", "LI Trial Signup", "chikenz-test"]) {
+    for (const t2 of ["SC Trial Signup", "LI Trial Signup"]) {
         assert.ok(!res.allowedTabs.includes(t2), `${t2} must not be writable by this endpoint`);
     }
 });

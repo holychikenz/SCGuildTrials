@@ -108,12 +108,10 @@ a second time instead of updated.
 
 ### There is no scratch tab, deliberately
 
-The sign-up pipeline has `chikenz-test` because a sign-up write **clears the
-block and rewrites it**, over a tab `guild/src/signup.py` parses — rehearsing
-against a copy is plainly worth it there. This endpoint only ever **upserts**: a
+This endpoint only ever **upserts**: a
 mistaken write adds or updates rows and cannot wipe a tab, nothing downstream
-reads these tabs, and a wrong header is refused rather than written through. So
-**Dry run** is the rehearsal mechanism, and writes go straight to the real tab.
+reads these tabs, and a wrong header is refused rather than written through. Writes go
+straight to the real tab.
 
 The one thing to get right first time is the **column set**, because the first
 write bakes the header in and later writes with different column settings are
