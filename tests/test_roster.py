@@ -294,10 +294,10 @@ def test_combat_shrine_columns_are_ignored():
 
 
 # --- row termination --------------------------------------------------------
-def test_rows_stop_at_the_first_blank_name():
+def test_a_blank_name_mid_tab_is_skipped_not_the_end():
     text = _roster_csv([{"name": "A"}, {"name": "B"}, {"name": ""}, {"name": "C"}])
     parsed = roster.parse(text)
-    assert [r.name for r in parsed] == ["A", "B"]
+    assert [r.name for r in parsed] == ["A", "B", "C"]
 
 
 def test_short_rows_read_as_blank_rather_than_raising():

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -87,14 +88,16 @@ class GuildBuildingValue:
 
 
 def _to_float(raw: str) -> Optional[float]:
-    """A gviz numeric cell; blank -> None. Tolerates a thousands separator."""
+    """A gviz numeric cell; blank, NaN or Infinity -> None. Tolerates a thousands
+    separator."""
     raw = raw.strip().replace(",", "")
     if raw == "":
         return None
     try:
-        return float(raw)
+        f = float(raw)
     except ValueError:
         return None
+    return f if math.isfinite(f) else None
 
 
 def _read(raw: str, kind: str):

@@ -352,6 +352,12 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
         )
 
 
+def _no_constant(name: str):
+    """json.loads accepts NaN/Infinity, which json.dumps writes back out as invalid
+    JSON in trials.json; refuse them as malformed."""
+    raise ValueError(f"non-finite constant {name}")
+
+
 def _check_guild_id(raw: str, guild_key: str, tab: str, row_no: int) -> None:
     """Refuse a tab holding another guild's teams.
 
@@ -417,7 +423,7 @@ def _parse_loadout(
         )
 
     try:
-        parsed = json.loads(blob)
+        parsed = json.loads(blob, parse_constant=_no_constant)
     except ValueError as exc:
         raise SheetStructureError(
             f"the {tab!r} tab's Loadout on row {row_no} is not valid JSON ({exc}). "
@@ -643,7 +649,10 @@ def signup_combat_pair(csv_text: str, tab_label: str) -> list[str]:
 
 
 def cross_check(observed: GuildCombat, pair_labels: list[str]) -> str:
-    """Empty when the tab and the sign-up header name the same two bosses.
+    """Empty when every boss the tab assigns is one the sign-up header names.
+
+    A subset, not equality: the optimiser may publish teams for only one of the
+    week's two bosses (e.g. too few sign-ups for the other).
 
     Otherwise the reason, in the words trials.json publishes verbatim.
 
@@ -662,7 +671,7 @@ def cross_check(observed: GuildCombat, pair_labels: list[str]) -> str:
     """
     tab_set = {norm_trial(h) for h in observed.hrids}
     signup_set = {norm_trial(lbl) for lbl in pair_labels}
-    if tab_set == signup_set:
+    if tab_set and tab_set <= signup_set:
         return ""
     return (
         f"stale: the {observed.tab!r} tab lists "

@@ -64,6 +64,13 @@ def test_rows_parse_with_numbers_and_rank_order():
     assert got.rows[2]["payback_weeks"] is None and got.rows[2]["rank"] is None
 
 
+def test_nan_and_infinity_cells_read_as_blank():
+    got = bv.parse_building_value(
+        _csv(_row(Level="NaN", **{"GP Cost": "Infinity", "Payback Weeks": "-inf"})), "sc")
+    r = got.rows[0]
+    assert r["level"] is None and r["cost"] is None and r["payback_weeks"] is None
+
+
 def test_wrong_tab_another_guild_and_a_bad_hrid_are_refused():
     with pytest.raises(SheetStructureError, match="header"):
         bv.parse_building_value("Member,Trial Hrid,Team\nx,y,z\n", "sc")

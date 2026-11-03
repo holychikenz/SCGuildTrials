@@ -32,12 +32,9 @@ from . import config
 from .reader import (
     MemberRow,
     SheetStructureError,
-    SkillEntry,
     _cell,
-    _to_bool,
-    _to_int,
     fetch_text,
-    warn_rows_after_blank,
+    parse_member_rows,
 )
 
 
@@ -107,39 +104,7 @@ def parse_gviz(csv_text: str) -> list[MemberRow]:
 
     _validate_gviz_header(rows[0])
 
-    members: list[MemberRow] = []
-    for i, raw in enumerate(rows[1:], start=1):
-        row = raw[: config.GVIZ_LAST_COL + 1]  # drop trailing summary columns
-        name = _cell(row, config.COL_NAME)
-        if name == "":
-            # First blank Member cell marks the end of the member list.
-            warn_rows_after_blank(rows[i + 1 :], "the gviz member tab")
-            break
-
-        flex_levels = [_to_int(_cell(row, c)) for c in config.FLEX_LEVEL_COLS]
-
-        skills: dict[str, SkillEntry] = {}
-        for i, skill_name in enumerate(config.SKILLS):
-            base = config.SKILL_BLOCK_START + i * config.SKILL_BLOCK_STRIDE
-            skills[skill_name] = SkillEntry(
-                level=_to_int(_cell(row, base + config.SKILL_LEVEL_OFFSET)),
-                tool=_to_bool(_cell(row, base + config.SKILL_TOOL_OFFSET)),
-                top=_to_bool(_cell(row, base + config.SKILL_TOP_OFFSET)),
-                bot=_to_bool(_cell(row, base + config.SKILL_BOT_OFFSET)),
-                house=_to_int(_cell(row, base + config.SKILL_HOUSE_OFFSET)),
-            )
-
-        members.append(
-            MemberRow(
-                name=name,
-                main_classes=_cell(row, config.COL_MAIN_CLASSES),
-                flex=_cell(row, config.COL_FLEX),
-                flex_levels=flex_levels,
-                skills=skills,
-            )
-        )
-
-    return members
+    return parse_member_rows(rows[1:], "the gviz member tab", config.GVIZ_LAST_COL)
 
 
 def scrape_member_tab(tab_name: str) -> GuildData:

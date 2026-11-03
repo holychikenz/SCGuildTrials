@@ -659,6 +659,7 @@ def _attach_week(
     week: Optional[dict],
     draw_warning: str,
     renames: Optional[dict[str, str]] = None,
+    departed: tuple[str, ...] = (),
 ) -> None:
     """Project this week's assignments onto the register, in place.
 
@@ -690,6 +691,10 @@ def _attach_week(
     name the model used; the register row keeps the officers' spelling. It is
     applied BEFORE the exact/normalised lookups, so a chain or swap rename (whose
     OLD name is now someone else's seat) still finds the member's own seat.
+
+    ``departed`` (from ``signup.filter_departed``) names members who left the guild:
+    the officers' tab still lists them, the optimiser rightly never saw them, so an
+    unseated one is stamped ``departed`` rather than ``unassigned``.
     """
     if week is None:
         register["week"] = None
@@ -720,6 +725,7 @@ def _attach_week(
 
     claimed: set[str] = set()
     unassigned: list[str] = []
+    gone = set(departed)
     for m in members:
         # The rename FIRST: in a chain (Bob -> Carol, then Alice takes "Bob") or a
         # swap, the officers' OLD spelling is someone else's live seat, so an exact
@@ -731,7 +737,9 @@ def _attach_week(
         hit = target if target in seat else None
         if hit is None and norm_name(target) not in ambiguous:
             hit = by_norm.get(norm_name(target))
-        if hit is None:
+        if hit is None and m["name"] in gone:
+            m["trial"] = {"skill": None, "status": "departed"}
+        elif hit is None:
             m["trial"] = {"skill": None, "status": "unassigned"}
             unassigned.append(m["name"])
         else:
@@ -4801,6 +4809,10 @@ class _GuildInputs:
     # "renamed OLD → NEW (id N)"). _attach_week uses it to stamp the register,
     # which keeps the officers' spelling.
     renames: dict[str, str] = field(default_factory=dict)
+    # Names signup.filter_departed dropped (left the guild): stamped "departed" on the
+    # register by _attach_week rather than warned about as "unassigned".
+    # A plain default, not a factory, so inputs built with __new__ read ().
+    departed: tuple[str, ...] = ()
     # The rename resolver _fetch_guild built (roll, Name History, roster). Read by
     # _combat_block, which only shows a seat under a name the ROLL reports for its
     # id. None for inputs built outside _fetch_guild: then no seat is renamed.
@@ -5485,6 +5497,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
         building_value_unavailable=building_value_unavailable,
         renames=renames,
         resolver=resolver,
+        departed=tuple(departed),
     )
 
 
@@ -5989,7 +6002,8 @@ def _write_guild(
     # the register carries both. Gated: config.REGISTER_CARRIES_WEEK = False is the
     # byte-for-byte rollback of the API (no new keys, no Trial column).
     if config.REGISTER_CARRIES_WEEK:
-        _attach_week(inputs.register, week, draw_warning, inputs.renames)
+        _attach_week(inputs.register, week, draw_warning, inputs.renames,
+                     inputs.departed)
         stamped = inputs.register["week"]
         if stamped is not None and stamped["unassigned"]:
             # Should never fire: roster.merge copies every manual member, so every

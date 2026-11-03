@@ -615,6 +615,13 @@ def test_malformed_loadout_json_raises():
     assert "not valid JSON" in str(exc.value)
     assert "row 2" in str(exc.value)
 
+    # NaN/Infinity parse in Python but would write invalid JSON to trials.json.
+    with pytest.raises(SheetStructureError, match="not valid JSON"):
+        combat.parse_combat(
+            _csv9(_row9("Yedic", blob='{"equipment":{},"abilities":[NaN]}')),
+            "sc", tab="SC Combat Teams",
+        )
+
     # A well-formed blob of the WRONG TYPE is refused too — a list would reach the
     # userscript as a shape it cannot read.
     with pytest.raises(SheetStructureError) as exc:
@@ -736,6 +743,11 @@ def test_cross_check_is_order_case_and_form_insensitive():
     obs = _observation()  # swarm + badger
     assert combat.cross_check(obs, ["Badger", "Swarm"]) == ""
     assert combat.cross_check(obs, ["swarm", "badger"]) == ""
+
+    # Teams for only ONE of the week's bosses still agree with the week.
+    one = _observation(hrid_b="/guild_combat/swarm")
+    assert combat.cross_check(one, ["Badger", "Swarm"]) == ""
+    assert "stale" in combat.cross_check(one, ["Badger", "Hedgehog"])
 
     # §5 rows 5 and 6: whichever side is stale, BOTH sets are named and neither is
     # blamed — the two writers refresh on their own schedules.

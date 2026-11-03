@@ -532,7 +532,8 @@ Two additions, both gated on `config.REGISTER_CARRIES_WEEK`:
   `points`, `credit_points`, `clear_probability`, `members` as a name list),
   `bench`, `not_on_register` and `unassigned`.
 - A **`trial`** stamp on every member: `{"skill": …, "status": …}`, where `status`
-  is `assigned`, `bench` or `unassigned` and `skill` is `null` unless assigned.
+  is `assigned`, `bench`, `departed` (left the guild) or `unassigned` and `skill`
+  is `null` unless assigned.
 
 The consumer recipe:
 

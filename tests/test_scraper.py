@@ -151,6 +151,12 @@ def test_stops_at_blank_member_cell():
     assert [m.name for m in members] == ["Alpha"]
 
 
+def test_gviz_blank_row_above_every_member_is_a_structure_error():
+    r1 = _data_cells("Alpha", "A", "", ["", "", "", "", ""], _ten_skills())
+    with pytest.raises(SheetStructureError, match="0 members"):
+        parse_gviz(_csv([""] * _N_COLS, r1))
+
+
 def test_gviz_rows_named_below_the_blank_stop_are_warned_about(capsys):
     r1 = _data_cells("Alpha", "A", "", ["", "", "", "", ""], _ten_skills())
     blank = [""] * _N_COLS

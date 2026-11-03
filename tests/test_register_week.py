@@ -149,6 +149,23 @@ def test_a_register_member_the_optimiser_never_saw_is_unassigned_and_warned(
     assert "ghost" in err
 
 
+def test_a_departed_member_is_stamped_departed_and_not_warned(
+    tmp_path, monkeypatch, capsys
+):
+    members = _ten()
+    week = _week(members)
+    monkeypatch.setattr(build, "OUTPUT_DIR", tmp_path)
+    site = build.GUILD_SITES[0]
+    register = processor.process(members + [_member("leaver", 50)])
+    inputs = _inputs(site, members, register)
+    inputs.departed = ("leaver",)
+    build._write_guild(site, inputs, week, None, _draw(), "")
+    leaver = next(m for m in register["members"] if m["name"] == "leaver")
+    assert leaver["trial"] == {"skill": None, "status": "departed"}
+    assert register["week"]["unassigned"] == []
+    assert "stamped 'unassigned'" not in capsys.readouterr().err
+
+
 def test_the_join_is_case_insensitive_but_refuses_ambiguity():
     nine = _ten()[:9]
     week = _week(nine + [_member("Dome", 99)])
