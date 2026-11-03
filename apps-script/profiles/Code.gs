@@ -124,11 +124,8 @@ var SHARED_SECRET = 'PASTE_A_LONG_RANDOM_SECRET_HERE';
 //   "SC Roster" — Survey Corps          (guild id 4)
 //   "LI Roster" — Lactose lntolerance   (guild id 240)
 //
-// There is no scratch/test tab here, unlike the sign-up script's "chikenz-test".
-// That one earns its place because a sign-up write CLEARS the block and rewrites
-// it, over a tab the Python pipeline parses. This endpoint only ever upserts, so
-// a mistaken write adds or updates rows and cannot wipe the tab; the module's
-// dry-run is the rehearsal mechanism instead.
+// There is no scratch/test tab. This endpoint only ever upserts, so a mistaken
+// write adds or updates rows and cannot wipe the tab.
 var ALLOWED_TABS = ['SC Roster', 'LI Roster'];
 
 // Rows are upserted on this column. See the header comment for why it is the

@@ -295,7 +295,6 @@ comparison point. Stage only this change's files at each commit — `git add -p`
 - `:80-86`:
   ```js
   var TAB_FORMAT = {
-    'chikenz-test':    'signup',
     'SC Trial Signup': 'signup',
     'LI Trial Signup': 'signup',
     'SC Buildings':    'buildings',
