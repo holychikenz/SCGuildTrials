@@ -13,9 +13,6 @@ SHEET_ID = "1b5_zID6K4WRaFXnBMJijSEXr_4l2gi40eFKxuvRJQAE"
 GID = "0"
 
 # Anonymous CSV export (verified working: "anyone with link" sharing).
-# The live GitHub Pages site. When an optional guild's build fails, build.main
-# re-publishes that guild's files from here (stale) rather than deploying without them.
-PAGES_URL = "https://holychikenz.github.io/SCGuildTrials/"
 
 CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"

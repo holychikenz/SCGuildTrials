@@ -64,14 +64,7 @@ def site_env(monkeypatch, tmp_path):
     monkeypatch.setattr(build.signup_model, "fetch_signup_csv", _signup_csv)
     monkeypatch.setattr(build, "_fetch_combat", lambda site, csv: (None, "stub"))
     monkeypatch.setattr(build, "_fetch_building_value", lambda site: (None, "stub"))
-    # A skipped guild's pages are re-fetched from the live site: never the network here.
-    monkeypatch.setattr(build, "fetch_text", lambda url, what: f"live {url}")
     return out, hooks
-
-
-def _kept_live(out) -> bool:
-    """LI was skipped, and last week's live pages were kept rather than dropped."""
-    return (out / "li" / "index.html").read_text().startswith("live ")
 
 
 def _tab(key: str) -> str:
@@ -90,7 +83,7 @@ def test_li_fetch_503_still_ships_sc(site_env, capsys):
     hooks["member_status"][_tab("li")] = 503
     assert build.main() == 0
     assert (out / "index.html").exists() and (out / "data.json").exists()
-    assert _kept_live(out)
+    assert not (out / "li" / "index.html").exists()
     err = capsys.readouterr().err
     assert "li skipped" in err and "503" in err
 
@@ -113,7 +106,7 @@ def test_li_optimiser_crash_still_ships_sc(site_env, monkeypatch, capsys):
     monkeypatch.setattr(build, "_compute_unit", unit)
     assert build.main() == 0
     assert (out / "index.html").exists()
-    assert _kept_live(out)
+    assert not (out / "li" / "index.html").exists()
     assert "li skipped (ValueError: optimiser exploded)" in capsys.readouterr().err
 
 
@@ -174,7 +167,7 @@ def test_li_non_runtime_fetch_error_still_ships_sc(site_env, monkeypatch, capsys
 
     monkeypatch.setattr(build, "scrape_member_tab", scrape)
     assert build.main() == 0
-    assert (out / "index.html").exists() and _kept_live(out)
+    assert (out / "index.html").exists() and not (out / "li" / "index.html").exists()
     assert "li skipped (ValueError: odd cell)" in capsys.readouterr().err
 
 

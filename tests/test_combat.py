@@ -749,10 +749,12 @@ def test_cross_check_is_order_case_and_form_insensitive():
     assert combat.cross_check(obs, ["Badger", "Swarm"]) == ""
     assert combat.cross_check(obs, ["swarm", "badger"]) == ""
 
-    # Teams for only ONE of the week's bosses still agree with the week.
+    # Teams for only ONE boss agree only when nobody signed up for the other;
+    # otherwise it may be last week's tab whose boss was drawn again.
     one = _observation(hrid_b="/guild_combat/swarm")
-    assert combat.cross_check(one, ["Badger", "Swarm"]) == ""
-    assert "stale" in combat.cross_check(one, ["Badger", "Hedgehog"])
+    assert combat.cross_check(one, ["Badger", "Swarm"], {"badger"}) == ""
+    assert "stale" in combat.cross_check(one, ["Badger", "Swarm"])
+    assert "stale" in combat.cross_check(one, ["Badger", "Hedgehog"], {"badger"})
 
     # §5 rows 5 and 6: whichever side is stale, BOTH sets are named and neither is
     # blamed — the two writers refresh on their own schedules.
@@ -761,6 +763,15 @@ def test_cross_check_is_order_case_and_form_insensitive():
     assert "[badger, swarm]" in reason
     assert "[chameleon, hedgehog]" in reason
     assert "does not guess which" in reason
+
+
+def test_unsigned_bosses_reads_the_tick_columns():
+    csv_text = (
+        "User,Milking,Foraging,Cooking,Brewing,Badger,Swarm,characterId\n"
+        "A,FALSE,TRUE,FALSE,FALSE,FALSE,TRUE,1\n"
+        "B,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE,2\n"
+    )
+    assert combat.unsigned_bosses(csv_text, ["Badger", "Swarm"]) == {"badger"}
 
 
 # --- _fetch_combat: the whole degrade matrix ---------------------------------------

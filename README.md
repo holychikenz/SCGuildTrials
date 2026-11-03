@@ -47,9 +47,10 @@ derived planner fields reach `_site/`; raw profile data and the token never do.
    (see below) — (`src/build.py`) once per guild (Survey Corps at the
    root, other guilds under their own sub-directory, e.g. `_site/li/`).
    Survey Corps failing fails the build. An optional guild (LI) that fails is
-   skipped, and its **live** files are re-fetched from `config.PAGES_URL` into
-   `_site/li/` so the deploy keeps last week's pages up (a `STALE` WARNING in
-   the log) rather than taking them offline.
+   skipped and its `_site/li/` removed, so LI's pages 404 until the next good
+   build (an `OFFLINE` WARNING in the log). Re-publishing last week's files was
+   rejected: `trials.json` has no stale flag, so members would see old seats as
+   current.
 
 ## Run locally
 

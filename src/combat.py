@@ -613,11 +613,31 @@ def signup_combat_pair(csv_text: str, tab_label: str) -> list[str]:
     return labels
 
 
-def cross_check(observed: GuildCombat, pair_labels: list[str]) -> str:
-    """Empty when every boss the tab assigns is one the sign-up header names.
+def unsigned_bosses(csv_text: str, pair_labels: list[str]) -> set[str]:
+    """The pair's bosses (normalised) that NO member ticked TRUE in this week's tab.
 
-    A subset, not equality: the optimiser may publish teams for only one of the
-    week's two bosses (e.g. too few sign-ups for the other).
+    The writer emits a TRUE/FALSE cell per boss in columns F–G (same order as the
+    header), so an all-FALSE column is a boss nobody signed up for.
+    """
+    rows = list(csv.reader(io.StringIO(csv_text)))[1:]
+    return {
+        norm_trial(lbl)
+        for i, lbl in enumerate(pair_labels)
+        if not any(
+            _cell(r, COMBAT_PAIR_COL_START + i).upper() == "TRUE" for r in rows
+        )
+    }
+
+
+def cross_check(
+    observed: GuildCombat, pair_labels: list[str], unsigned: set[str] = frozenset()
+) -> str:
+    """Empty when the tab's bosses are this week's pair.
+
+    Equality, with ONE exception: a boss missing from the tab is excused only when
+    nobody signed up for it (``unsigned``), because the optimiser then has no team
+    to publish for it. A bare subset rule would pass last week's single-boss tab
+    whenever its boss happened to be drawn again.
 
     Otherwise the reason, in the words trials.json publishes verbatim.
 
@@ -636,7 +656,7 @@ def cross_check(observed: GuildCombat, pair_labels: list[str]) -> str:
     """
     tab_set = {norm_trial(h) for h in observed.hrids}
     signup_set = {norm_trial(lbl) for lbl in pair_labels}
-    if tab_set and tab_set <= signup_set:
+    if tab_set and tab_set <= signup_set and signup_set - tab_set <= set(unsigned):
         return ""
     return (
         f"stale: the {observed.tab!r} tab lists "

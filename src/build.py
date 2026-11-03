@@ -11,6 +11,7 @@ import contextlib
 import html
 import json
 import os
+import shutil
 import sys
 from collections import Counter
 from concurrent import futures
@@ -5149,7 +5150,10 @@ def _fetch_combat(
                         f"Reason: {exc}"
                     )
                 else:
-                    reason = combat_model.cross_check(observed, pair)
+                    reason = combat_model.cross_check(
+                        observed, pair,
+                        combat_model.unsigned_bosses(signup_csv, pair),
+                    )
 
     if reason:
         # One line, one shape, every failure mode — including the flag, so a build
@@ -6334,37 +6338,18 @@ def _run_units(jobs: list[dict]) -> list[dict]:
         ]
 
 
-# Every file _write_guild can emit for one guild.
-_GUILD_FILES = (
-    "index.html", "data.json", TRIALS_PAGE, TRIALS_JSON, TRIALS_MAXBUFF_PAGE,
-    TRIALS_MAXBUFF_JSON, "signup.html", "signup.json", BUILDINGS_JSON,
-)
+def _drop_skipped(site: GuildSite) -> None:
+    """Remove a skipped optional guild's partly written files from ``_site``.
 
-
-def _keep_published(site: GuildSite) -> None:
-    """Copy a skipped optional guild's LIVE files back into ``_site``.
-
-    Pages deploys the whole artifact, so a guild missing from ``_site`` goes offline.
-    Last week's pages beat a 404: they are fetched from ``config.PAGES_URL`` and
-    named stale in the log. A file the live site does not have is simply absent.
+    Its pages then 404 until the next good build. Deliberate: re-publishing last
+    week's files would show last week's seats as current, since trials.json and
+    signup.json carry no stale flag the userscript reads.
     """
-    out = site.out_dir
-    out.mkdir(parents=True, exist_ok=True)
-    kept = []
-    for name in _GUILD_FILES:
-        try:
-            text = fetch_text(f"{config.PAGES_URL}{site.subdir}/{name}",
-                              f"the published {site.subdir}/{name}")
-        except RuntimeError:
-            (out / name).unlink(missing_ok=True)   # never half this build, half last
-            if name == "index.html":
-                break   # the site itself is unreachable: do not wait on eight more
-            continue
-        (out / name).write_text(text, encoding="utf-8")
-        kept.append(name)
+    assert site.subdir, "never remove the site root"
+    shutil.rmtree(site.out_dir, ignore_errors=True)
     print(
-        f"WARNING: {site.key} is STALE: re-published the live {', '.join(kept) or 'nothing'}"
-        f" from {config.PAGES_URL}{site.subdir}/ because this build skipped it.",
+        f"WARNING: {site.key} is OFFLINE until the next good build: its "
+        f"{site.out_dir} was removed so no half-written files deploy.",
         file=sys.stderr,
     )
 
@@ -6459,7 +6444,7 @@ def main() -> int:
             skipped.append(site)
 
     for site in skipped:
-        _keep_published(site)
+        _drop_skipped(site)
 
     print("Built _site/:")
     for note in notes:
