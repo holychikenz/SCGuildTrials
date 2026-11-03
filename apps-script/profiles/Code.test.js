@@ -1108,3 +1108,13 @@ test("a formula-looking string is defused; numbers stay numbers", (t) => {
     assert.strictEqual(sh._grid[1][6], "'=IMPORTXML(1)");
     assert.strictEqual(sh._grid[1][4], -5);
 });
+
+test("a stored formula-looking cell is defused when its row is written back", (t) => {
+    const h = header();
+    // getValues() returns a defused cell's text WITHOUT the apostrophe.
+    const sh = makeSheet([h, row("jodend", 8888, { tool: "=IMPORTXML(1)" })], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Roster", header: h, rows: [row("other", 9999)] });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh._grid[1][6], "'=IMPORTXML(1)");
+});

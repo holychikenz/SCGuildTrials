@@ -416,7 +416,12 @@ function doPost(e) {
     }
 
     sh.getRange(1, 1, 1, nCols).setValues([header.slice()]);
-    if (out.length) sh.getRange(2, 1, out.length, nCols).setValues(out);
+    // Every row, not only the payload's: getValues() hands back a defused cell
+    // WITHOUT its apostrophe, so a stored row rewritten raw would re-arm it.
+    if (out.length) {
+      sh.getRange(2, 1, out.length, nCols).setValues(
+        out.map(function (r) { return normaliseRow_(r, nCols); }));
+    }
     SpreadsheetApp.flush();                      // commit BEFORE the release
 
     return json_({

@@ -732,7 +732,7 @@ def _attach_week(
 
     claimed: set[str] = set()
     unassigned: list[str] = []
-    gone = set(departed)
+    gone = {norm_name(n) for n in departed}
     for m in members:
         # The rename FIRST: in a chain (Bob -> Carol, then Alice takes "Bob") or a
         # swap, the officers' OLD spelling is someone else's live seat, so an exact
@@ -744,7 +744,7 @@ def _attach_week(
         hit = target if target in seat else None
         if hit is None and norm_name(target) not in ambiguous:
             hit = by_norm.get(norm_name(target))
-        if hit is None and m["name"] in gone:
+        if hit is None and (norm_name(target) in gone or norm_name(m["name"]) in gone):
             m["trial"] = {"skill": None, "status": "departed"}
         elif hit is None:
             m["trial"] = {"skill": None, "status": "unassigned"}
@@ -6155,9 +6155,13 @@ def _write_guild(
                 + "; ".join(plan["normalized_matches"]),
                 file=sys.stderr,
             )
-        for c in plan["conflicts"]:
-            if "party cap" in c:
-                print(f"WARNING ({site.key}): {c}", file=sys.stderr)
+        for t in plan["trials"]:
+            if t["open_seats"] < 0:
+                print(
+                    f"WARNING ({site.key}): {t['skill']} has {-t['open_seats']} more "
+                    f"volunteer(s) than the party cap; they cannot all be seated in game.",
+                    file=sys.stderr,
+                )
         if plan["unmatched_signups"]:
             print(
                 f"WARNING ({site.key}): {len(plan['unmatched_signups'])} sign-up "
@@ -6353,6 +6357,8 @@ def _keep_published(site: GuildSite) -> None:
                               f"the published {site.subdir}/{name}")
         except RuntimeError:
             (out / name).unlink(missing_ok=True)   # never half this build, half last
+            if name == "index.html":
+                break   # the site itself is unreachable: do not wait on eight more
             continue
         (out / name).write_text(text, encoding="utf-8")
         kept.append(name)

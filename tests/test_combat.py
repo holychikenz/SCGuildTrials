@@ -621,6 +621,11 @@ def test_malformed_loadout_json_raises():
             _csv9(_row9("Yedic", blob='{"equipment":{},"abilities":[NaN]}')),
             "sc", tab="SC Combat Teams",
         )
+    with pytest.raises(SheetStructureError, match="not valid JSON"):
+        combat.parse_combat(
+            _csv9(_row9("Yedic", blob='{"equipment":{},"abilities":[1e999]}')),
+            "sc", tab="SC Combat Teams",
+        )
 
     # A well-formed blob of the WRONG TYPE is refused too — a list would reach the
     # userscript as a shape it cannot read.

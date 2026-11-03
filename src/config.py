@@ -812,7 +812,8 @@ OPT_ENSEMBLE_PIPELINES = ["beam+genetic+hill_climb"] * OPT_RESTARTS
 #  * scipy_lap (classic linear assignment) only ties the trivial proxy_greedy
 #    (5300): it optimises a linear proxy and is blind to the step objective and
 #    the headcount penalty — exactly the gap this bake-off set out to measure.
-#  * "best" = max over {beam+genetic+hc, proxy_greedy+sa+hc, marginal_greedy+sa+hc}
+#  * (historical) "best" was then max over {beam+genetic+hc, proxy_greedy+sa+hc,
+#    marginal_greedy+sa+hc}; SA is gone (OPT_ENSEMBLE_PIPELINES above). That ensemble
 #    is shipped: it matches the best single method here AND can never do worse
 #    than any component on a future roster, at ~100s (well under the ~10-min CI
 #    budget). Simulated annealing underperformed the GA here but is retained in

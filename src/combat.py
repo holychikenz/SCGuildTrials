@@ -87,6 +87,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -329,6 +330,14 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
         )
 
 
+def _finite(text: str) -> float:
+    """A JSON number that overflows (1e999) is as invalid in trials.json as NaN."""
+    f = float(text)
+    if not math.isfinite(f):
+        raise ValueError(f"non-finite number {text}")
+    return f
+
+
 def _no_constant(name: str):
     """json.loads accepts NaN/Infinity, which json.dumps writes back out as invalid
     JSON in trials.json; refuse them as malformed."""
@@ -375,7 +384,7 @@ def _parse_loadout(
         )
 
     try:
-        parsed = json.loads(blob, parse_constant=_no_constant)
+        parsed = json.loads(blob, parse_constant=_no_constant, parse_float=_finite)
     except ValueError as exc:
         raise SheetStructureError(
             f"the {tab!r} tab's Loadout on row {row_no} is not valid JSON ({exc}). "

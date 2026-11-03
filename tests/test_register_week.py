@@ -166,6 +166,16 @@ def test_a_departed_member_is_stamped_departed_and_not_warned(
     assert "stamped 'unassigned'" not in capsys.readouterr().err
 
 
+def test_a_renamed_leaver_is_departed_under_the_officers_old_spelling():
+    members = _ten()
+    week = _week(members)
+    register = processor.process(members + [_member("bob", 50)])
+    build._attach_week(register, week, "", {"bob": "Carol"}, ("Carol",))
+    bob = next(m for m in register["members"] if m["name"] == "bob")
+    assert bob["trial"]["status"] == "departed"
+    assert register["week"]["unassigned"] == []
+
+
 def test_the_join_is_case_insensitive_but_refuses_ambiguity():
     nine = _ten()[:9]
     week = _week(nine + [_member("Dome", 99)])
