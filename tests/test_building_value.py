@@ -74,7 +74,7 @@ def test_nan_and_infinity_cells_read_as_blank():
 def test_wrong_tab_another_guild_and_a_bad_hrid_are_refused():
     with pytest.raises(SheetStructureError, match="header"):
         bv.parse_building_value("Member,Trial Hrid,Team\nx,y,z\n", "sc")
-    with pytest.raises(SheetStructureError, match="another guild"):
+    with pytest.raises(SheetStructureError, match="ANOTHER GUILD"):
         bv.parse_building_value(_csv(_row(**{"Guild Id": "240"})), "sc")
     with pytest.raises(SheetStructureError, match="not a guild building"):
         bv.parse_building_value(_csv(_row(Hrid="/items/x")), "sc")

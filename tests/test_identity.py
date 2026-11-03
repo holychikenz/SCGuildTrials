@@ -164,6 +164,14 @@ def test_find_member_by_id_then_name_then_norm():
     assert find_member([a, b], "Nobody") is None
 
 
+def test_find_member_never_falls_back_to_a_name_held_under_another_id():
+    # A rename freed "Bob" and someone else (id 2) took it: id 1's lookup by its old
+    # name must not land on them.
+    taker = _m("Bob", "2")
+    assert find_member([taker], "Bob", 1) is None
+    assert find_member([taker, _m("Bob")], "Bob", 1).character_id is None
+
+
 # --- the Name History reader ---------------------------------------------------
 _H = "Character Id,Name,Guild Id,First Seen,Last Seen\n"
 

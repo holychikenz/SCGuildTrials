@@ -52,7 +52,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import config
-from .reader import SheetStructureError, _cell, _to_int
+from .reader import (
+    SheetStructureError,
+    _cell,
+    _to_int,
+    check_guild_id,
+    sentinel_mismatches,
+)
 from .scraper import fetch_tab_csv
 
 # Column indices, matching config.BUILDINGS_SENTINEL_HEADERS (which is the guard for
@@ -131,20 +137,6 @@ class GuildBuildings:
         }
 
 
-def fetch_buildings_csv(tab_name: str) -> str:
-    """Fetch a Buildings tab's gviz CSV export as text, addressed by tab name.
-
-    Deliberately the same shape as ``scraper.fetch_tab_csv``, including the 401/403
-    message: there is one way this sheet becomes unreachable and one thing to say
-    about it.
-
-    Raises:
-        RuntimeError: on 401/403 (sheet sharing likely revoked) or other
-            HTTP/network errors, with a message pointing at the likely cause.
-    """
-    return fetch_tab_csv(tab_name)
-
-
 def _validate_buildings_header(header: list[str], tab: str) -> None:
     """Guard against gviz silently serving the wrong tab.
 
@@ -152,14 +144,7 @@ def _validate_buildings_header(header: list[str], tab: str) -> None:
     machine-written, so there is no merged junk to tolerate). A wrong-tab serve fails
     on cell 0 — the member tab's first header cell is not "Building".
     """
-    mismatches = []
-    for col, (mode, expected) in config.BUILDINGS_SENTINEL_HEADERS.items():
-        actual = _cell(header, col)  # already stripped
-        ok = actual == expected if mode == "equals" else expected in actual
-        if not ok:
-            mismatches.append(
-                f"col {col}: expected {mode} {expected!r}, got {actual!r}"
-            )
+    mismatches = sentinel_mismatches(header, config.BUILDINGS_SENTINEL_HEADERS)
 
     if mismatches:
         raise SheetStructureError(
@@ -183,30 +168,6 @@ def _clamp_level(raw: str) -> int:
     """
     level = _to_int(raw) or 0
     return max(0, min(config.GUILD_BUILDING_MAX_LEVEL, level))
-
-
-def _check_guild_id(raw: str, guild_key: str, tab: str, row_no: int) -> None:
-    """Refuse a tab holding another guild's levels.
-
-    Every row carries the id of the guild it was captured from, and the module routes
-    a capture to a tab through a hand-edited "guild id -> tab" map. So the wrong
-    guild's levels landing on this tab is one settings typo away, would look entirely
-    plausible on the page, and would mis-plan a whole week. Raising rather than
-    falling back is the same call ``config.shrine_caps`` makes for the same reason.
-    """
-    expected = config.GUILD_IDS.get(guild_key)
-    if expected is None or raw == "":
-        # No id configured for this guild, or an unstamped row: nothing to check
-        # against. Not invented — a guard with no reference is no guard.
-        return
-    if _to_int(raw) != expected:
-        raise SheetStructureError(
-            f"the {tab!r} tab carries guild id {raw!r} on row {row_no}, but "
-            f"{guild_key!r} is guild id {expected}. This tab holds ANOTHER GUILD'S "
-            f"building levels, which would mis-plan the whole week while looking "
-            f"entirely plausible on the page. Check the in-game module's "
-            f"'Guild id -> Buildings tab' map, and config.GUILD_IDS."
-        )
 
 
 def parse_buildings(
@@ -252,7 +213,10 @@ def parse_buildings(
         kind = _cell(raw, COL_KIND).lower()
         level = _clamp_level(_cell(raw, COL_LEVEL))
 
-        _check_guild_id(_cell(raw, COL_GUILD_ID), guild_key, tab, row_no)
+        check_guild_id(
+            _cell(raw, COL_GUILD_ID), guild_key, tab, row_no,
+            "building levels, which would mis-plan the whole week",
+            "the in-game module's 'Guild id -> Buildings tab' map")
 
         captured = _cell(raw, COL_CAPTURED_AT)
         if captured:
@@ -293,5 +257,5 @@ def scrape_buildings_tab(tab_name: str, guild_key: str) -> GuildBuildings:
             failing the deploy.
         RuntimeError: on fetch/HTTP failure, which stays fatal as it does elsewhere.
     """
-    csv_text = fetch_buildings_csv(tab_name)
+    csv_text = fetch_tab_csv(tab_name)
     return parse_buildings(csv_text, guild_key, tab=tab_name)

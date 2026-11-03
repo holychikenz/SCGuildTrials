@@ -30,19 +30,22 @@ which is both NON-linear and NON-separable, for two reasons documented in
 Consequently a classic linear-assignment solver (Hungarian) only optimises a
 *proxy*; the true objective must be measured by calling ``simulate_race``. Every
 strategy here is therefore judged against that real oracle (:class:`AssignmentScorer`),
-and the bake-off in ``src/optimize_bakeoff.py`` selects the winner on points AND
+and the bake-off in ``research/optimize_bakeoff.py`` selects the winner on points AND
 speed.
 
 Strategy grammar
 ----------------
 A strategy string is ``constructor[+refiner[+refiner...]]`` — e.g.
-``"proxy_greedy+hill_climb"`` or ``"marginal_greedy+sa"``. The first recognised
+``"proxy_greedy+hill_climb"`` or ``"beam+genetic+hill_climb"``. The first recognised
 constructor token builds an initial assignment; each subsequent refiner improves
 it in place. A bare refiner (no constructor token) defaults to a
 ``proxy_greedy`` seed.
 
-  constructors: random, proxy_greedy, marginal_greedy, beam, genetic
-  refiners:     hill_climb, sa
+  constructors: random, proxy_greedy, marginal_greedy, beam
+  refiners:     hill_climb, genetic
+
+Simulated annealing and the self-seeding genetic constructor lost the bake-off and
+were removed (audit 2026-11); ``git log -S _refine_sa`` finds them.
 """
 
 from __future__ import annotations
@@ -77,7 +80,7 @@ def _objective_value(
     """The number every strategy in this module maximises, per config.OPT_OBJECTIVE.
 
     ONE function, called from exactly one place (:meth:`AssignmentScorer._evaluate`),
-    so the whole search — constructors, refiners, the simulated annealer, the genetic
+    so the whole search — constructors, refiners, the genetic
     pipeline, the bench fill, and ``src.signup``'s swap searches, which all reach the
     oracle through :meth:`AssignmentScorer.party_points` — cannot disagree about what
     it is optimising. See ``config.OPT_OBJECTIVE`` for why the default moved to the
@@ -602,20 +605,6 @@ def _run_genetic(
     return to_parties(scored[0][1])
 
 
-def _construct_genetic(scorer: AssignmentScorer, rng: random.Random) -> Parties:
-    """Genetic algorithm seeded with the strong constructors (beam + greedies).
-
-    Standalone constructor form: builds its own high-quality seed population from
-    beam search, marginal-gain greedy and proxy greedy before evolving.
-    """
-    seeds = [
-        _construct_beam(scorer, rng),
-        _construct_marginal_greedy(scorer, rng),
-        _construct_proxy_greedy(scorer, rng),
-    ]
-    return _run_genetic(scorer, rng, seeds)
-
-
 def _refine_genetic(
     parties: Parties, scorer: AssignmentScorer, rng: random.Random
 ) -> Parties:
@@ -761,116 +750,6 @@ def _refine_hill_climb(
     return _hill_climb([set(p) for p in parties], scorer)
 
 
-def _relocate_delta(
-    scorer: AssignmentScorer, parties: Parties, m: int, a: int, b: int
-) -> float:
-    """Δpoints of moving ``m`` from slot ``a`` to ``b`` (-1 = bench). SA only."""
-    changed = ([(a, parties[a] - {m})] if a >= 0 else []) + (
-        [(b, parties[b] | {m})] if b >= 0 else [])
-    return _points_delta(scorer, parties, changed)
-
-
-def _swap_delta(scorer, parties, m1, a, m2, b) -> float:
-    """Δpoints of swapping ``m1`` (slot ``a``) with ``m2`` (slot ``b``). SA only."""
-    return _points_delta(scorer, parties, [
-        (a, (parties[a] - {m1}) | {m2}), (b, (parties[b] - {m2}) | {m1})])
-
-
-def _anneal_once(
-    parties: Parties, scorer: AssignmentScorer, rng: random.Random
-) -> tuple[Parties, float]:
-    """One annealing run from ``parties``; returns (best_parties, best_points).
-
-    Geometric cooling from ``OPT_SA_T_START`` to ``OPT_SA_T_END`` over
-    ``OPT_SA_ITERS`` steps; worsening moves accepted with probability
-    ``exp(delta / T)``. Tracks the best assignment ever seen.
-    """
-    S = len(scorer.skills)
-    cap = scorer.cap
-    n = len(scorer.members)
-    parties = [set(p) for p in parties]
-    cur = scorer.total_points(parties)
-    best = cur
-    best_parties = [set(p) for p in parties]
-
-    iters = config.OPT_SA_ITERS
-    t0 = config.OPT_SA_T_START
-    t1 = config.OPT_SA_T_END
-    ratio = (t1 / t0) if t0 > 0 else 0.0
-
-    for i in range(iters):
-        temp = t0 * (ratio ** (i / max(1, iters - 1)))
-        assigned = {m: s for s in range(S) for m in parties[s]}
-
-        if rng.random() < 0.5:
-            # Relocate a random member.
-            m = rng.randrange(n)
-            a = assigned.get(m, -1)
-            choices = [
-                b
-                for b in range(-1, S)
-                if b != a
-                and (b < 0 or (len(parties[b]) < cap and scorer.can_place(b, m)))
-            ]
-            if not choices:
-                continue
-            b = rng.choice(choices)
-            delta = _relocate_delta(scorer, parties, m, a, b)
-            if delta >= -config.OPT_POINTS_EPS or rng.random() < math.exp(
-                delta / temp
-            ):
-                if a >= 0:
-                    parties[a].discard(m)
-                if b >= 0:
-                    parties[b].add(m)
-                cur += delta
-        else:
-            # Swap two assigned members in different slots.
-            assigned_items = list(assigned.items())
-            if len(assigned_items) < 2:
-                continue
-            m1, a = rng.choice(assigned_items)
-            m2, b = rng.choice(assigned_items)
-            if a == b or m1 == m2:
-                continue
-            if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
-                continue
-            delta = _swap_delta(scorer, parties, m1, a, m2, b)
-            if delta >= -config.OPT_POINTS_EPS or rng.random() < math.exp(
-                delta / temp
-            ):
-                parties[a].discard(m1)
-                parties[a].add(m2)
-                parties[b].discard(m2)
-                parties[b].add(m1)
-                cur += delta
-
-        if cur > best + config.OPT_POINTS_EPS:
-            best = cur
-            best_parties = [set(p) for p in parties]
-    return best_parties, best
-
-
-def _refine_sa(
-    parties: Parties, scorer: AssignmentScorer, rng: random.Random
-) -> Parties:
-    """Simulated annealing with multiple restarts (best kept).
-
-    Runs ``OPT_SA_RESTARTS`` independent anneals from the same seed (each drawing
-    a fresh random trajectory from the shared ``rng``) and returns the best — a
-    cheap way to spend the daily-run's generous time budget on escaping distinct
-    local optima. Fully seeded via ``rng``.
-    """
-    best_parties = [set(p) for p in parties]
-    best = scorer.total_points(best_parties)
-    for _ in range(max(1, config.OPT_SA_RESTARTS)):
-        cand, cand_pts = _anneal_once(parties, scorer, rng)
-        if cand_pts > best + config.OPT_POINTS_EPS:
-            best = cand_pts
-            best_parties = cand
-    return best_parties
-
-
 # ---------------------------------------------------------------------------
 # Strategy registry + dispatch
 # ---------------------------------------------------------------------------
@@ -879,14 +758,12 @@ _CONSTRUCTORS: dict[str, Callable[[AssignmentScorer, random.Random], Parties]] =
     "proxy_greedy": _construct_proxy_greedy,
     "marginal_greedy": _construct_marginal_greedy,
     "beam": _construct_beam,
-    "genetic": _construct_genetic,
 }
 
 _REFINERS: dict[
     str, Callable[[Parties, AssignmentScorer, random.Random], Parties]
 ] = {
     "hill_climb": _refine_hill_climb,
-    "sa": _refine_sa,
     "genetic": _refine_genetic,  # genetic doubles as a refiner (e.g. beam+genetic)
 }
 
@@ -903,7 +780,7 @@ def parse_strategy(strategy: str) -> tuple[str, list[str]]:
 
     The FIRST token may be a constructor or a refiner (a leading refiner implies
     the default ``proxy_greedy`` seed); every subsequent token must be a refiner.
-    ``genetic`` is both a constructor (self-seeding) and a refiner (beam+genetic).
+    ``genetic`` is a refiner (beam+genetic); a leading one gets the default seed.
     Raises ``ValueError`` on an unknown token so a typo fails loudly rather than
     silently falling back to random.
     """

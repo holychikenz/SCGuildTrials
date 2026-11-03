@@ -46,6 +46,10 @@ derived planner fields reach `_site/`; raw profile data and the token never do.
    `_site/data.json` — which since 2026-09 also carries this week's assignments
    (see below) — (`src/build.py`) once per guild (Survey Corps at the
    root, other guilds under their own sub-directory, e.g. `_site/li/`).
+   Survey Corps failing fails the build. An optional guild (LI) that fails is
+   skipped, and its **live** files are re-fetched from `config.PAGES_URL` into
+   `_site/li/` so the deploy keeps last week's pages up (a `STALE` WARNING in
+   the log) rather than taking them offline.
 
 ## Run locally
 
@@ -53,7 +57,7 @@ This project uses [uv](https://docs.astral.sh/uv/) (matching CI):
 
 ```bash
 uv run python -m pytest tests/ -v          # offline unit tests
-uv run --extra dev python -m src.optimize_bakeoff   # optimizer bake-off (needs scipy extra)
+uv run --extra dev python -m research.optimize_bakeoff   # optimizer bake-off (needs scipy extra)
 uv run --no-dev python -m src.build        # live fetch -> writes _site/
 open _site/index.html
 ```
@@ -412,7 +416,7 @@ summary strip is outlined and captioned to say so.
 The shipped default is the ensemble strategy `"best"`
 (`config.TRIAL_OPTIMIZER_STRATEGY`): it runs several strong pipelines — including
 a **beam-search-seeded genetic algorithm** — and returns the single best result.
-`src/optimize_bakeoff.py` is the harness that compared the field (see the
+`research/optimize_bakeoff.py` is the harness that compared the field (see the
 `# BAKE-OFF RESULTS` block in `config.py`). To restore the Phase-1 random split,
 set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 

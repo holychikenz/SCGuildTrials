@@ -13,6 +13,10 @@ SHEET_ID = "1b5_zID6K4WRaFXnBMJijSEXr_4l2gi40eFKxuvRJQAE"
 GID = "0"
 
 # Anonymous CSV export (verified working: "anyone with link" sharing).
+# The live GitHub Pages site. When an optional guild's build fails, build.main
+# re-publishes that guild's files from here (stale) rather than deploying without them.
+PAGES_URL = "https://holychikenz.github.io/SCGuildTrials/"
+
 CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     f"{SHEET_ID}/export?format=csv&gid={GID}"
@@ -689,7 +693,7 @@ def derived_party_cap(
 #   constructors: random | proxy_greedy | marginal_greedy | beam | genetic
 #   refiners:     hill_climb | sa
 #
-# BAKE-OFF WINNER: chosen by `python -m src.optimize_bakeoff` across multiple
+# BAKE-OFF WINNER: chosen by `python -m research.optimize_bakeoff` across multiple
 # seeds on live SC data and synthetic rosters (points PRIMARY; the build runs
 # once daily in GitHub Actions, so a few minutes of runtime is fine but hours
 # are not — budgets below are sized to keep the whole optimize step comfortably
@@ -765,7 +769,7 @@ OPT_ENSEMBLE_PIPELINES = ["beam+genetic+hill_climb"] * OPT_RESTARTS
 # 0.01% -> 6.10% (LI). The +200 recorded here survives the change.
 #
 # --- BAKE-OFF RESULTS (PRE-PATCH — step objective) --------------------------
-# `python -m src.optimize_bakeoff` — synthetic roster n=86, seeds 1-3, at the
+# `python -m research.optimize_bakeoff` — synthetic roster n=86, seeds 1-3, at the
 # budgets set below (SA 50k iters x2 restarts, GA pop 100 x 200 gens, beam 16).
 # Points PRIMARY (higher = better); time is per-run wall-clock on the dev box.
 #
@@ -819,34 +823,8 @@ OPT_ENSEMBLE_PIPELINES = ["beam+genetic+hill_climb"] * OPT_RESTARTS
 # worst-case build time.
 OPT_HILLCLIMB_MAX_ITERS = 500
 
-# --- Simulated annealing (sa) -----------------------------------------------
-# RESCALED 2026-08-11, and it had to be: the temperature band is meaningless unless
-# it matches the size of a typical move delta, and partial-tier credit changed that
-# size by two orders of magnitude.
-#
-# BEFORE: point deltas came in multiples of ~100 (one whole tier, the only thing the
-# step objective could see), so T_START = 150 accepted a one-tier loss at
-# exp(-100/150) = exp(-0.67) ~ 0.51 and T_END = 0.5 rejected it outright.
-#
-# AFTER: deltas run ~0.1 to 20 within a tier and ~50 at a tier crossing (the residual
-# step, half the old cliff). Keeping T_START = 150 would accept essentially EVERY
-# worsening move for the whole run — the schedule would not be annealing at all, it
-# would be a random walk. The same design intent, applied to the new scale:
-#   * T_START = 15 accepts a 10-point loss (a typical strong relocate, the new
-#     analogue of "one tier") at exp(-10/15) = exp(-0.67) — the original figure.
-#   * T_END = 0.05 rejects even the smallest meaningful move (~0.1 points, a marginal
-#     seat) at exp(-2) = 0.14 and anything larger decisively.
-# ``research/risk-aware-objective.md`` R1 anticipated exactly this ("drop it to
-# ~0.05").
-#
-# NB `sa` is not in OPT_ENSEMBLE_PIPELINES, so this does not touch the shipped
-# result — but src/optimize_bakeoff.py runs it, and a schedule wrong by 100x would
-# make the bake-off's verdict on SA meaningless.
-# Restarts spend the daily budget on escaping distinct local optima (best kept).
-OPT_SA_ITERS = 50000
-OPT_SA_RESTARTS = 2
-OPT_SA_T_START = 15.0
-OPT_SA_T_END = 0.05
+# --- Simulated annealing (sa): removed, audit 2026-11 (it lost the bake-off; the
+# shipped ensemble never ran it). `git log -S OPT_SA_ITERS` has the schedule notes.
 
 # --- Final safety pass (slack) ----------------------------------------------
 # The objective is a STEP function of the tier reached, so it cannot see HOW
@@ -965,7 +943,7 @@ SLACK_OK = 0.15
 #     rates fall toward SUCCESS_FLOOR.
 #  2. SYSTEMATIC — everything else, and the constant below.
 #
-# RISK_SIGMA_SYSTEMATIC comes from the calibration campaign (src/calibrate.py).
+# RISK_SIGMA_SYSTEMATIC comes from the calibration campaign (research/calibrate.py).
 # It covers unmodelled neck/ring/earring gear (no source this repo reads has a
 # column for those slots), enhancement levels away from the assumed +7, mis-ticked
 # tool checkboxes, and house-level slips.
@@ -1018,7 +996,7 @@ SLACK_OK = 0.15
 #                     by a few points of probability, so it belongs in a scenario
 #                     rather than smeared into sigma.
 #
-# VALIDATED against an independent action-level simulation (src/simulate_trial.py,
+# VALIDATED against an independent action-level simulation (research/simulate_trial.py,
 # 20 000 runs rolling every die): predicted 0.8309 vs realised 0.8407 on the
 # thinnest live lineup, with the entire 1-point residual accounted for by the
 # simulator's own O(dt) grid bias. Coverage across a deadline sweep: mean absolute
@@ -1592,7 +1570,7 @@ BUILD_MAX_WORKERS = None
 # as the lab-sim formula does (research/trial-messages.md §"lab-sim model":
 # `rate(m,t) = success(m,t) * (1 + doubleChance) * floor(workPower_m) / actionSeconds_m`)
 # — see the OPEN QUESTION above. Each term applies only while its buff is active;
-# scenario_buffs_lapsed in src/calibrate.py prices the lapse as a regime.
+# scenario_buffs_lapsed in research/calibrate.py prices the lapse as a regime.
 COMMUNITY_GATHERING_BUFF_DOUBLE = 0.20 + (COMMUNITY_BUFF_LEVEL - 1) * 0.005
 COMMUNITY_PRODUCTION_EFFICIENCY_BUFF = 0.14 + (COMMUNITY_BUFF_LEVEL - 1) * 0.003
 COMMUNITY_ENHANCING_SPEED_BUFF = 0.20 + (COMMUNITY_BUFF_LEVEL - 1) * 0.005

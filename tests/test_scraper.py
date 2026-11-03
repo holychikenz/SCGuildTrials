@@ -281,7 +281,6 @@ def test_fetch_403_is_not_retried(monkeypatch):
     "fetch",
     [
         "src.draw:fetch_draw_csv", "src.signup:fetch_signup_csv",
-        "src.buildings:fetch_buildings_csv", "src.combat:fetch_combat_csv",
         "src.identity:fetch_name_history_csv",
     ],
 )

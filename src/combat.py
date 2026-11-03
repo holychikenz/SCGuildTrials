@@ -93,7 +93,12 @@ from typing import Optional
 
 from . import config, identity
 from . import draw as draw_model
-from .reader import SheetStructureError, _cell, _to_int
+from .reader import (
+    SheetStructureError,
+    _cell,
+    check_guild_id,
+    sentinel_mismatches,
+)
 from .scraper import fetch_tab_csv
 
 # Column indices, matching config.COMBAT_SENTINEL_HEADERS (which is the guard for
@@ -261,22 +266,6 @@ def norm_trial(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.rsplit("/", 1)[-1].lower())
 
 
-def fetch_combat_csv(tab_name: str) -> str:
-    """Fetch a Combat Teams tab's gviz CSV export as text, addressed by tab name.
-
-    Deliberately the same shape as ``scraper.fetch_tab_csv`` and
-    ``buildings.fetch_buildings_csv``, including the 401/403 message: there is one way
-    this sheet becomes unreachable and one thing to say about it.
-
-    Raises:
-        RuntimeError: on 401/403 (sheet sharing likely revoked) or other
-            HTTP/network errors, with a message pointing at the likely cause. This
-            stays FATAL, exactly as it is for every other tab — the member tab on the
-            same host would have failed first.
-    """
-    return fetch_tab_csv(tab_name)
-
-
 def _validate_combat_header(header: list[str], tab: str) -> None:
     """Guard against gviz silently serving the wrong tab, or a hand-edited one.
 
@@ -313,14 +302,7 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
         would then be attributed from nothing. Seven never reaches this branch, and is
         named in that tuple as documentation rather than as a check.
     """
-    mismatches = []
-    for col, (mode, expected) in config.COMBAT_SENTINEL_HEADERS.items():
-        actual = _cell(header, col)  # already stripped
-        ok = actual == expected if mode == "equals" else expected in actual
-        if not ok:
-            mismatches.append(
-                f"col {col}: expected {mode} {expected!r}, got {actual!r}"
-            )
+    mismatches = sentinel_mismatches(header, config.COMBAT_SENTINEL_HEADERS)
 
     if not mismatches and len(header) > len(config.COMBAT_SENTINEL_HEADERS):
         if len(header) not in config.COMBAT_ACCEPTED_WIDTHS:
@@ -328,15 +310,10 @@ def _validate_combat_header(header: list[str], tab: str) -> None:
                 f"header is {len(header)} cells wide; the writer emits one of "
                 f"{config.COMBAT_ACCEPTED_WIDTHS}"
             )
-        for col, (mode, expected) in config.COMBAT_OPTIONAL_HEADERS.items():
-            if col >= len(header):
-                continue  # a narrower SUPPORTED width, not a mismatch
-            actual = _cell(header, col)
-            ok = actual == expected if mode == "equals" else expected in actual
-            if not ok:
-                mismatches.append(
-                    f"col {col}: expected {mode} {expected!r}, got {actual!r}"
-                )
+        # A column past a narrower SUPPORTED width is skipped, not a mismatch.
+        mismatches += sentinel_mismatches(
+            header, config.COMBAT_OPTIONAL_HEADERS, skip_absent=True
+        )
 
     if mismatches:
         raise SheetStructureError(
@@ -356,31 +333,6 @@ def _no_constant(name: str):
     """json.loads accepts NaN/Infinity, which json.dumps writes back out as invalid
     JSON in trials.json; refuse them as malformed."""
     raise ValueError(f"non-finite constant {name}")
-
-
-def _check_guild_id(raw: str, guild_key: str, tab: str, row_no: int) -> None:
-    """Refuse a tab holding another guild's teams.
-
-    Every row carries the id of the guild it was assigned for, and the optimiser
-    routes a guild to a tab through a hand-written "guild slug -> tab" map
-    (``combatTab.js`` ``TAB_BY_GUILD``). So the wrong guild's teams landing on this
-    tab is one typo away, would look entirely plausible on the page, and would glow
-    the wrong tiles for every member of both guilds. Raising rather than falling back
-    is the same call ``buildings._check_guild_id`` makes for the same reason.
-    """
-    expected = config.GUILD_IDS.get(guild_key)
-    if expected is None or raw == "":
-        # No id configured for this guild, or an unstamped row: nothing to check
-        # against. Not invented — a guard with no reference is no guard.
-        return
-    if _to_int(raw) != expected:
-        raise SheetStructureError(
-            f"the {tab!r} tab carries guild id {raw!r} on row {row_no}, but "
-            f"{guild_key!r} is guild id {expected}. This tab holds ANOTHER GUILD'S "
-            f"combat teams, which would glow the wrong tiles for every member while "
-            f"looking entirely plausible. Check the optimiser's TAB_BY_GUILD map in "
-            f"SCLIRoster's optimizer/src/publish/combatTab.js, and config.GUILD_IDS."
-        )
 
 
 def _parse_loadout(
@@ -503,7 +455,11 @@ def parse_combat(csv_text: str, guild_key: str, tab: str = "") -> GuildCombat:
         hrid = _cell(raw, COL_HRID)
         team = _cell(raw, COL_TEAM)
 
-        _check_guild_id(_cell(raw, COL_GUILD_ID), guild_key, tab, row_no)
+        check_guild_id(
+            _cell(raw, COL_GUILD_ID), guild_key, tab, row_no,
+            "combat teams, which would glow the wrong tiles for every member",
+            "the optimiser's TAB_BY_GUILD map in SCLIRoster's "
+            "optimizer/src/publish/combatTab.js")
 
         if name == "":
             # On a HAND-maintained tab a blank name marks the end of the table
@@ -576,7 +532,7 @@ def scrape_combat_tab(tab_name: str, guild_key: str) -> GuildCombat:
             degrades on this rather than failing the deploy.
         RuntimeError: on fetch/HTTP failure, which stays fatal as it does elsewhere.
     """
-    csv_text = fetch_combat_csv(tab_name)
+    csv_text = fetch_tab_csv(tab_name)
     return parse_combat(csv_text, guild_key, tab=tab_name)
 
 

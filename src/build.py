@@ -32,7 +32,14 @@ from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
 from .processor import process
-from .reader import MemberRow, SheetStructureError, fetch_csv, norm_name, parse
+from .reader import (
+    MemberRow,
+    SheetStructureError,
+    fetch_csv,
+    fetch_text,
+    norm_name,
+    parse,
+)
 from .scraper import scrape_member_tab
 
 OUTPUT_DIR = Path("_site")
@@ -2005,7 +2012,6 @@ _STRATEGY_NAMES = {
     "beam": "beam search",
     "genetic": "genetic algorithm",
     "hill_climb": "hill-climbing",
-    "sa": "simulated annealing",
 }
 
 
@@ -6324,6 +6330,39 @@ def _run_units(jobs: list[dict]) -> list[dict]:
         ]
 
 
+# Every file _write_guild can emit for one guild.
+_GUILD_FILES = (
+    "index.html", "data.json", TRIALS_PAGE, TRIALS_JSON, TRIALS_MAXBUFF_PAGE,
+    TRIALS_MAXBUFF_JSON, "signup.html", "signup.json", BUILDINGS_JSON,
+)
+
+
+def _keep_published(site: GuildSite) -> None:
+    """Copy a skipped optional guild's LIVE files back into ``_site``.
+
+    Pages deploys the whole artifact, so a guild missing from ``_site`` goes offline.
+    Last week's pages beat a 404: they are fetched from ``config.PAGES_URL`` and
+    named stale in the log. A file the live site does not have is simply absent.
+    """
+    out = site.out_dir
+    out.mkdir(parents=True, exist_ok=True)
+    kept = []
+    for name in _GUILD_FILES:
+        try:
+            text = fetch_text(f"{config.PAGES_URL}{site.subdir}/{name}",
+                              f"the published {site.subdir}/{name}")
+        except RuntimeError:
+            (out / name).unlink(missing_ok=True)   # never half this build, half last
+            continue
+        (out / name).write_text(text, encoding="utf-8")
+        kept.append(name)
+    print(
+        f"WARNING: {site.key} is STALE: re-published the live {', '.join(kept) or 'nothing'}"
+        f" from {config.PAGES_URL}{site.subdir}/ because this build skipped it.",
+        file=sys.stderr,
+    )
+
+
 def main() -> int:
     """Build every guild's site into ``_site`` (Survey Corps at the root, the rest in
     sub-directories). A ``required`` guild's failure is fatal (non-zero exit blocks
@@ -6338,6 +6377,7 @@ def main() -> int:
 
     # --- Phase 1: fetch (parent, network-bound, ~1s per guild) --------------
     fetched: list[tuple[GuildSite, _GuildInputs]] = []
+    skipped: list[GuildSite] = []  # optional guilds that failed: kept from Pages
     for site in GUILD_SITES:
         try:
             fetched.append((site, _fetch_guild(site, week_draw)))
@@ -6353,6 +6393,7 @@ def main() -> int:
                 f"other guilds continue:\n{exc}",
                 file=sys.stderr,
             )
+            skipped.append(site)
         except Exception as exc:  # noqa: BLE001 — network or anything else
             if site.required:
                 if not isinstance(exc, RuntimeError):
@@ -6364,6 +6405,7 @@ def main() -> int:
                 f"other guilds continue.",
                 file=sys.stderr,
             )
+            skipped.append(site)
 
     # --- Phase 2: optimise (children, CPU-bound, the whole cost of the build) ---
     jobs: list[dict] = []
@@ -6376,6 +6418,7 @@ def main() -> int:
                 raise
             print(f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
                   f"other guilds continue.", file=sys.stderr)
+            skipped.append(site)
             continue
         spans.append((site, inputs, len(jobs), len(jobs) + len(site_jobs)))
         jobs.extend(site_jobs)
@@ -6407,6 +6450,10 @@ def main() -> int:
                 f"other guilds continue.",
                 file=sys.stderr,
             )
+            skipped.append(site)
+
+    for site in skipped:
+        _keep_published(site)
 
     print("Built _site/:")
     for note in notes:

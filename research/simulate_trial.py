@@ -1,6 +1,6 @@
 """Offline action-level simulation of one trial, to audit the risk model.
 
-DEV-ONLY, and deliberately INDEPENDENT of :mod:`src.calibrate`. Nothing here
+DEV-ONLY, and deliberately INDEPENDENT of :mod:`research.calibrate`. Nothing here
 calls ``calibrate``'s race, its Wald variance formula, or its Gaussian sampler —
 the point is to roll every die individually and see whether the analytic model
 told the truth. The only shared code is ``trials`` itself (the party's rates),
@@ -51,8 +51,8 @@ answer.
 
 USAGE
 -----
-    python -m src.simulate_trial                      # Foraging, 10000 runs
-    python -m src.simulate_trial --skill Milking --runs 20000
+    python -m research.simulate_trial                      # Foraging, 10000 runs
+    python -m research.simulate_trial --skill Milking --runs 20000
 """
 
 from __future__ import annotations
@@ -66,8 +66,10 @@ from typing import Optional
 
 import numpy as np
 
-from . import calibrate, config, identity, trials
-from .reader import MemberRow
+from src import config, identity, trials
+
+from research import calibrate
+from src.reader import MemberRow
 
 # --- Validated palette (dataviz six-checks, light surface #fcfcfb) ----------
 # node scripts/validate_palette.js "#3B6FD4,#C8791A,#B03030" --mode light
@@ -532,7 +534,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     signup = os.path.join(root, "_site" if args.guild == "sc"
                           else os.path.join("_site", args.guild), "signup.json")
 
-    from .scraper import scrape_member_tab
+    from src.scraper import scrape_member_tab
     data = scrape_member_tab(config.TABS[args.guild])
     with open(signup) as fh:
         plan = json.load(fh)

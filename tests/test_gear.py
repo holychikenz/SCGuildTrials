@@ -632,7 +632,7 @@ def test_a_garment_neither_ticked_nor_seen_is_not_an_unknown():
     assert "body" in offered and "legs" in offered   # offered...
     # ... and calibrate's own hook declines them, which is where the decision
     # lives; see calibrate._GearPerturbation.unobserved.
-    from src import calibrate
+    from research import calibrate
     import random
     hook = calibrate._GearPerturbation(
         calibrate.Sources(gear_speed=0.03, gear_slots=False), random.Random(0),
@@ -787,7 +787,7 @@ def test_the_control_column_can_price_an_observed_accessory_as_unknown():
 
 def test_ignore_provenance_sets_the_control_flag():
     """The wiring, so the two cannot drift apart."""
-    from src import calibrate
+    from research import calibrate
     import random
     respectful = calibrate._GearPerturbation(
         calibrate.Sources(respect_provenance=True), random.Random(0), _STATS)

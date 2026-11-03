@@ -581,3 +581,22 @@ def test_a_failed_restart_in_the_pool_becomes_that_units_result(monkeypatch):
     first, second = build._run_units([bad, good])
     assert isinstance(first, Exception)
     assert isinstance(second, dict) and "week" in second
+
+
+def test_a_skipped_optional_guild_keeps_its_live_pages(tmp_path, monkeypatch, capsys):
+    """Pages deploys the whole artifact, so a skipped LI must not vanish from it."""
+    monkeypatch.setattr(build, "OUTPUT_DIR", tmp_path)
+    li = next(s for s in build.GUILD_SITES if s.key == "li")
+    li.out_dir.mkdir(parents=True)
+    (li.out_dir / "trials.json").write_text("half-written")
+
+    def fake_fetch(url, what):
+        if url.endswith("/li/index.html"):
+            return "<html>last week</html>"
+        raise RuntimeError("404")
+
+    monkeypatch.setattr(build, "fetch_text", fake_fetch)
+    build._keep_published(li)
+    assert (tmp_path / "li" / "index.html").read_text() == "<html>last week</html>"
+    assert not (tmp_path / "li" / "trials.json").exists()
+    assert "STALE" in capsys.readouterr().err

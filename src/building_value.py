@@ -31,8 +31,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import config
-from .combat import fetch_combat_csv
-from .reader import SheetStructureError, _cell, _to_int
+from .reader import SheetStructureError, _cell, check_guild_id
+from .scraper import fetch_tab_csv
 
 HRID_PREFIX = "/guild_buildings/"
 
@@ -137,19 +137,14 @@ def parse_building_value(
     if not data:
         return unobserved
 
-    want_id = config.GUILD_IDS.get(guild_key)
     out: list[dict] = []
     stamps: list[str] = []
     cycles: list[str] = []
     for offset, raw in enumerate(data):
         row_no = offset + 2
-        gid = _cell(raw, col["Guild Id"])
-        if want_id is not None and gid != "" and _to_int(gid) != want_id:
-            raise SheetStructureError(
-                f"the {tab!r} tab carries guild id {gid!r} on row {row_no}, but "
-                f"{guild_key!r} is guild id {want_id}: another guild's building value. "
-                f"Check TAB_BY_GUILD in SCLIRoster's optimizer/src/publish/buildingTab.js."
-            )
+        check_guild_id(
+            _cell(raw, col["Guild Id"]), guild_key, tab, row_no, "building value",
+            "TAB_BY_GUILD in SCLIRoster's optimizer/src/publish/buildingTab.js")
         hrid = _cell(raw, col["Hrid"])
         if not hrid.startswith(HRID_PREFIX):
             raise SheetStructureError(
@@ -184,4 +179,4 @@ def scrape_building_value_tab(tab_name: str, guild_key: str) -> GuildBuildingVal
     Raises ``SheetStructureError`` on a structural problem (degraded by build) and
     ``RuntimeError`` on a network failure (fatal, as for every tab on this host).
     """
-    return parse_building_value(fetch_combat_csv(tab_name), guild_key, tab=tab_name)
+    return parse_building_value(fetch_tab_csv(tab_name), guild_key, tab=tab_name)

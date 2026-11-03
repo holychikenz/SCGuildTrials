@@ -517,7 +517,7 @@ was wrong: **that golden pins the RATE MODEL, and two of the fields it compares 
 built from the RISK constant** (`clear_probability` and `expected_points`). Nothing
 had made the distinction because `RISK_SIGMA_SYSTEMATIC` had never moved before, so
 a test whose subject is *which parties the search chose and what they scored* was
-quietly also pinning a number measured by `src/calibrate.py`.
+quietly also pinning a number measured by `research/calibrate.py`.
 
 Fixed by pinning the constant inside the test, by name, at the value the golden was
 generated under — not by regenerating the golden and not by loosening a tolerance.

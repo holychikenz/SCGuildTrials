@@ -217,6 +217,42 @@ def norm_name(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def sentinel_mismatches(
+    header: list[str], sentinels: dict, skip_absent: bool = False
+) -> list[str]:
+    """``{col: (mode, expected)}`` checked against ``header``: "equals" or substring
+    containment, after strip. ``skip_absent`` ignores a column the header does not
+    reach. Shared by every tab's wrong-tab guard; each keeps its own message."""
+    out = []
+    for col, (mode, expected) in sentinels.items():
+        if skip_absent and col >= len(header):
+            continue
+        actual = _cell(header, col)
+        if not (actual == expected if mode == "equals" else expected in actual):
+            out.append(f"col {col}: expected {mode} {expected!r}, got {actual!r}")
+    return out
+
+
+def check_guild_id(
+    raw: str, guild_key: str, tab: str, row_no: int, holds: str, fix: str
+) -> None:
+    """Refuse a row stamped with another guild's id: one routing typo away, and it
+    would look entirely plausible on the page. Blank ``raw`` or no configured id for
+    ``guild_key``: nothing to check against (a guard with no reference is no guard).
+
+    ``holds`` names what the wrong guild's rows would be, ``fix`` where to look.
+    """
+    expected = config.GUILD_IDS.get(guild_key)
+    if expected is None or raw == "":
+        return
+    if _to_int(raw) != expected:
+        raise SheetStructureError(
+            f"the {tab!r} tab carries guild id {raw!r} on row {row_no}, but "
+            f"{guild_key!r} is guild id {expected}. This tab holds ANOTHER GUILD'S "
+            f"{holds}. Check {fix}, and config.GUILD_IDS."
+        )
+
+
 def _to_bool(value: str) -> bool:
     """Literal 'TRUE' -> True, everything else (incl. blank/'FALSE') -> False."""
     return value.strip().upper() == "TRUE"

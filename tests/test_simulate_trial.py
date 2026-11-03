@@ -8,7 +8,8 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from src import config, simulate_trial, trials  # noqa: E402
+from research import simulate_trial  # noqa: E402
+from src import config, trials  # noqa: E402
 from src.reader import MemberRow, SkillEntry  # noqa: E402
 
 

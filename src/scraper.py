@@ -32,9 +32,9 @@ from . import config
 from .reader import (
     MemberRow,
     SheetStructureError,
-    _cell,
     fetch_text,
     parse_member_rows,
+    sentinel_mismatches,
 )
 
 
@@ -70,14 +70,7 @@ def _validate_gviz_header(header: list[str]) -> None:
     Sentinel cells may carry merged junk text and trailing spaces, so matching
     is by substring containment (after strip) unless the mode is "equals".
     """
-    mismatches = []
-    for col, (mode, expected) in config.GVIZ_SENTINEL_HEADERS.items():
-        actual = _cell(header, col)  # already stripped
-        ok = actual == expected if mode == "equals" else expected in actual
-        if not ok:
-            mismatches.append(
-                f"col {col}: expected {mode} {expected!r}, got {actual!r}"
-            )
+    mismatches = sentinel_mismatches(header, config.GVIZ_SENTINEL_HEADERS)
 
     if mismatches:
         raise SheetStructureError(

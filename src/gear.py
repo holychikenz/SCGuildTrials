@@ -218,8 +218,6 @@ STAT_CHANNELS: dict[str, tuple[tuple[str, ...], str]] = {
     "enhancingSuccess":        (("Enhancing",),    "success"),
 }
 
-CHANNELS = ("speed", "efficiency", "success", "gathering")
-
 # ---------------------------------------------------------------------------
 # What an UNOBSERVED item in each slot is worth
 # ---------------------------------------------------------------------------
@@ -447,7 +445,7 @@ class ImputationStats:
     garment_n: int = 0
     # --- and the OBSERVED SPREAD behind each mean, for the risk campaign -----
     # The means above are what the shipped model imputes. These are what
-    # ``src.calibrate`` resamples from to price the IMPUTATION ERROR — a term no
+    # ``research.calibrate`` resamples from to price the IMPUTATION ERROR — a term no
     # earlier sigma carried, because no earlier model imputed anything.
     #
     # RESAMPLED, NOT PERTURBED BY A HALF-WIDTH, and the difference is the whole
@@ -593,7 +591,7 @@ class GearAudit:
 
 
 class Perturbation:
-    """How ``src.calibrate``'s campaign disturbs a resolved wardrobe.
+    """How ``research.calibrate``'s campaign disturbs a resolved wardrobe.
 
     THE HOOK EXISTS SO THAT THE CAMPAIGN DOES NOT FORK THE ARITHMETIC, which is
     the lesson ``calibrate._perturbed_tool_terms`` records in its own docstring:
@@ -707,7 +705,7 @@ def resolve(
     the project, where attribute lookups are measurable.
 
     ``skills`` narrows the work to the named skills instead of all ten. The build
-    wants all ten and passes None; ``src.calibrate`` re-resolves ONE skill inside
+    wants all ten and passes None; ``research.calibrate`` re-resolves ONE skill inside
     a 20,000-replicate loop and would otherwise do ten times the work and discard
     nine tenths of it.
 

@@ -607,21 +607,6 @@ def _sheet_column_for(trial_skill: str) -> str:
     return config.TRIAL_SKILL_TO_SHEET_COLUMN.get(trial_skill, trial_skill)
 
 
-def _locked_skill_of(
-    picks: set[str], draw: list[str]
-) -> Optional[str]:
-    """Which drawn trial a member is locked into, or ``None`` if uncommitted.
-
-    A member is locked into the FIRST drawn trial (in ``draw`` order) whose sheet
-    column they ticked. Ticking more than one drawn trial is a conflict recorded
-    by the caller; the first tick wins so the member is still placed.
-    """
-    for t in draw:
-        if _sheet_column_for(t) in picks:
-            return t
-    return None
-
-
 def _single_move_climb(
     parties: list[set[int]],
     scorer: AssignmentScorer,

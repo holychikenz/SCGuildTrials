@@ -1,6 +1,6 @@
 """Bake-off harness: compare optimizer strategies on points AND speed.
 
-Runnable: ``python -m src.optimize_bakeoff [--live] [--seeds N] [--sizes 40,86]``
+Runnable: ``python -m research.optimize_bakeoff [--live] [--seeds N] [--sizes 40,86]``
 
 Each strategy is run against the same roster(s) and the same per-strategy seed
 sequence, and judged on:
@@ -37,10 +37,10 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from . import config
-from .optimizer import AssignmentScorer, optimize, run_strategy
-from .reader import MemberRow, SkillEntry
-from .trials import simulate_race
+from src import config
+from src.optimizer import AssignmentScorer, optimize, run_strategy
+from src.reader import MemberRow, SkillEntry
+from src.trials import simulate_race
 
 # Strategy field for the bake-off. Constructors alone, plus constructor+refiner
 # pairings, so the table shows both raw seeds and what refinement buys.
@@ -49,16 +49,11 @@ STRATEGIES = [
     "proxy_greedy",
     "marginal_greedy",
     "beam",
-    "genetic",
     "proxy_greedy+hill_climb",
-    "proxy_greedy+sa",
-    "proxy_greedy+sa+hill_climb",
     "marginal_greedy+hill_climb",
-    "marginal_greedy+sa+hill_climb",
     "beam+hill_climb",
     "beam+genetic",
     "beam+genetic+hill_climb",
-    "genetic+hill_climb",
     "best",  # the shipped ensemble default
 ]
 
@@ -116,8 +111,8 @@ def _synthetic_roster(
 def _live_roster(skills: list[str]) -> Optional[list[MemberRow]]:
     """The live SC members as the build assembles them; None on any failure."""
     try:
-        from . import draw as draw_model
-        from .build import GUILD_SITES, _fetch_guild
+        from src import draw as draw_model
+        from src.build import GUILD_SITES, _fetch_guild
 
         site = next(s for s in GUILD_SITES if s.key == "sc")
         return _fetch_guild(site, draw_model.TrialDraw(skills=skills, date="")).members
@@ -142,7 +137,7 @@ def _scipy_lap_parties(
     """
     import numpy as np
     from scipy.optimize import linear_sum_assignment
-    from .optimizer import _rate_matrix
+    from src.optimizer import _rate_matrix
 
     n = len(scorer.members)
     S = len(scorer.skills)

@@ -29,8 +29,6 @@ def _signup_html(page, *args, **kwargs):
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _fast_optimizer_budget(monkeypatch):
-    monkeypatch.setattr(config, "OPT_SA_ITERS", 1000)
-    monkeypatch.setattr(config, "OPT_SA_RESTARTS", 1)
     monkeypatch.setattr(config, "OPT_GA_POP", 16)
     monkeypatch.setattr(config, "OPT_GA_GENERATIONS", 15)
     monkeypatch.setattr(config, "OPT_BEAM_WIDTH", 5)

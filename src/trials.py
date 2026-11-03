@@ -399,8 +399,7 @@ def tool_bonus(
     if item_skill != _sheet_column(skill):
         raise _slot_mismatch(skill, item, item_skill)
     level = config.TOOL_ENHANCE_WHEN_UNKNOWN if enhance is None else enhance
-    level = max(0, min(len(config.ENHANCEMENT_MULT_TABLE) - 1, level))
-    value = base + config.ENHANCEMENT_MULT_TABLE[level] * per
+    value = gear_model.effective_stat(base, per, level)
     return (value, 0.0) if channel == "speed" else (0.0, value)
 
 
@@ -1163,7 +1162,7 @@ def clear_sigma(
 
     Returns None when the party cannot move at all.
 
-    VALIDATED against a direct action-level roll (src/simulate_trial.py): the
+    VALIDATED against a direct action-level roll (research/simulate_trial.py): the
     formula reproduces the simulated sd to within 0.2% at the marginal tier, and
     tracks it across all thirteen tiers of the live Foraging lineup.
     """
@@ -1487,20 +1486,6 @@ def points_for_credit(tier_reached: int, credit: float) -> float:
     if tier_reached < 1 and not config.TRIAL_PARTIAL_CREDIT_BASE_ON_PARTIAL:
         return config.TRIAL_POINTS_PER_TIER * credit
     return config.TRIAL_POINTS_BASE + config.TRIAL_POINTS_PER_TIER * credit
-
-
-def points_for_result(
-    result: "TrialResult", rate: Optional[float] = None
-) -> float:
-    """Guild points for ``result`` INCLUDING partial-tier credit.
-
-    ``== float(points_for_tier(result.tier_reached))`` exactly when ``rate`` (or
-    ``config.TRIAL_PARTIAL_CREDIT_RATE``) is 0.0.
-    """
-    fraction = tier_progress_fraction(result)
-    return points_for_credit(
-        result.tier_reached, credit_tiers(result.tier_reached, fraction, rate)
-    )
 
 
 def combat_points_for_credit(tiers_cleared: int, final_tier_fraction: float = 0.0) -> float:
