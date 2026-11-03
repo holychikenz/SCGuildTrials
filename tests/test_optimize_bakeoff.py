@@ -6,7 +6,8 @@ import types
 
 import pytest
 
-from src import build, optimize_bakeoff as bakeoff
+from research import optimize_bakeoff as bakeoff
+from src import build
 
 
 @pytest.fixture

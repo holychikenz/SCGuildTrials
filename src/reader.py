@@ -217,6 +217,42 @@ def norm_name(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def sentinel_mismatches(
+    header: list[str], sentinels: dict, skip_absent: bool = False
+) -> list[str]:
+    """``{col: (mode, expected)}`` checked against ``header``: "equals" or substring
+    containment, after strip. ``skip_absent`` ignores a column the header does not
+    reach. Shared by every tab's wrong-tab guard; each keeps its own message."""
+    out = []
+    for col, (mode, expected) in sentinels.items():
+        if skip_absent and col >= len(header):
+            continue
+        actual = _cell(header, col)
+        if not (actual == expected if mode == "equals" else expected in actual):
+            out.append(f"col {col}: expected {mode} {expected!r}, got {actual!r}")
+    return out
+
+
+def check_guild_id(
+    raw: str, guild_key: str, tab: str, row_no: int, holds: str, fix: str
+) -> None:
+    """Refuse a row stamped with another guild's id: one routing typo away, and it
+    would look entirely plausible on the page. Blank ``raw`` or no configured id for
+    ``guild_key``: nothing to check against (a guard with no reference is no guard).
+
+    ``holds`` names what the wrong guild's rows would be, ``fix`` where to look.
+    """
+    expected = config.GUILD_IDS.get(guild_key)
+    if expected is None or raw == "":
+        return
+    if _to_int(raw) != expected:
+        raise SheetStructureError(
+            f"the {tab!r} tab carries guild id {raw!r} on row {row_no}, but "
+            f"{guild_key!r} is guild id {expected}. This tab holds ANOTHER GUILD'S "
+            f"{holds}. Check {fix}, and config.GUILD_IDS."
+        )
+
+
 def _to_bool(value: str) -> bool:
     """Literal 'TRUE' -> True, everything else (incl. blank/'FALSE') -> False."""
     return value.strip().upper() == "TRUE"
@@ -280,29 +316,37 @@ def warn_rows_after_blank(rest: list[list[str]], where: str) -> None:
         )
 
 
-def parse(csv_text: str) -> list[MemberRow]:
-    """Parse the CSV text into a list of ``MemberRow``.
+def parse_member_rows(
+    data: list[list[str]], where: str, last_col: int | None = None
+) -> list[MemberRow]:
+    """Read member rows until the first blank Member cell (shared by the register
+    CSV and the gviz member tab). ``last_col`` drops trailing summary columns.
 
-    Skips the two note rows, validates the header, then reads member rows
-    until the first empty Member cell.
+    Raises:
+        SheetStructureError: no member was read but named rows sit below the
+            blank — a stray blank row under the header, which would otherwise
+            publish an empty site.
     """
-    rows = list(csv.reader(io.StringIO(csv_text)))
-    _validate_header(rows)
-
     members: list[MemberRow] = []
-    data = rows[config.FIRST_DATA_ROW_INDEX :]
-    for i, row in enumerate(data):
+    for i, raw in enumerate(data):
+        row = raw if last_col is None else raw[: last_col + 1]
         name = _cell(row, config.COL_NAME)
         if name == "":
             # First blank Member cell marks the end of the member list.
-            warn_rows_after_blank(data[i + 1 :], "the register CSV")
+            if not members and any(_cell(r, config.COL_NAME) for r in data[i + 1 :]):
+                raise SheetStructureError(
+                    f"{where}: a blank Member cell sits above every member "
+                    f"(row {i + 1} of the data), so 0 members would be read. "
+                    "Delete the blank row."
+                )
+            warn_rows_after_blank(data[i + 1 :], where)
             break
 
         flex_levels = [_to_int(_cell(row, c)) for c in config.FLEX_LEVEL_COLS]
 
         skills: dict[str, SkillEntry] = {}
-        for i, skill_name in enumerate(config.SKILLS):
-            base = config.SKILL_BLOCK_START + i * config.SKILL_BLOCK_STRIDE
+        for j, skill_name in enumerate(config.SKILLS):
+            base = config.SKILL_BLOCK_START + j * config.SKILL_BLOCK_STRIDE
             skills[skill_name] = SkillEntry(
                 level=_to_int(_cell(row, base + config.SKILL_LEVEL_OFFSET)),
                 tool=_to_bool(_cell(row, base + config.SKILL_TOOL_OFFSET)),
@@ -320,5 +364,16 @@ def parse(csv_text: str) -> list[MemberRow]:
                 skills=skills,
             )
         )
-
     return members
+
+
+def parse(csv_text: str) -> list[MemberRow]:
+    """Parse the CSV text into a list of ``MemberRow``.
+
+    Skips the two note rows, validates the header, then reads member rows
+    until the first empty Member cell.
+    """
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    _validate_header(rows)
+
+    return parse_member_rows(rows[config.FIRST_DATA_ROW_INDEX :], "the register CSV")

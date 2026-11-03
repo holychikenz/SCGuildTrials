@@ -433,7 +433,7 @@ moment SC and LI diverge.
 ### 7.4 Does the new Stats modal expose per-member contribution? (plan §3.6) — OPPORTUNITY, not a gate
 
 *"per-member combat/skilling stats"* would be the **first per-member ground truth
-this project has ever had**, and `src/calibrate.py` is built to consume exactly
+this project has ever had**, and `research/calibrate.py` is built to consume exactly
 that. Its `RISK_SIGMA_SYSTEMATIC = 0.0131` (`config.py:406`) exists *because*
 neck/ring/earring gear and real enhancement levels are unobserved: a modal that
 reports per-member work would let that constant be **measured instead of

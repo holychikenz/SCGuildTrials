@@ -413,7 +413,13 @@ function doPost(e) {
     }
 
     sh.getRange(1, 1, 1, nCols).setValues([header.slice()]);
-    if (out.length) sh.getRange(2, 1, out.length, nCols).setValues(out);
+    // Every row, not only the payload's: getValues() hands back a defused cell
+    // WITHOUT its apostrophe, so a stored row rewritten raw would re-arm it.
+    if (out.length) {
+      sh.getRange(2, 1, out.length, nCols).setValues(
+        out.map(function (r) { return normaliseRow_(r, nCols); }));
+    }
+    SpreadsheetApp.flush();                      // commit BEFORE the release
 
     return json_({
       ok: true,
@@ -469,9 +475,17 @@ function normaliseRow_(src, nCols) {
   var line = [];
   for (var c = 0; c < nCols; c++) {
     var v = src[c];
-    line.push((v === null || v === undefined) ? '' : v);
+    line.push((v === null || v === undefined) ? '' : typeof v === 'string' ? noFormula_(v) : v);
   }
   return line;
+}
+
+// A string Sheets would run as a formula (= + - @ first) gets a leading
+// apostrophe, which Sheets stores as "show as text" and never exports. A
+// numeric string such as "-3" is left alone so it still lands as a number.
+// (A copy of the one in ../Code.gs: each is a separate Apps Script project.)
+function noFormula_(s) {
+  return /^[=+\-@]/.test(s) && !/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(s) ? "'" + s : s;
 }
 
 // '' → [] — a NON-CONTRIBUTION, which is what a hidden member sends and what a

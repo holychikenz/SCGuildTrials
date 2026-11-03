@@ -11,6 +11,7 @@ import contextlib
 import html
 import json
 import os
+import shutil
 import sys
 from collections import Counter
 from concurrent import futures
@@ -32,7 +33,14 @@ from . import roster as roster_model
 from . import signup as signup_model
 from . import trials as trials_model
 from .processor import process
-from .reader import MemberRow, SheetStructureError, fetch_csv, norm_name, parse
+from .reader import (
+    MemberRow,
+    SheetStructureError,
+    fetch_csv,
+    fetch_text,
+    norm_name,
+    parse,
+)
 from .scraper import scrape_member_tab
 
 OUTPUT_DIR = Path("_site")
@@ -659,6 +667,7 @@ def _attach_week(
     week: Optional[dict],
     draw_warning: str,
     renames: Optional[dict[str, str]] = None,
+    departed: tuple[str, ...] = (),
 ) -> None:
     """Project this week's assignments onto the register, in place.
 
@@ -690,6 +699,10 @@ def _attach_week(
     name the model used; the register row keeps the officers' spelling. It is
     applied BEFORE the exact/normalised lookups, so a chain or swap rename (whose
     OLD name is now someone else's seat) still finds the member's own seat.
+
+    ``departed`` (from ``signup.filter_departed``) names members who left the guild:
+    the officers' tab still lists them, the optimiser rightly never saw them, so an
+    unseated one is stamped ``departed`` rather than ``unassigned``.
     """
     if week is None:
         register["week"] = None
@@ -720,6 +733,7 @@ def _attach_week(
 
     claimed: set[str] = set()
     unassigned: list[str] = []
+    gone = {norm_name(n) for n in departed}
     for m in members:
         # The rename FIRST: in a chain (Bob -> Carol, then Alice takes "Bob") or a
         # swap, the officers' OLD spelling is someone else's live seat, so an exact
@@ -731,7 +745,9 @@ def _attach_week(
         hit = target if target in seat else None
         if hit is None and norm_name(target) not in ambiguous:
             hit = by_norm.get(norm_name(target))
-        if hit is None:
+        if hit is None and (norm_name(target) in gone or norm_name(m["name"]) in gone):
+            m["trial"] = {"skill": None, "status": "departed"}
+        elif hit is None:
             m["trial"] = {"skill": None, "status": "unassigned"}
             unassigned.append(m["name"])
         else:
@@ -1997,7 +2013,6 @@ _STRATEGY_NAMES = {
     "beam": "beam search",
     "genetic": "genetic algorithm",
     "hill_climb": "hill-climbing",
-    "sa": "simulated annealing",
 }
 
 
@@ -2394,6 +2409,8 @@ def _render_shrines_section(week: dict) -> str:
             note = _LOOT_OR_XP_BUFFS.get(u.get("buff"), "nobody is at the cap")
             if u.get("at_cap"):
                 note = "at the level cap"
+            if not u.get("modelled", True):
+                note = "not modelled (ROSTER_USE_SHRINES is off)"
             rows.append(
                 "<tr class=dim>"
                 f"<th>{html.escape(u.get('name') or u.get('shrine') or '?')}</th>"
@@ -2444,6 +2461,8 @@ def _render_shrines_section(week: dict) -> str:
         cls = "" if gain > 0 else " class=dim"
         if gain > 0:
             worth = f"+{_cp(gain)}"
+        elif not a.get("modelled", True):
+            worth = "not modelled (ROSTER_USE_SHRINES is off)"
         elif a.get("buff") in _LOOT_OR_XP_BUFFS:
             # The currency check comes FIRST. Rarity's cap is 0 on both guilds, so
             # "nobody is below it" is true and would otherwise be printed instead of
@@ -4189,8 +4208,9 @@ def _render_signup_html(p: dict, site: "GuildSite") -> str:
     if p["conflicts"]:
         items = "".join(f"<li>{html.escape(c)}</li>" for c in p["conflicts"])
         conflicts_html = (
-            f'<p class="meta warn-text">Sign-up conflicts (multiple ticks): '
-            f'resolved to the first drawn choice.</p><ul>{items}</ul>'
+            f'<p class="meta warn-text">Sign-up conflicts (multiple ticks resolve '
+            f'to the first drawn choice; an over-cap party must shed volunteers):'
+            f'</p><ul>{items}</ul>'
         )
 
     bench_html = (
@@ -4801,6 +4821,10 @@ class _GuildInputs:
     # "renamed OLD → NEW (id N)"). _attach_week uses it to stamp the register,
     # which keeps the officers' spelling.
     renames: dict[str, str] = field(default_factory=dict)
+    # Names signup.filter_departed dropped (left the guild): stamped "departed" on the
+    # register by _attach_week rather than warned about as "unassigned".
+    # A plain default, not a factory, so inputs built with __new__ read ().
+    departed: tuple[str, ...] = ()
     # The rename resolver _fetch_guild built (roll, Name History, roster). Read by
     # _combat_block, which only shows a seat under a name the ROLL reports for its
     # id. None for inputs built outside _fetch_guild: then no seat is renamed.
@@ -5126,7 +5150,10 @@ def _fetch_combat(
                         f"Reason: {exc}"
                     )
                 else:
-                    reason = combat_model.cross_check(observed, pair)
+                    reason = combat_model.cross_check(
+                        observed, pair,
+                        combat_model.unsigned_bosses(signup_csv, pair),
+                    )
 
     if reason:
         # One line, one shape, every failure mode — including the flag, so a build
@@ -5485,6 +5512,7 @@ def _fetch_guild(site: "GuildSite", week_draw: "draw_model.TrialDraw") -> _Guild
         building_value_unavailable=building_value_unavailable,
         renames=renames,
         resolver=resolver,
+        departed=tuple(departed),
     )
 
 
@@ -5989,7 +6017,8 @@ def _write_guild(
     # the register carries both. Gated: config.REGISTER_CARRIES_WEEK = False is the
     # byte-for-byte rollback of the API (no new keys, no Trial column).
     if config.REGISTER_CARRIES_WEEK:
-        _attach_week(inputs.register, week, draw_warning, inputs.renames)
+        _attach_week(inputs.register, week, draw_warning, inputs.renames,
+                     inputs.departed)
         stamped = inputs.register["week"]
         if stamped is not None and stamped["unassigned"]:
             # Should never fire: roster.merge copies every manual member, so every
@@ -6130,6 +6159,13 @@ def _write_guild(
                 + "; ".join(plan["normalized_matches"]),
                 file=sys.stderr,
             )
+        for t in plan["trials"]:
+            if t["open_seats"] < 0:
+                print(
+                    f"WARNING ({site.key}): {t['skill']} has {-t['open_seats']} more "
+                    f"volunteer(s) than the party cap; they cannot all be seated in game.",
+                    file=sys.stderr,
+                )
         if plan["unmatched_signups"]:
             print(
                 f"WARNING ({site.key}): {len(plan['unmatched_signups'])} sign-up "
@@ -6302,6 +6338,22 @@ def _run_units(jobs: list[dict]) -> list[dict]:
         ]
 
 
+def _drop_skipped(site: GuildSite) -> None:
+    """Remove a skipped optional guild's partly written files from ``_site``.
+
+    Its pages then 404 until the next good build. Deliberate: re-publishing last
+    week's files would show last week's seats as current, since trials.json and
+    signup.json carry no stale flag the userscript reads.
+    """
+    assert site.subdir, "never remove the site root"
+    shutil.rmtree(site.out_dir, ignore_errors=True)
+    print(
+        f"WARNING: {site.key} is OFFLINE until the next good build: its "
+        f"{site.out_dir} was removed so no half-written files deploy.",
+        file=sys.stderr,
+    )
+
+
 def main() -> int:
     """Build every guild's site into ``_site`` (Survey Corps at the root, the rest in
     sub-directories). A ``required`` guild's failure is fatal (non-zero exit blocks
@@ -6316,6 +6368,7 @@ def main() -> int:
 
     # --- Phase 1: fetch (parent, network-bound, ~1s per guild) --------------
     fetched: list[tuple[GuildSite, _GuildInputs]] = []
+    skipped: list[GuildSite] = []  # optional guilds that failed: kept from Pages
     for site in GUILD_SITES:
         try:
             fetched.append((site, _fetch_guild(site, week_draw)))
@@ -6331,6 +6384,7 @@ def main() -> int:
                 f"other guilds continue:\n{exc}",
                 file=sys.stderr,
             )
+            skipped.append(site)
         except Exception as exc:  # noqa: BLE001 — network or anything else
             if site.required:
                 if not isinstance(exc, RuntimeError):
@@ -6342,6 +6396,7 @@ def main() -> int:
                 f"other guilds continue.",
                 file=sys.stderr,
             )
+            skipped.append(site)
 
     # --- Phase 2: optimise (children, CPU-bound, the whole cost of the build) ---
     jobs: list[dict] = []
@@ -6354,6 +6409,7 @@ def main() -> int:
                 raise
             print(f"WARNING: {site.key} skipped ({type(exc).__name__}: {exc}); "
                   f"other guilds continue.", file=sys.stderr)
+            skipped.append(site)
             continue
         spans.append((site, inputs, len(jobs), len(jobs) + len(site_jobs)))
         jobs.extend(site_jobs)
@@ -6385,6 +6441,10 @@ def main() -> int:
                 f"other guilds continue.",
                 file=sys.stderr,
             )
+            skipped.append(site)
+
+    for site in skipped:
+        _drop_skipped(site)
 
     print("Built _site/:")
     for note in notes:

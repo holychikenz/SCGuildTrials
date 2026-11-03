@@ -79,9 +79,9 @@ model or it is measuring its own bugs.
 
 USAGE
 -----
-    python -m src.calibrate                 # full campaign on the live SC lineup
-    python -m src.calibrate --reps 20000    # tighter error bars
-    python -m src.calibrate --guild li
+    python -m research.calibrate                 # full campaign on the live SC lineup
+    python -m research.calibrate --reps 20000    # tighter error bars
+    python -m research.calibrate --guild li
 """
 
 from __future__ import annotations
@@ -95,10 +95,10 @@ import statistics
 from dataclasses import dataclass, fields, replace
 from typing import Callable, Iterable, Optional
 
-from . import config, gear as gear_model, identity, roster as roster_model, trials
-from .reader import MemberRow
-from .roster import PROFILES as _PROFILES
-from .roster import ROSTER as _ROSTER
+from src import config, gear as gear_model, identity, roster as roster_model, trials
+from src.reader import MemberRow
+from src.roster import PROFILES as _PROFILES
+from src.roster import ROSTER as _ROSTER
 
 # ---------------------------------------------------------------------------
 # Enhancement multiplier table (research/item-stats.json)
@@ -1102,7 +1102,7 @@ def expected_points(cal: TrialCalibration) -> float:
     adds ``PER_TIER * rate * E[f]``, and ``E[f]`` is NOT recoverable from the survival
     curve: the curve records WHETHER each tier was cleared, not how far into the next
     one the party had got when the hour ran out. Estimating it properly needs realised
-    clearing TIMES — which is what ``src/simulate_trial.py`` now reports, by rolling
+    clearing TIMES — which is what ``research/simulate_trial.py`` now reports, by rolling
     every die (see its ``report_partial_credit``).
 
     Keeping the two apart matters for reading the report: this figure is directly
@@ -1576,7 +1576,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "signup.json",
     )
 
-    from .scraper import scrape_member_tab
+    from src.scraper import scrape_member_tab
     data = scrape_member_tab(config.TABS[args.guild])
     print(f"roster: {data.member_count} members ({config.TABS[args.guild]}), "
           f"fetched {data.fetched_at}")

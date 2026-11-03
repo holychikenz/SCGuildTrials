@@ -283,6 +283,9 @@ def find_member(members, name: str, character_id=None):
         for m in members:
             if parse_id(getattr(m, "character_id", None)) == cid:
                 return m
+        # A name held under ANOTHER id is someone else (a rename freed it).
+        members = [m for m in members
+                   if parse_id(getattr(m, "character_id", None)) is None]
     for m in members:
         if m.name == name:
             return m

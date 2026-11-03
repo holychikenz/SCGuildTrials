@@ -46,6 +46,11 @@ derived planner fields reach `_site/`; raw profile data and the token never do.
    `_site/data.json` — which since 2026-09 also carries this week's assignments
    (see below) — (`src/build.py`) once per guild (Survey Corps at the
    root, other guilds under their own sub-directory, e.g. `_site/li/`).
+   Survey Corps failing fails the build. An optional guild (LI) that fails is
+   skipped and its `_site/li/` removed, so LI's pages 404 until the next good
+   build (an `OFFLINE` WARNING in the log). Re-publishing last week's files was
+   rejected: `trials.json` has no stale flag, so members would see old seats as
+   current.
 
 ## Run locally
 
@@ -53,7 +58,7 @@ This project uses [uv](https://docs.astral.sh/uv/) (matching CI):
 
 ```bash
 uv run python -m pytest tests/ -v          # offline unit tests
-uv run --extra dev python -m src.optimize_bakeoff   # optimizer bake-off (needs scipy extra)
+uv run --extra dev python -m research.optimize_bakeoff   # optimizer bake-off (needs scipy extra)
 uv run --no-dev python -m src.build        # live fetch -> writes _site/
 open _site/index.html
 ```
@@ -412,7 +417,7 @@ summary strip is outlined and captioned to say so.
 The shipped default is the ensemble strategy `"best"`
 (`config.TRIAL_OPTIMIZER_STRATEGY`): it runs several strong pipelines — including
 a **beam-search-seeded genetic algorithm** — and returns the single best result.
-`src/optimize_bakeoff.py` is the harness that compared the field (see the
+`research/optimize_bakeoff.py` is the harness that compared the field (see the
 `# BAKE-OFF RESULTS` block in `config.py`). To restore the Phase-1 random split,
 set `TRIAL_OPTIMIZER_STRATEGY = "random"` (a one-line rollback).
 
@@ -532,7 +537,8 @@ Two additions, both gated on `config.REGISTER_CARRIES_WEEK`:
   `points`, `credit_points`, `clear_probability`, `members` as a name list),
   `bench`, `not_on_register` and `unassigned`.
 - A **`trial`** stamp on every member: `{"skill": …, "status": …}`, where `status`
-  is `assigned`, `bench` or `unassigned` and `skill` is `null` unless assigned.
+  is `assigned`, `bench`, `departed` (left the guild) or `unassigned` and `skill`
+  is `null` unless assigned.
 
 The consumer recipe:
 

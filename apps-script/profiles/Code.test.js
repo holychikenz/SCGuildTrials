@@ -99,9 +99,13 @@ function makeSheet(grid = [], { maxRows = 1000, maxCols = 26 } = {}) {
 // the way a concurrent write from another machine would.
 function load(sheetsByName, { lock = {} } = {}) {
     const { granted = true } = lock;
-    const lockCalls = { tried: 0, released: 0, opened: [] };
+    const lockCalls = { tried: 0, released: 0, flushes: [], opened: [] };
     const ctx = {
-        SpreadsheetApp: { openById: (id) => { lockCalls.opened.push(id); return { getSheetByName: (n) => sheetsByName[n] || null }; } },
+        SpreadsheetApp: {
+            openById: (id) => { lockCalls.opened.push(id); return { getSheetByName: (n) => sheetsByName[n] || null }; },
+            // Records how many releases had happened when the flush ran.
+            flush: () => { lockCalls.flushes.push({ releasedBefore: lockCalls.released }); },
+        },
         // The gear column is MERGED rather than overwritten, which makes the
         // read-modify-write racy for the first time; Code.gs takes a script lock
         // around it. Without this stub the vm context throws ReferenceError.
@@ -1082,4 +1086,35 @@ test("a blank incoming or stored capturedAt behaves as before: the payload wins"
         post(ctx, { secret: SECRET, tab: TAB, header: h, rows: [capRow("Yedic", 1, incoming, "", { total: 2000 })] });
         assert.strictEqual(cellOf(sh, 1, "totalLevel"), 2000);
     }
+});
+
+test("an upsert flushes its writes BEFORE releasing the lock", (t) => {
+    const h = header();
+    const sh = makeSheet([h], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Roster", header: h, rows: [row("jodend", 8888)] });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.deepStrictEqual(ctx._lockCalls.flushes, [{ releasedBefore: 0 }]);
+    assert.strictEqual(ctx._lockCalls.released, 1);
+});
+
+test("a formula-looking string is defused; numbers stay numbers", (t) => {
+    const h = header();
+    const sh = makeSheet([h], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Roster", header: h,
+        rows: [row("jodend", 8888, { total: -5, tool: "=IMPORTXML(1)" })] });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh._grid[1][6], "'=IMPORTXML(1)");
+    assert.strictEqual(sh._grid[1][4], -5);
+});
+
+test("a stored formula-looking cell is defused when its row is written back", (t) => {
+    const h = header();
+    // getValues() returns a defused cell's text WITHOUT the apostrophe.
+    const sh = makeSheet([h, row("jodend", 8888, { tool: "=IMPORTXML(1)" })], { maxCols: h.length });
+    const ctx = load({ "SC Roster": sh });
+    const res = post(ctx, { secret: SECRET, tab: "SC Roster", header: h, rows: [row("other", 9999)] });
+    assert.strictEqual(res.ok, true, res.error);
+    assert.strictEqual(sh._grid[1][6], "'=IMPORTXML(1)");
 });

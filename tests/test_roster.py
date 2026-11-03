@@ -294,10 +294,10 @@ def test_combat_shrine_columns_are_ignored():
 
 
 # --- row termination --------------------------------------------------------
-def test_rows_stop_at_the_first_blank_name():
+def test_a_blank_name_mid_tab_is_skipped_not_the_end():
     text = _roster_csv([{"name": "A"}, {"name": "B"}, {"name": ""}, {"name": "C"}])
     parsed = roster.parse(text)
-    assert [r.name for r in parsed] == ["A", "B"]
+    assert [r.name for r in parsed] == ["A", "B", "C"]
 
 
 def test_short_rows_read_as_blank_rather_than_raising():
@@ -377,7 +377,7 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
     # recalibration was failing a test whose subject is which parties the search
     # chose and what they scored. Pinned at the value the golden was generated
     # under, deliberately and by name: the risk constant is measured by
-    # src/calibrate.py and its own movement is checked in tests/test_calibrate.py
+    # research/calibrate.py and its own movement is checked in tests/test_calibrate.py
     # (::test_the_deterministic_score_does_not_depend_on_risk_sigma_systematic),
     # which is where a change to it belongs.
     monkeypatch.setattr(config, "RISK_SIGMA_SYSTEMATIC", 0.0131)
@@ -437,20 +437,22 @@ def test_roster_disabled_reproduces_the_golden_week(monkeypatch):
         assert adopt["levels_unbought"] == 0
         assert adopt["points_gained"] == 0.0
         assert adopt["credit_points_at_cap"] is None
+    # AUDIT 13 MOVED THE SHRINE PROBE'S CURRENCY from credit points to the objective
+    # (E[points]), so the building and shrine rows rank on one measure; the golden
+    # predates that. Like the building probe above, it is a probe of the race, not the
+    # race: assert it read the same race and found a gain where the golden did, then
+    # strip it.
     for got_u, exp_u in zip(
-        got["shrine_upgrades"], expected["shrine_upgrades"], strict=True
+        got.pop("shrine_upgrades"), expected.pop("shrine_upgrades"), strict=True
     ):
         assert got_u["shrine"] == exp_u["shrine"]
-        assert got_u.pop("points_gained_immediate") == 0.0
-        assert got_u.pop("members_at_cap") == seats
-        assert got_u.pop("members_seated") == seats
-        # THE LOAD-BEARING EQUALITY: the re-specified full-adoption gain reproduces
-        # the old points_gained EXACTLY, not approximately. It is computed a
-        # different way — per-member replacement rows rather than a temporary
-        # rebinding of config.GUILD_SHRINE_LEVELS — so this is what proves the new
-        # arithmetic did not re-associate anything.
-        assert got_u.pop("points_gained_at_full_adoption") == \
-            exp_u.pop("points_gained"), got_u["shrine"]
+        for key in ("from_level", "at_cap", "next_level_cost"):
+            assert got_u[key] == exp_u[key], (got_u["shrine"], key)
+        assert got_u["points_gained_immediate"] == 0.0
+        assert got_u["members_at_cap"] == got_u["members_seated"] == seats
+        assert got_u["modelled"] is True
+        assert (got_u["points_gained_at_full_adoption"] > 0) == \
+            (exp_u["points_gained"] > 0), got_u["shrine"]
 
     # LIBM IS NOT BIT-PORTABLE, AND ONE FIELD IS BUILT FROM IT.
     # Everything this golden exists to pin -- the parties the search chose, every

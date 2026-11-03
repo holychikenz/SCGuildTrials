@@ -615,6 +615,18 @@ def test_malformed_loadout_json_raises():
     assert "not valid JSON" in str(exc.value)
     assert "row 2" in str(exc.value)
 
+    # NaN/Infinity parse in Python but would write invalid JSON to trials.json.
+    with pytest.raises(SheetStructureError, match="not valid JSON"):
+        combat.parse_combat(
+            _csv9(_row9("Yedic", blob='{"equipment":{},"abilities":[NaN]}')),
+            "sc", tab="SC Combat Teams",
+        )
+    with pytest.raises(SheetStructureError, match="not valid JSON"):
+        combat.parse_combat(
+            _csv9(_row9("Yedic", blob='{"equipment":{},"abilities":[1e999]}')),
+            "sc", tab="SC Combat Teams",
+        )
+
     # A well-formed blob of the WRONG TYPE is refused too — a list would reach the
     # userscript as a shape it cannot read.
     with pytest.raises(SheetStructureError) as exc:
@@ -737,6 +749,13 @@ def test_cross_check_is_order_case_and_form_insensitive():
     assert combat.cross_check(obs, ["Badger", "Swarm"]) == ""
     assert combat.cross_check(obs, ["swarm", "badger"]) == ""
 
+    # Teams for only ONE boss agree only when nobody signed up for the other;
+    # otherwise it may be last week's tab whose boss was drawn again.
+    one = _observation(hrid_b="/guild_combat/swarm")
+    assert combat.cross_check(one, ["Badger", "Swarm"], {"badger"}) == ""
+    assert "stale" in combat.cross_check(one, ["Badger", "Swarm"])
+    assert "stale" in combat.cross_check(one, ["Badger", "Hedgehog"], {"badger"})
+
     # §5 rows 5 and 6: whichever side is stale, BOTH sets are named and neither is
     # blamed — the two writers refresh on their own schedules.
     reason = combat.cross_check(obs, ["Chameleon", "Hedgehog"])
@@ -744,6 +763,15 @@ def test_cross_check_is_order_case_and_form_insensitive():
     assert "[badger, swarm]" in reason
     assert "[chameleon, hedgehog]" in reason
     assert "does not guess which" in reason
+
+
+def test_unsigned_bosses_reads_the_tick_columns():
+    csv_text = (
+        "User,Milking,Foraging,Cooking,Brewing,Badger,Swarm,characterId\n"
+        "A,FALSE,TRUE,FALSE,FALSE,FALSE,TRUE,1\n"
+        "B,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE,2\n"
+    )
+    assert combat.unsigned_bosses(csv_text, ["Badger", "Swarm"]) == {"badger"}
 
 
 # --- _fetch_combat: the whole degrade matrix ---------------------------------------

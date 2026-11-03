@@ -12,7 +12,7 @@ across the four trials rose from **4.28% to 17.92%** on Survey Corps and from
 **0.26% (9.3 seconds) to 16.41%** on Lactose lntolerance, at **zero** change in
 guild points, for +40% on the optimize step.
 **Scope**: `src/trials.py` (`simulate_race`), `src/optimizer.py`
-(`AssignmentScorer`), `src/config.py`, `src/optimize_bakeoff.py`, and the
+(`AssignmentScorer`), `src/config.py`, `research/optimize_bakeoff.py`, and the
 presentation in `src/build.py` / `src/signup.py`.
 **Measurements**: taken 2026-07-31 on the LIVE Survey Corps roster (96 members),
 draw `[Milking, Foraging, Crafting, Alchemy]`, strategy

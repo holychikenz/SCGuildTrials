@@ -65,7 +65,15 @@ from typing import Optional
 from . import config, identity
 from .reader import MemberRow, SheetStructureError, _cell, _to_bool, norm_name
 from .scraper import fetch_tab_csv
-from .optimizer import AssignmentScorer, _min_banking, objective_of
+from .optimizer import (
+    AssignmentScorer,
+    _apply_move,
+    _fill_open_seats,
+    _hill_climb,
+    _min_banking,
+    _moves,
+    objective_of,
+)
 from .trials import (
     RosterEntry,
     expected_credit_points,
@@ -599,169 +607,42 @@ def _sheet_column_for(trial_skill: str) -> str:
     return config.TRIAL_SKILL_TO_SHEET_COLUMN.get(trial_skill, trial_skill)
 
 
-def _locked_skill_of(
-    picks: set[str], draw: list[str]
-) -> Optional[str]:
-    """Which drawn trial a member is locked into, or ``None`` if uncommitted.
-
-    A member is locked into the FIRST drawn trial (in ``draw`` order) whose sheet
-    column they ticked. Ticking more than one drawn trial is a conflict recorded
-    by the caller; the first tick wins so the member is still placed.
-    """
-    for t in draw:
-        if _sheet_column_for(t) in picks:
-            return t
-    return None
-
-
-def _fill_open_seats(
-    parties: list[set[int]],
-    scorer: AssignmentScorer,
-    free_pool: set[int],
-    cap: int,
-) -> tuple[list[set[int]], dict[int, tuple[int, int]]]:
-    """Seat ``free_pool`` members into non-full parties, never lowering points.
-
-    Mirrors :func:`src.optimizer._fill_bench` but restricted to the given free
-    pool (the uncommitted members): repeatedly seats the (member, slot) with the
-    greatest true Δpoints (>= 0), lowest member then lowest slot breaking ties,
-    until every remaining free member would strictly lower some party's points.
-    Because points are a STEP function of tier, a Δ == 0 rider crosses no
-    threshold and does no harm, so they are welcomed aboard.
-
-    Returns ``(parties, placed)`` where ``placed`` maps ``member_idx ->
-    (slot_idx, gain)`` for each fill actually seated. ``gain`` is a float and may be
-    negative — see ``config.TRIAL_FILL_MAX_POINT_COST``.
-    """
-    parties = [set(p) for p in parties]
-    remaining = set(free_pool)
-    placed: dict[int, tuple[int, float]] = {}
-    S = len(scorer.skills)
-
-    while remaining:
-        best: Optional[tuple[float, int, int]] = None  # (gain, member, slot)
-        for s in range(S):
-            if len(parties[s]) >= cap:
-                continue
-            base = scorer.party_points(s, parties[s])
-            for m in sorted(remaining):
-                if not scorer.can_place(s, m):
-                    continue  # below this trial's minimum sign-up level
-                gain = scorer.party_points(s, parties[s] | {m}) - base
-                if best is None or (gain, -m, -s) > (best[0], -best[1], -best[2]):
-                    best = (gain, m, s)
-        # Mirrors optimizer._fill_bench, including its price: at
-        # TRIAL_FILL_MAX_POINT_COST == 0.0 this is the pre-patch "never lower points"
-        # rule, and the epsilon keeps float noise from reading as a cost. Partial credit
-        # means a marginal seat is no longer free, so a rider seated here carries the
-        # cost in its fill_gain and the page shows it.
-        floor = -config.TRIAL_FILL_MAX_POINT_COST - config.OPT_POINTS_EPS
-        if best is None or best[0] < floor:
-            break
-        gain, m, s = best
-        parties[s].add(m)
-        remaining.discard(m)
-        placed[m] = (s, gain)
-    return parties, placed
-
-
 def _single_move_climb(
     parties: list[set[int]],
     scorer: AssignmentScorer,
-    cap: int,
     draw: list[str],
     members: list[MemberRow],
     swaps: list["Swap"],
-    total: int,
-) -> int:
-    """Best-improvement single-move hill-climb, IN PLACE, recording each step.
-
-    Mirrors :func:`src.optimizer._refine_hill_climb` — the same relocate + swap
-    neighbourhood, best strictly-improving move each step — appending every
-    applied move to ``swaps`` as a :class:`Swap` carrying the points it gains.
-    Mutates ``parties`` and returns the updated ``total``. Deterministic (fixed
-    scan order, no randomness). Stops at a local optimum (no single move helps).
-    """
-    from .optimizer import _relocate_delta, _swap_delta
-
-    S = len(scorer.skills)
-    n = len(scorer.members)
-
-    for _ in range(config.OPT_HILLCLIMB_MAX_ITERS):
-        assigned = {m: s for s in range(S) for m in parties[s]}
-        # Was 0. The objective is continuous since partial credit, so a move must beat
-        # the incumbent by more than float noise (config.OPT_POINTS_EPS).
-        best_delta = config.OPT_POINTS_EPS
-        best_move: Optional[tuple] = None
-
-        for m in range(n):
-            a = assigned.get(m, -1)
-            for b in range(-1, S):
-                if b == a:
-                    continue
-                if b >= 0 and (
-                    len(parties[b]) >= cap or not scorer.can_place(b, m)
-                ):
-                    continue
-                delta = _relocate_delta(scorer, parties, m, a, b)
-                if delta > best_delta:
-                    best_delta = delta
-                    best_move = ("R", m, a, b)
-
-        items = sorted(assigned.items())
-        for i in range(len(items)):
-            m1, a = items[i]
-            for j in range(i + 1, len(items)):
-                m2, b = items[j]
-                if a == b:
-                    continue
-                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
-                    continue
-                delta = _swap_delta(scorer, parties, m1, a, m2, b)
-                if delta > best_delta:
-                    best_delta = delta
-                    best_move = ("S", m1, a, m2, b)
-
-        if best_move is None:
-            break
-
-        if best_move[0] == "R":
-            _, m, a, b = best_move
-            if a >= 0:
-                parties[a].discard(m)
-            if b >= 0:
-                parties[b].add(m)
+    total: float,
+) -> float:
+    """:func:`src.optimizer._hill_climb`, IN PLACE, recording each applied move in
+    ``swaps`` as a :class:`Swap` carrying the points it gains. Returns the updated
+    ``total``."""
+    def record(move: tuple, delta: float) -> None:
+        nonlocal total
+        total += delta
+        if move[0] == "R":
+            _, m, a, b = move
             name = members[m].name
             if a == -1:
-                swaps.append(
-                    Swap(name, "recruit", None, draw[b],
-                         f"Recruit into {draw[b]}.", gain=best_delta)
-                )
+                swaps.append(Swap(name, "recruit", None, draw[b],
+                                  f"Recruit into {draw[b]}.", gain=delta))
             elif b == -1:
-                swaps.append(
-                    Swap(name, "bench", draw[a], None,
-                         f"Bench from {draw[a]} (headcount penalty).",
-                         gain=best_delta)
-                )
+                swaps.append(Swap(name, "bench", draw[a], None,
+                                  f"Bench from {draw[a]} (headcount penalty).",
+                                  gain=delta))
             else:
-                swaps.append(
-                    Swap(name, "move", draw[a], draw[b],
-                         f"Move from {draw[a]} to {draw[b]}.", gain=best_delta)
-                )
-        else:
-            _, m1, a, m2, b = best_move
-            parties[a].discard(m1)
-            parties[a].add(m2)
-            parties[b].discard(m2)
-            parties[b].add(m1)
-            n1, n2 = members[m1].name, members[m2].name
-            swaps.append(
-                Swap(n1, "swap", draw[a], draw[b],
-                     f"Swap {n1} ({draw[a]}) with {n2} ({draw[b]}).",
-                     partner=n2, gain=best_delta)
-            )
-        total += best_delta
+                swaps.append(Swap(name, "move", draw[a], draw[b],
+                                  f"Move from {draw[a]} to {draw[b]}.", gain=delta))
+            return
+        _, m1, a, m2, b = move
+        n1, n2 = members[m1].name, members[m2].name
+        note = (f"Swap {n1} ({draw[a]}) with {n2} ({draw[b]})." if b >= 0
+                else f"Swap {n1} ({draw[a]}) for {n2} (currently benched).")
+        swaps.append(Swap(n1, "swap", draw[a], draw[b] if b >= 0 else None, note,
+                          partner=n2, gain=delta))
 
+    _hill_climb(parties, scorer, record)
     return total
 
 
@@ -785,7 +666,7 @@ def _improving_swaps(
     parties = [set(p) for p in parties]
     swaps: list[Swap] = []
     total = scorer.total_points(parties)
-    total = _single_move_climb(parties, scorer, cap, draw, members, swaps, total)
+    total = _single_move_climb(parties, scorer, draw, members, swaps, total)
     return swaps, total
 
 
@@ -957,7 +838,6 @@ def _safety_swaps(
         """The best near-points-neutral move that strictly raises the thinnest margin."""
         base_points, base_min, _ = _slack_key(pts, slack, tiers)
         floor = base_points - points_tolerance - config.OPT_POINTS_EPS
-        assigned = {m: s for s in range(S) for m in parties[s]}
 
         def key_with(*changed: tuple[int, set]) -> tuple:
             p, q, t = list(pts), list(slack), list(tiers)
@@ -988,43 +868,10 @@ def _safety_swaps(
 
         best_key: Optional[tuple] = None
         best: Optional[tuple] = None  # ("R", m, a, b) | ("S", m1, a, m2, b)
-
-        # Relocations (bench included, both directions).
-        for m in movable:
-            a = assigned.get(m, -1)
-            for b in range(-1, S):
-                if b == a:
-                    continue
-                if b >= 0 and (
-                    len(parties[b]) >= cap or not scorer.can_place(b, m)
-                ):
-                    continue
-                changed = []
-                if a >= 0:
-                    changed.append((a, parties[a] - {m}))
-                if b >= 0:
-                    changed.append((b, parties[b] | {m}))
-                key = key_with(*changed)
-                if admissible(key) and (best_key is None or key > best_key):
-                    best_key, best = key, ("R", m, a, b)
-
-        # Swaps between two seated movable members in different trials.
-        seated = [(m, assigned[m]) for m in movable if m in assigned]
-        for i in range(len(seated)):
-            m1, a = seated[i]
-            for j in range(i + 1, len(seated)):
-                m2, b = seated[j]
-                if a == b:
-                    continue
-                if not (scorer.can_place(b, m1) and scorer.can_place(a, m2)):
-                    continue
-                key = key_with(
-                    (a, (parties[a] - {m1}) | {m2}),
-                    (b, (parties[b] - {m2}) | {m1}),
-                )
-                if admissible(key) and (best_key is None or key > best_key):
-                    best_key, best = key, ("S", m1, a, m2, b)
-
+        for move, changed in _moves(parties, scorer, movable):
+            key = key_with(*changed)
+            if admissible(key) and (best_key is None or key > best_key):
+                best_key, best = key, move
         return best
 
     # Phase 1 spends only the uncommitted members (no sign-up overridden); phase 2
@@ -1050,15 +897,10 @@ def _safety_swaps(
             probs_before = _probs(tiers)
 
             # Apply, then describe the move by the margins it actually moved.
-            touched: list[int] = []
+            _apply_move(parties, best_move)
+            touched = [x for x in (best_move[2], best_move[-1]) if x >= 0]  # a and b
             if best_move[0] == "R":
                 _, m, a, b = best_move
-                if a >= 0:
-                    parties[a].discard(m)
-                    touched.append(a)
-                if b >= 0:
-                    parties[b].add(m)
-                    touched.append(b)
                 name = members[m].name
                 # Volunteers are never benched by construction, so any move of one
                 # takes them out of the trial they ticked — an override either way.
@@ -1082,16 +924,12 @@ def _safety_swaps(
                 )
             else:
                 _, m1, a, m2, b = best_move
-                parties[a].discard(m1)
-                parties[a].add(m2)
-                parties[b].discard(m2)
-                parties[b].add(m1)
-                touched.extend([a, b])
                 n1, n2 = members[m1].name, members[m2].name
                 swap = SafetySwap(
-                    member=n1, action="swap", from_skill=draw[a], to_skill=draw[b],
-                    partner=n2,
-                    note=f"Swap {n1} ({draw[a]}) with {n2} ({draw[b]}).",
+                    member=n1, action="swap", from_skill=draw[a],
+                    to_skill=draw[b] if b >= 0 else None, partner=n2,
+                    note=(f"Swap {n1} ({draw[a]}) with {n2} ({draw[b]})." if b >= 0
+                          else f"Swap {n1} ({draw[a]}) for {n2} (currently benched)."),
                     overrides_signup=bool({m1, m2} & volunteers),
                 )
 
@@ -1226,6 +1064,16 @@ def plan(
         locked[draw.index(allowed[0])].add(i)
         signed_names.add(m.name)
 
+    # The game seats at most `cap`, so more volunteers than that is a party the guild
+    # cannot field as planned. Every volunteer stays locked (this page never drops a
+    # sign-up), but the overflow is said, loudly, rather than shown as negative seats.
+    for t, ids in zip(draw, locked):
+        if len(ids) > cap:
+            conflicts.append(
+                f"{t} has {len(ids)} volunteers but the party cap is {cap}: "
+                f"{len(ids) - cap} of them cannot be seated in game."
+            )
+
     # A sign-up is "matched" iff its name equals a member exactly OR its
     # normalised key is an UNAMBIGUOUS member key. Anything else joins to no
     # member and is reported (a typo, or a member missing from the roster tab).
@@ -1243,7 +1091,7 @@ def plan(
 
     # --- Fill the open seats from the uncommitted pool ---------------------
     scorer = AssignmentScorer(members, draw, target_scale, cap, min_levels)
-    enforced, placed = _fill_open_seats(locked, scorer, free_pool, cap)
+    enforced, placed = _fill_open_seats(locked, scorer, free_pool)
 
     # --- Build per-trial rosters (volunteers first, then recommended) ------
     trials: list[SignupTrial] = []

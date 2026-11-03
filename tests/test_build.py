@@ -581,3 +581,14 @@ def test_a_failed_restart_in_the_pool_becomes_that_units_result(monkeypatch):
     first, second = build._run_units([bad, good])
     assert isinstance(first, Exception)
     assert isinstance(second, dict) and "week" in second
+
+
+def test_a_skipped_optional_guild_ships_no_half_written_files(tmp_path, monkeypatch, capsys):
+    """A skipped LI is removed whole, never deployed half this build, half missing."""
+    monkeypatch.setattr(build, "OUTPUT_DIR", tmp_path)
+    li = next(s for s in build.GUILD_SITES if s.key == "li")
+    li.out_dir.mkdir(parents=True)
+    (li.out_dir / "trials.json").write_text("half-written")
+    build._drop_skipped(li)
+    assert not li.out_dir.exists()
+    assert "OFFLINE" in capsys.readouterr().err

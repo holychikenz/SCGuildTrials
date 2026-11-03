@@ -22,8 +22,6 @@ from src.reader import MemberRow, SkillEntry
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _fast_optimizer_budget(monkeypatch):
-    monkeypatch.setattr(config, "OPT_SA_ITERS", 1500)
-    monkeypatch.setattr(config, "OPT_SA_RESTARTS", 1)
     monkeypatch.setattr(config, "OPT_GA_POP", 20)
     monkeypatch.setattr(config, "OPT_GA_GENERATIONS", 25)
     monkeypatch.setattr(config, "OPT_BEAM_WIDTH", 6)
@@ -61,18 +59,11 @@ def _roster(n, seed=7):
 
 SKILLS = ["Foraging", "Woodcutting", "Alchemy", "Enhancing"]
 
-# Every non-random constructor + representative pairings + the ensemble default.
+# The shipped strategy plus one cheap baseline. The full field is the bake-off's job
+# (research/optimize_bakeoff.py), not CI's: sweeping it here cost ~4 of the suite's
+# ~6 minutes.
 ALL_STRATEGIES = [
     "random",
-    "proxy_greedy",
-    "marginal_greedy",
-    "beam",
-    "genetic",
-    "proxy_greedy+hill_climb",
-    "proxy_greedy+sa",
-    "marginal_greedy+hill_climb",
-    "marginal_greedy+sa",
-    "beam+genetic+hill_climb",
     "best",
 ]
 
@@ -274,7 +265,7 @@ def test_ensemble_at_least_matches_a_deterministic_seed():
     )
 
 
-@pytest.mark.parametrize("refiner", ["hill_climb", "sa"])
+@pytest.mark.parametrize("refiner", ["hill_climb", "genetic"])
 def test_refiner_never_worse_than_its_seed(refiner):
     members = _roster(60, seed=13)
     seed_asn = optimizer.optimize(members, SKILLS, seed=5, strategy="proxy_greedy")
@@ -306,7 +297,7 @@ def test_headcount_deadweight_never_lowers_result():
     all_in = trials.simulate_race(members, "Foraging").points
     assert all_in <= strong_only  # sanity: deadweight cannot help
 
-    for strat in ["marginal_greedy", "marginal_greedy+hill_climb", "proxy_greedy+sa"]:
+    for strat in ["marginal_greedy", "marginal_greedy+hill_climb"]:
         asn = optimizer.optimize(members, skills, seed=1, strategy=strat)
         got = _total_points(members, skills, asn)
         assert got >= strong_only, f"{strat} dragged below strong-only"
@@ -339,6 +330,18 @@ def test_no_free_rider_left_behind(strategy):
             assert withm - base < 0, (
                 f"{benched.name} could have joined {sk} at no cost ({strategy})"
             )
+
+
+def test_hill_climb_swaps_a_benched_member_into_a_full_party():
+    """A full party can only improve by trading a seat with the bench."""
+    from tests.golden_fixture import golden_members
+
+    ms = golden_members()
+    lv = lambda i: ms[i].skills["Milking"].level  # noqa: E731
+    order = sorted(range(len(ms)), key=lv)
+    scorer = optimizer.AssignmentScorer(ms, ["Milking"], 1.0, 3)
+    out = optimizer._refine_hill_climb([set(order[:3])], scorer, None)
+    assert out == [set(order[-3:])]
 
 
 def test_fill_bench_never_lowers_total_and_only_adds():
@@ -378,12 +381,12 @@ def test_parse_strategy_constructor_and_refiners():
     )
     assert optimizer.parse_strategy("proxy_greedy") == ("proxy_greedy", [])
     # Bare refiner defaults to the proxy_greedy seed.
-    assert optimizer.parse_strategy("sa") == ("proxy_greedy", ["sa"])
+    assert optimizer.parse_strategy("hill_climb") == ("proxy_greedy", ["hill_climb"])
 
 
-def test_parse_strategy_genetic_is_constructor_and_refiner():
-    # genetic leading -> constructor; genetic after a constructor -> refiner.
-    assert optimizer.parse_strategy("genetic") == ("genetic", [])
+def test_parse_strategy_genetic_is_a_refiner():
+    # genetic leading -> the default seed, then genetic; after a constructor -> refiner.
+    assert optimizer.parse_strategy("genetic") == ("proxy_greedy", ["genetic"])
     assert optimizer.parse_strategy("beam+genetic+hill_climb") == (
         "beam",
         ["genetic", "hill_climb"],

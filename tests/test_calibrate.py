@@ -1,4 +1,4 @@
-"""Unit tests for src/calibrate.py — the dev-only calibration campaign. No network.
+"""Unit tests for research/calibrate.py — the dev-only calibration campaign. No network.
 
 The module carries its own golden (``calibrate.selftest``: with every source off
 the harness must BE ``trials.simulate_race``), but that one needs the live sheet,
@@ -26,7 +26,8 @@ import random
 
 import pytest
 
-from src import calibrate, config, trials
+from research import calibrate
+from src import config, trials
 from src.reader import MemberRow, SkillEntry
 from src.roster import MANUAL, ROSTER
 
@@ -335,7 +336,8 @@ def test_calibrate_uses_the_shipped_variance_and_cdf_not_copies():
     """Finding 15: one definition each, in trials. A copy here could drift."""
     import math
 
-    from src import calibrate, trials
+    from research import calibrate
+    from src import trials
 
     assert not hasattr(calibrate, "variance_rate") and not hasattr(calibrate, "phi")
     m, sigma = 0.05, 0.02

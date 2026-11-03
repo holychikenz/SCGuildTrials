@@ -37,7 +37,7 @@ from typing import Optional
 from . import config, identity
 from . import gear as gear_model
 from . import profiles as profiles_model
-from .reader import MemberRow, SheetStructureError, SkillEntry, norm_name
+from .reader import MemberRow, SheetStructureError, SkillEntry, _cell, norm_name
 from .scraper import fetch_tab_csv
 
 
@@ -172,16 +172,11 @@ def _to_int_strict(value: str, column: str, name: str) -> Optional[int]:
         ) from exc
 
 
-def _cell(row: list[str], idx: int) -> str:
-    """Safely read a cell, returning '' if the row is short."""
-    return row[idx].strip() if idx < len(row) else ""
-
-
 def parse(csv_text: str) -> list[RosterRow]:
     """Parse roster CSV text into ``RosterRow`` records.
 
-    The header is line 1 and data begins on line 2. Rows are read until the
-    first blank ``name`` cell. Every column is addressed through the validated
+    The header is line 1 and data begins on line 2. Rows with a blank ``name``
+    cell are skipped. Every column is addressed through the validated
     ``{name: index}`` map, so a reordering of the tool block — which the upstream
     module does legitimately produce — parses identically.
     """
@@ -196,7 +191,7 @@ def parse(csv_text: str) -> list[RosterRow]:
     for raw in rows[1:]:
         name = _cell(raw, col("name"))
         if name == "":
-            break  # first blank name cell marks the end of the roster
+            continue  # a blank row mid-tab (a hand-cleared cell) is a gap, not the end
 
         levels: dict[str, Optional[int]] = {}
         houses: dict[str, Optional[int]] = {}
